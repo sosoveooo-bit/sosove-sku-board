@@ -4686,6 +4686,9 @@ def ai_image_retryable_error(value: Any) -> bool:
             "no image result",
             "upstream completed without generating images",
             "生图接口没有返回图片",
+            "图像生成过程中出现了错误",
+            "无法生成这张图片",
+            "image generation encountered an error",
         )
     )
 
@@ -10934,11 +10937,6 @@ def _dispatch_images_via_chatgpt2api_tasks(
     task_prompts = [limited_text(item, "", 7000) for item in (prompts or []) if text(item)]
     total = len(task_prompts) if task_prompts else count
     resolved_page_indexes = page_indexes if page_indexes and len(page_indexes) == total else list(range(total))
-    groups: list[list[int]] = [[] for _ in nodes]
-    assignments, _reserved_nodes = reserve_ai_image_generation_nodes(nodes, resolved_page_indexes)
-    for position, node_position in enumerate(assignments):
-        groups[node_position].append(position)
-
     def run_group(node_index: int, positions: list[int]) -> tuple[dict[str, Any], Any, int, bool]:
         node = nodes[node_index]
         started = time.perf_counter()
@@ -10990,6 +10988,168 @@ def _dispatch_images_via_chatgpt2api_tasks(
                 latency_ms=max(1, int((time.perf_counter() - started) * 1000)),
                 force_cooldown=force_cooldown,
             )
+
+    # A single page used to wait for one VPS for the full timeout before the
+    # retry scheduler could try another VPS.  Send the same page to two healthy
+    # pools at once and return the first complete image.  The slower task is
+    # allowed to finish in the background so its account/conversation cleanup
+    # still runs normally on chatgpt2api.
+    hedge_node_count = clamp(
+        int(number(os.environ.get("CHATGPT2API_HEDGE_NODE_COUNT"), 2)),
+        1,
+        min(4, len(nodes)),
+    )
+    if total == 1 and hedge_node_count > 1:
+        page_index = resolved_page_indexes[0]
+        hedge_assignments, _reserved_nodes = reserve_ai_image_generation_nodes(
+            nodes,
+            [page_index] * hedge_node_count,
+        )
+        hedge_node_indexes = list(dict.fromkeys(hedge_assignments))
+        hedge_results: list[tuple[dict[str, Any], Any, int, bool]] = []
+        hedge_failures: list[tuple[dict[str, Any], Exception]] = []
+        executor = ThreadPoolExecutor(
+            max_workers=len(hedge_node_indexes),
+            thread_name_prefix="ai-image-hedge",
+        )
+        futures = {
+            executor.submit(run_group, node_index, [0]): node_index
+            for node_index in hedge_node_indexes
+        }
+        winner: tuple[dict[str, Any], Any, int, bool] | None = None
+        try:
+            for future in as_completed(futures):
+                try:
+                    completed = future.result()
+                    hedge_results.append(completed)
+                    if completed[3]:
+                        winner = completed
+                        break
+                except Exception as exc:
+                    hedge_failures.append((nodes[futures[future]], exc))
+        finally:
+            # Do not make the browser wait for a stuck losing node after a
+            # winner has already produced the requested image.
+            executor.shutdown(wait=winner is None, cancel_futures=False)
+
+        if winner is not None:
+            node, result, latency_ms, node_success = winner
+            if not isinstance(result, dict):
+                return result
+            node_id = text(node.get("id"))
+            node_name = text(node.get("name"), node_id or "生图节点")
+            decorated = {**result}
+            for key in ("outputs", "errors", "pending"):
+                values = result.get(key) if isinstance(result.get(key), list) else []
+                decorated[key] = [
+                    {
+                        **item,
+                        "node": node_name,
+                        "nodeId": node_id,
+                        "nodeName": node_name,
+                        "nodeLatencyMs": latency_ms,
+                    }
+                    if isinstance(item, dict)
+                    else {
+                        "node": node_name,
+                        "nodeId": node_id,
+                        "nodeName": node_name,
+                        "nodeLatencyMs": latency_ms,
+                        "message": text(item),
+                    }
+                    for item in values
+                ]
+            decorated["nodeResults"] = [
+                {
+                    "nodeId": node_id,
+                    "nodeName": node_name,
+                    "latencyMs": latency_ms,
+                    "success": node_success,
+                }
+            ]
+            decorated["hedgedNodeCount"] = len(hedge_node_indexes)
+            decorated["winningNodeId"] = node_id
+            return decorated
+
+        if not hedge_results and hedge_failures:
+            if all(isinstance(exc, ImageTaskApiUnavailable) for _node, exc in hedge_failures):
+                raise hedge_failures[0][1]
+            messages = "；".join(
+                f"{text(node.get('name'), text(node.get('id'), '节点'))}: {limited_text(exc, limit=220)}"
+                for node, exc in hedge_failures
+            )
+            raise ValueError(f"双节点生图均失败：{messages}") from hedge_failures[0][1]
+
+        merged_hedge: dict[str, Any] = {
+            "outputs": [],
+            "errors": [],
+            "pending": [],
+            "taskIds": [],
+            "nodeResults": [],
+            "timedOut": bool(hedge_failures),
+            "hedgedNodeCount": len(hedge_node_indexes),
+        }
+        for node, result, latency_ms, node_success in hedge_results:
+            node_id = text(node.get("id"))
+            node_name = text(node.get("name"), node_id or "生图节点")
+            merged_hedge["nodeResults"].append(
+                {
+                    "nodeId": node_id,
+                    "nodeName": node_name,
+                    "latencyMs": latency_ms,
+                    "success": node_success,
+                }
+            )
+            if isinstance(result, dict):
+                for key in ("outputs", "errors", "pending", "taskIds"):
+                    values = result.get(key) if isinstance(result.get(key), list) else []
+                    if key in {"outputs", "errors", "pending"}:
+                        merged_hedge[key].extend(
+                            {
+                                **item,
+                                "node": node_name,
+                                "nodeId": node_id,
+                                "nodeName": node_name,
+                                "nodeLatencyMs": latency_ms,
+                            }
+                            if isinstance(item, dict)
+                            else {
+                                "node": node_name,
+                                "nodeId": node_id,
+                                "nodeName": node_name,
+                                "nodeLatencyMs": latency_ms,
+                                "message": text(item),
+                            }
+                            for item in values
+                        )
+                    else:
+                        merged_hedge[key].extend(values)
+                merged_hedge["timedOut"] = bool(merged_hedge["timedOut"] or result.get("timedOut"))
+        for node, exc in hedge_failures:
+            node_id = text(node.get("id"))
+            node_name = text(node.get("name"), node_id or "生图节点")
+            message = limited_text(exc, limit=320)
+            merged_hedge["nodeResults"].append(
+                {
+                    "nodeId": node_id,
+                    "nodeName": node_name,
+                    "latencyMs": 0,
+                    "success": False,
+                    "message": message,
+                }
+            )
+            merged_hedge["errors"].append(
+                {"node": node_name, "nodeId": node_id, "nodeName": node_name, "message": message}
+            )
+        if allow_partial:
+            return merged_hedge
+        first_message = nested_error_text(merged_hedge.get("errors")) or "远端任务没有返回图片"
+        raise ValueError(f"双节点生图均失败：{first_message}")
+
+    groups: list[list[int]] = [[] for _ in nodes]
+    assignments, _reserved_nodes = reserve_ai_image_generation_nodes(nodes, resolved_page_indexes)
+    for position, node_position in enumerate(assignments):
+        groups[node_position].append(position)
 
     results: list[tuple[dict[str, Any], Any, int, bool]] = []
     failures: list[tuple[dict[str, Any], Exception]] = []

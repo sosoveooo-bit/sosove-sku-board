@@ -184,7 +184,11 @@ class AiImageSuiteTests(unittest.TestCase):
                 "timedOut": False,
             }
 
-        with patch.object(backend, "chatgpt2api_service_nodes", return_value=nodes), patch.object(
+        with patch.dict(os.environ, {"CHATGPT2API_HEDGE_NODE_COUNT": "1"}, clear=False), patch.object(
+            backend,
+            "chatgpt2api_service_nodes",
+            return_value=nodes,
+        ), patch.object(
             backend,
             "_generate_images_via_chatgpt2api_tasks_single",
             side_effect=fake_single,
@@ -205,6 +209,52 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(result["outputs"][0]["index"], 3)
         self.assertEqual(result["outputs"][0]["nodeId"], "d")
         self.assertEqual(result["nodeResults"][0]["nodeName"], "VPS D")
+
+    def test_single_page_hedges_two_nodes_and_returns_the_fast_winner(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        nodes = [
+            {"id": "slow", "name": "Slow VPS", "baseUrl": "https://slow.example.com/v1", "rootUrl": "https://slow.example.com", "authKey": "slow"},
+            {"id": "fast", "name": "Fast VPS", "baseUrl": "https://fast.example.com/v1", "rootUrl": "https://fast.example.com", "authKey": "fast"},
+        ]
+
+        def fake_single(**kwargs):
+            node_id = kwargs["service_node"]["id"]
+            time.sleep(0.25 if node_id == "slow" else 0.01)
+            return {
+                "outputs": [{"index": 0, "taskId": f"task-{node_id}", "image": (b"image", "image/png")}],
+                "errors": [],
+                "pending": [],
+                "taskIds": [f"task-{node_id}"],
+                "timedOut": False,
+            }
+
+        started = time.perf_counter()
+        with patch.dict(os.environ, {"CHATGPT2API_HEDGE_NODE_COUNT": "2"}, clear=False), patch.object(
+            backend,
+            "chatgpt2api_service_nodes",
+            return_value=nodes,
+        ), patch.object(
+            backend,
+            "_generate_images_via_chatgpt2api_tasks_single",
+            side_effect=fake_single,
+        ) as generate:
+            result = backend.generate_images_via_chatgpt2api_tasks(
+                prompt="single page",
+                model="gpt-image-2",
+                size="1500x2000",
+                count=1,
+                prompts=["single page"],
+                page_indexes=[0],
+                allow_partial=True,
+                suite_run_id="a1b2c3d4e5f6",
+            )
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(generate.call_count, 2)
+        self.assertLess(elapsed, 0.18)
+        self.assertEqual(result["outputs"][0]["nodeId"], "fast")
+        self.assertEqual(result["winningNodeId"], "fast")
+        self.assertEqual(result["hedgedNodeCount"], 2)
 
     def test_ten_page_suite_balances_three_three_two_two_across_four_nodes(self) -> None:
         backend.reset_ai_image_node_runtime_stats()
@@ -500,6 +550,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(backend.ai_image_retryable_error("请稍后重试"))
         self.assertTrue(backend.ai_image_retryable_error("image generation failed"))
         self.assertTrue(backend.ai_image_retryable_error("生图接口没有返回图片"))
+        self.assertTrue(backend.ai_image_retryable_error("抱歉，图像生成过程中出现了错误"))
         self.assertFalse(backend.ai_image_retryable_error("content policy blocked"))
 
     def test_japan_fashion_landing_uses_the_locked_32_page_brand_case_rhythm(self) -> None:
