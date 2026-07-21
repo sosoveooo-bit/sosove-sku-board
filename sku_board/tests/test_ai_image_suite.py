@@ -737,6 +737,32 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(call_info["attempts"][0]["status"], "failed")
         self.assertEqual(call_info["attempts"][1], {"model": "gpt-5.6-terra", "status": "ok"})
 
+    def test_ai_director_gateway_timeout_stops_repeating_the_same_endpoint(self) -> None:
+        settings = {
+            "enabled": True,
+            "baseUrl": "https://director.example.test/v1",
+            "apiKey": "secret",
+            "model": "gpt-5.6-terra",
+            "fallbackModels": ["gpt-5.6-sol"],
+            "timeout": 90,
+        }
+        with patch.object(
+            backend,
+            "invoke_ai_director_chat_once",
+            side_effect=ValueError("AI 导演返回错误（HTTP 524）：<!DOCTYPE html>"),
+        ) as invoke, self.assertRaises(ValueError):
+            backend.invoke_ai_director_chat(settings, [{"role": "user", "content": "test"}])
+
+        self.assertEqual(invoke.call_count, 1)
+        self.assertEqual(invoke.call_args.args[0]["model"], "gpt-5.6-terra")
+
+    def test_frontend_retries_suite_plan_with_local_rules_after_gateway_error(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('formData.set("useDirector", "false")', app_source)
+        self.assertIn("远端导演超时，已切换本地导演并继续生图", app_source)
+        self.assertIn("serviceError.status = response.status", app_source)
+
     def test_ai_director_public_settings_expose_model_chain_without_secret(self) -> None:
         public = backend.public_ai_director_settings(
             {

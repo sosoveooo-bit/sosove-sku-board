@@ -5025,8 +5025,13 @@ def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[s
     endpoint = ai_director_completion_endpoint(settings)
     timeout = clamp(int(number(settings.get("timeout"), 60)), 5, 180)
     started = time.perf_counter()
+    session = requests.Session()
+    # Director APIs are commonly direct-IP services. Inheriting a desktop HTTP
+    # proxy can route a long vision request through Cloudflare and turn it into
+    # a 524 page even though the API itself is healthy.
+    session.trust_env = truthy(os.environ.get("AI_DIRECTOR_USE_ENV_PROXY"), False)
     try:
-        response = requests.post(
+        response = session.post(
             endpoint,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -5040,16 +5045,22 @@ def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[s
         raise ValueError(f"AI 导演连接超时：{timeout} 秒") from exc
     except requests.RequestException as exc:
         raise ValueError(f"AI 导演连接失败：{limited_text(exc, limit=260)}") from exc
+    finally:
+        session.close()
     latency_ms = int((time.perf_counter() - started) * 1000)
+    if not response.ok:
+        try:
+            error_body = response.json()
+            error_value = error_body.get("error") if isinstance(error_body, dict) else error_body
+            if isinstance(error_value, dict):
+                error_value = error_value.get("message") or error_value.get("code") or error_value
+        except ValueError:
+            error_value = limited_text(response.text, "空响应", 320)
+        raise ValueError(f"AI 导演返回错误（HTTP {response.status_code}）：{limited_text(error_value, limit=320)}")
     try:
         body = response.json()
     except ValueError as exc:
         raise ValueError(f"AI 导演返回了非 JSON 内容：{limited_text(response.text, limit=300)}") from exc
-    if not response.ok:
-        error_value = body.get("error") if isinstance(body, dict) else body
-        if isinstance(error_value, dict):
-            error_value = error_value.get("message") or error_value.get("code") or error_value
-        raise ValueError(f"AI 导演返回错误（HTTP {response.status_code}）：{limited_text(error_value, limit=320)}")
     return ai_director_message_text(body), latency_ms
 
 
@@ -5058,9 +5069,32 @@ def invoke_ai_director_chat(settings: dict[str, Any], messages: list[dict[str, A
     candidates = ai_director_model_candidates(settings)
     failures: list[dict[str, str]] = []
     started = time.perf_counter()
+    # Keep the complete planning request below reverse-proxy limits. If both
+    # models miss this budget, the caller immediately uses its local director
+    # plan instead of returning a Cloudflare HTML timeout to the browser.
+    total_timeout = clamp(int(number(os.environ.get("AI_DIRECTOR_TOTAL_TIMEOUT"), 80)), 15, 90)
+    attempt_timeout_cap = clamp(
+        int(number(os.environ.get("AI_DIRECTOR_ATTEMPT_TIMEOUT"), 40)),
+        5,
+        total_timeout,
+    )
+    deadline = time.monotonic() + total_timeout
     for attempt_index, model in enumerate(candidates, start=1):
+        remaining = int(deadline - time.monotonic())
+        if remaining < 5:
+            failures.append({"model": model, "status": "skipped", "message": "导演请求总时限已用完"})
+            break
+        attempt_settings = {
+            **settings,
+            "model": model,
+            "timeout": min(
+                clamp(int(number(settings.get("timeout"), 60)), 5, 180),
+                attempt_timeout_cap,
+                remaining,
+            ),
+        }
         try:
-            content, latency_ms = invoke_ai_director_chat_once({**settings, "model": model}, messages)
+            content, latency_ms = invoke_ai_director_chat_once(attempt_settings, messages)
             settings["_lastDirectorCall"] = {
                 "requestedModel": candidates[0],
                 "model": model,
@@ -5069,7 +5103,25 @@ def invoke_ai_director_chat(settings: dict[str, Any], messages: list[dict[str, A
             }
             return content, max(latency_ms, int((time.perf_counter() - started) * 1000))
         except Exception as exc:
-            failures.append({"model": model, "status": "failed", "message": limited_text(exc, "", 260)})
+            message = limited_text(exc, "", 260)
+            failures.append({"model": model, "status": "failed", "message": message})
+            lowered = message.lower()
+            # A gateway response is endpoint-wide rather than model-specific;
+            # sending the same large request to the fallback model repeats the
+            # same 524 wait and blocks the suite-plan HTTP request.
+            if any(
+                marker in lowered
+                for marker in (
+                    "http 502",
+                    "http 503",
+                    "http 504",
+                    "http 524",
+                    "bad gateway",
+                    "gateway timeout",
+                    "<!doctype html",
+                )
+            ):
+                break
     settings["_lastDirectorCall"] = {
         "requestedModel": candidates[0],
         "model": candidates[-1] if candidates else "",

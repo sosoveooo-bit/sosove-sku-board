@@ -5394,18 +5394,39 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
       signal: aiImageGenerationAbortController?.signal,
     });
   } catch (error) {
-    conversation.status = "error";
+    const status = Number(error?.status || 0);
+    const canUseRules = error?.name !== "AbortError" && (!status || status >= 500);
+    if (!canUseRules) {
+      conversation.status = "error";
+      conversation.director = {
+        ...(conversation.director || {}),
+        source: "rules",
+        status: "warning",
+        stage: "complete",
+        stageIndex: AI_IMAGE_DIRECTOR_STAGES.length - 1,
+        message: "导演策划失败",
+        warning: error.message,
+      };
+      renderAiImageResults();
+      throw error;
+    }
+    // A reverse proxy may end a long vision/director request with 524. Retry
+    // only the deterministic local plan so image generation can continue.
+    formData.set("useDirector", "false");
+    payload = await api("/api/sku-board/ai-image-suite-plan-upload", {
+      method: "POST",
+      body: formData,
+      signal: aiImageGenerationAbortController?.signal,
+    });
     conversation.director = {
       ...(conversation.director || {}),
       source: "rules",
       status: "warning",
       stage: "complete",
       stageIndex: AI_IMAGE_DIRECTOR_STAGES.length - 1,
-      message: "导演策划失败",
+      message: "远端导演超时，已切换本地导演并继续生图",
       warning: error.message,
     };
-    renderAiImageResults();
-    throw error;
   } finally {
     window.clearInterval(stageTimer);
   }
@@ -8171,7 +8192,10 @@ async function api(path, options = {}) {
     payload = raw ? JSON.parse(raw) : {};
   } catch (error) {
     const preview = raw.replace(/\s+/g, " ").slice(0, 220);
-    throw new Error(`服务返回异常（HTTP ${response.status}）：${preview || "空响应"}`);
+    const serviceError = new Error(`服务返回异常（HTTP ${response.status}）：${preview || "空响应"}`);
+    serviceError.status = response.status;
+    serviceError.path = path;
+    throw serviceError;
   }
   if (!payload.ok) {
     const remoteError = typeof payload.error === "string"

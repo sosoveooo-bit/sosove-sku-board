@@ -441,6 +441,8 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         try:
             payload = self.read_json_body()
             self.send_json(callback(payload, user), status=status)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
         except ValueError as exc:
             if ai_image_operation:
                 self.send_ai_image_error(exc, user, ai_image_operation, HTTPStatus.BAD_REQUEST)
@@ -465,6 +467,8 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         try:
             fields, files = self.read_multipart_body()
             self.send_json(callback(fields, files, user), status=status)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
         except ValueError as exc:
             if ai_image_operation:
                 self.send_ai_image_error(exc, user, ai_image_operation, HTTPStatus.BAD_REQUEST)
