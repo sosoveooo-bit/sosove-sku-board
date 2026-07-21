@@ -4325,6 +4325,14 @@ function aiImageErrorDiagnosis(message = "") {
       actions: ["recover-suite", "retry"],
     };
   }
+  if (lower.includes("please retry") || lower.includes("try again") || lower.includes("稍后重试") || lower.includes("稍後重試") || lower.includes("server busy") || lower.includes("temporarily unavailable")) {
+    return {
+      title: "远端生图节点正在切换账号",
+      reason: "远端账号池短暂繁忙时会返回“请稍后重试”。面板会自动改走其他节点；本次未完成页面可继续补图。",
+      advice: ["点击重试会优先避开刚刚失败的节点", "已完成图片会保留，只补失败页面", "若持续发生，使用错误编号在 ai_image_errors.log 中定位节点"],
+      actions: ["recover-suite", "retry"],
+    };
+  }
   if (lower.includes("too many") || lower.includes("rate") || lower.includes("429") || lower.includes("限流")) {
     return {
       title: "请求太频繁或账号限流",
@@ -5220,6 +5228,14 @@ function aiImageSuiteTransientError(message = "") {
     "http/2 stream",
     "internal_error",
     "internal error",
+    "please retry",
+    "try again",
+    "retry later",
+    "稍后重试",
+    "稍後重試",
+    "server busy",
+    "serverbusy",
+    "temporarily unavailable",
     "too many open files",
     "connection reset",
     "connection aborted",
@@ -5238,6 +5254,7 @@ function aiImageSuiteTransientError(message = "") {
     "http 503",
     "http 504",
     "http 524",
+    "http 530",
     "dns",
     "连接异步生图任务接口失败",
     "提交超时",
@@ -5266,10 +5283,25 @@ async function refreshAiImageAccountPool() {
 
 function aiImageSuitePayloadError(payload = {}) {
   const errors = Array.isArray(payload.suiteSummary?.errors) ? payload.suiteSummary.errors : [];
-  return errors.map((item) => {
-    if (typeof item === "string") return item;
-    return item?.message || item?.error?.message || item?.error || "远端图片任务失败";
-  }).filter(Boolean).join("；");
+  const describe = (item, depth = 0) => {
+    if (item == null) return "";
+    if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") return String(item).trim();
+    if (depth > 3) return "";
+    if (Array.isArray(item)) return item.map((entry) => describe(entry, depth + 1)).filter(Boolean).join("；");
+    if (typeof item !== "object") return "";
+    const primary = [item.message, item.detail, item.reason, item.error, item.error?.message]
+      .map((entry) => describe(entry, depth + 1))
+      .find(Boolean);
+    const trace = [item.nodeName || item.node, item.taskId, item.requestId].filter(Boolean).join(" / ");
+    if (primary) return trace ? `${trace}：${primary}` : primary;
+    try {
+      const compact = JSON.stringify(item);
+      return compact && compact !== "{}" ? compact.slice(0, 360) : "";
+    } catch (error) {
+      return "";
+    }
+  };
+  return errors.map((item) => describe(item) || "远端图片任务失败").filter(Boolean).join("；");
 }
 
 function aiImageMaterialsFromPayload(payload = {}) {
@@ -8108,7 +8140,21 @@ async function api(path, options = {}) {
     const preview = raw.replace(/\s+/g, " ").slice(0, 220);
     throw new Error(`服务返回异常（HTTP ${response.status}）：${preview || "空响应"}`);
   }
-  if (!payload.ok) throw new Error(payload.error || "操作失败");
+  if (!payload.ok) {
+    const remoteError = typeof payload.error === "string"
+      ? payload.error.trim()
+      : payload.error && typeof payload.error === "object"
+      ? (payload.error.message || payload.error.detail || JSON.stringify(payload.error))
+      : "";
+    const requestId = String(payload.requestId || "").trim();
+    const fallback = `请求失败（HTTP ${response.status}，接口 ${path}）`;
+    const error = new Error(remoteError || fallback);
+    error.status = response.status;
+    error.path = path;
+    error.requestId = requestId;
+    if (requestId) error.message = `${error.message}（错误编号：${requestId}）`;
+    throw error;
+  }
   return payload;
 }
 

@@ -333,6 +333,50 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["suiteCount"], 32)
 
+    def test_all_image_roles_can_execute_text_generation(self) -> None:
+        generated = [(b"generated-image", "image/png")]
+        saved_material = {"id": "AI-ROLESMOKE", "previewUrl": "/api/sku-board/ai-image-output/AI-ROLESMOKE"}
+        payload = {
+            "prompt": "Simple ecommerce product photo",
+            "model": "gpt-image-2",
+            "size": "1024x1024",
+            "quality": "low",
+            "count": 1,
+        }
+        with (
+            patch.object(backend, "chatgpt2api_image_tasks_enabled", return_value=True),
+            patch.object(backend, "generate_images_via_chatgpt2api_tasks", return_value=generated) as generate,
+            patch.object(backend, "save_ai_image_outputs", return_value=([saved_material], [saved_material["previewUrl"]])),
+        ):
+            for role in ("admin", "ops", "selection", "designer"):
+                result = backend.generate_ad_launch_ai_image(payload, {"username": f"{role}-user", "role": role})
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["returnedCount"], 1)
+
+        self.assertEqual(generate.call_count, 4)
+
+    def test_retryable_provider_message_is_rerouted_once(self) -> None:
+        with (
+            patch.object(
+                backend,
+                "generate_images_via_chatgpt2api_tasks",
+                side_effect=[ValueError("Please retry later"), [(b"generated-image", "image/png")]],
+            ) as generate,
+            patch.object(backend.time, "sleep"),
+        ):
+            result = backend.generate_ai_image_tasks_with_transient_retry(
+                actor={"username": "designer", "role": "designer"},
+                prompt="Simple ecommerce product photo",
+                model="gpt-image-2",
+                size="1024x1024",
+                count=1,
+            )
+
+        self.assertEqual(result, [(b"generated-image", "image/png")])
+        self.assertEqual(generate.call_count, 2)
+        self.assertTrue(backend.ai_image_retryable_error("请稍后重试"))
+        self.assertFalse(backend.ai_image_retryable_error("content policy blocked"))
+
     def test_japan_fashion_landing_uses_the_locked_32_page_brand_case_rhythm(self) -> None:
         brief = """
         产品：日本女装高腰直筒牛仔裤

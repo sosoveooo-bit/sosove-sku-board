@@ -6,6 +6,7 @@ import html
 import json
 import mimetypes
 import os
+import uuid
 from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +54,7 @@ from sku_board.backend import (
     list_meta_ad_accounts,
     list_meta_credentials,
     list_shopline_products,
+    log_ai_image_error,
     plan_ai_image_suite,
     plan_ai_image_suite_upload,
     regenerate_selling,
@@ -192,10 +194,18 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             self.handle_auth_upload(lambda fields, files, user: upload_ad_launch_material(fields, files, user), HTTPStatus.CREATED)
             return
         if parsed.path == "/api/sku-board/ad-launch-ai-image":
-            self.handle_auth_mutation(lambda payload, user: generate_ad_launch_ai_image(payload, user), HTTPStatus.CREATED)
+            self.handle_auth_mutation(
+                lambda payload, user: generate_ad_launch_ai_image(payload, user),
+                HTTPStatus.CREATED,
+                ai_image_operation="text-to-image",
+            )
             return
         if parsed.path == "/api/sku-board/ad-launch-ai-image-edit":
-            self.handle_auth_upload(lambda fields, files, user: generate_ad_launch_ai_image_edit(fields, files, user), HTTPStatus.CREATED)
+            self.handle_auth_upload(
+                lambda fields, files, user: generate_ad_launch_ai_image_edit(fields, files, user),
+                HTTPStatus.CREATED,
+                ai_image_operation="reference-image",
+            )
             return
         if parsed.path == "/api/sku-board/ai-image-suite-plan":
             self.handle_auth_mutation(lambda payload, user: plan_ai_image_suite(payload, user))
@@ -412,7 +422,12 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def handle_auth_mutation(self, callback: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def handle_auth_mutation(
+        self,
+        callback: Any,
+        status: HTTPStatus = HTTPStatus.OK,
+        ai_image_operation: str = "",
+    ) -> None:
         user = auth_state(self.session_token()).get("user")
         if not user:
             self.send_json({"ok": False, "error": "请先登录"}, status=HTTPStatus.UNAUTHORIZED)
@@ -421,11 +436,22 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             payload = self.read_json_body()
             self.send_json(callback(payload, user), status=status)
         except ValueError as exc:
-            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            if ai_image_operation:
+                self.send_ai_image_error(exc, user, ai_image_operation, HTTPStatus.BAD_REQUEST)
+            else:
+                self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
-            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            if ai_image_operation:
+                self.send_ai_image_error(exc, user, ai_image_operation, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def handle_auth_upload(self, callback: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def handle_auth_upload(
+        self,
+        callback: Any,
+        status: HTTPStatus = HTTPStatus.OK,
+        ai_image_operation: str = "",
+    ) -> None:
         user = auth_state(self.session_token()).get("user")
         if not user:
             self.send_json({"ok": False, "error": "璇峰厛鐧诲綍"}, status=HTTPStatus.UNAUTHORIZED)
@@ -434,9 +460,50 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             fields, files = self.read_multipart_body()
             self.send_json(callback(fields, files, user), status=status)
         except ValueError as exc:
-            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            if ai_image_operation:
+                self.send_ai_image_error(exc, user, ai_image_operation, HTTPStatus.BAD_REQUEST)
+            else:
+                self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
-            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            if ai_image_operation:
+                self.send_ai_image_error(exc, user, ai_image_operation, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def send_ai_image_error(
+        self,
+        exc: Exception,
+        user: dict[str, Any],
+        operation: str,
+        status: HTTPStatus,
+    ) -> None:
+        """Return traceable, non-empty failures for every logged-in image role."""
+        request_id = f"img-{uuid.uuid4().hex[:10]}"
+        message = str(exc).strip()
+        if not message:
+            message = f"生图请求在 {type(exc).__name__} 阶段意外中断，请使用请求编号联系管理员排查。"
+        context = {
+            "requestId": request_id,
+            "operation": operation,
+            "username": str(user.get("username") or "unknown")[:80],
+            "role": str(user.get("role") or "unknown")[:40],
+            "exceptionType": type(exc).__name__,
+            "message": message[:1200],
+        }
+        try:
+            log_ai_image_error("panel-request-failed", context)
+        except Exception:
+            pass
+        self.send_json(
+            {
+                "ok": False,
+                "error": message,
+                "errorCode": "ai_image_request_failed",
+                "requestId": request_id,
+                "operation": operation,
+            },
+            status=status,
+        )
 
     def handle_login(self) -> None:
         try:

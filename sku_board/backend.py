@@ -4626,6 +4626,49 @@ def ai_image_timeout_error(value: Any) -> bool:
     )
 
 
+def ai_image_retryable_error(value: Any) -> bool:
+    """Return whether a remote image failure is transient and worth rerouting.
+
+    chatgpt2api providers commonly respond with a very short "please retry"
+    message while their internal account scheduler is switching accounts.  That
+    message used to be treated as a final failure in the browser, even though a
+    retry on another node usually succeeds.  Keep the list deliberately scoped
+    to transport / capacity signals so policy and input errors are not retried.
+    """
+    source = nested_error_text(value).lower()
+    return any(
+        marker in source
+        for marker in (
+            "timeout",
+            "timed out",
+            "超时",
+            "瓒呮椂",
+            "please retry",
+            "try again",
+            "retry later",
+            "稍后重试",
+            "稍後重試",
+            "temporarily unavailable",
+            "service unavailable",
+            "server busy",
+            "serverbusy",
+            "too many open files",
+            "connection reset",
+            "connection aborted",
+            "connection refused",
+            "could not resolve host",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "http 524",
+            "http 530",
+            "bad gateway",
+            "gateway timeout",
+        )
+    )
+
+
 def ai_image_generation_result_timed_out(result: Any) -> bool:
     if not isinstance(result, dict):
         return False
@@ -10986,6 +11029,64 @@ def save_ai_image_outputs(images: list[tuple[bytes, str]], prompt: str, model: s
     return materials, preview_urls
 
 
+def generate_ai_image_tasks_with_transient_retry(
+    *,
+    actor: dict[str, Any],
+    prompt: str,
+    model: str,
+    size: str,
+    count: int,
+    quality: str = "auto",
+    reference_images: list[tuple[str, bytes, str]] | None = None,
+    prompts: list[str] | None = None,
+    allow_partial: bool = False,
+    page_indexes: list[int] | None = None,
+    suite_run_id: str = "",
+) -> list[tuple[bytes, str]] | dict[str, Any]:
+    """Use a second scheduler attempt for short-lived provider failures.
+
+    The retry is intentionally server-side for single-image actions, where the
+    browser has no suite worker to reroute the request.  Suite pages keep their
+    partial response and are retried by the page-aware browser scheduler.
+    """
+    max_attempts = clamp(int(number(os.environ.get("CHATGPT2API_IMAGE_TRANSIENT_RETRIES"), 1)), 0, 3) + 1
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return generate_images_via_chatgpt2api_tasks(
+                prompt=prompt,
+                model=model,
+                size=size,
+                count=count,
+                quality=quality,
+                reference_images=reference_images,
+                prompts=prompts,
+                allow_partial=allow_partial,
+                page_indexes=page_indexes,
+                suite_run_id=suite_run_id,
+            )
+        except ImageTaskApiUnavailable:
+            raise
+        except ValueError as exc:
+            last_error = exc
+            if attempt >= max_attempts or not ai_image_retryable_error(exc):
+                raise
+            log_ai_image_error(
+                "transient-retry",
+                {
+                    "attempt": attempt,
+                    "maxAttempts": max_attempts,
+                    "username": limited_text(actor.get("username"), "unknown", 80),
+                    "role": role_of(actor),
+                    "message": limited_text(exc, limit=320),
+                },
+            )
+            time.sleep(min(3.0, 0.75 * attempt))
+    if last_error:
+        raise last_error
+    raise ValueError("生图服务没有返回结果")
+
+
 def generate_ad_launch_ai_image(payload: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
     if not can_use_ai_image(actor):
         raise ValueError("只有管理员、运营、选品或设计可以生成投放图片")
@@ -11002,7 +11103,8 @@ def generate_ad_launch_ai_image(payload: dict[str, Any], actor: dict[str, Any]) 
     use_sync_api = not chatgpt2api_image_tasks_enabled()
     if not use_sync_api:
         try:
-            images = generate_images_via_chatgpt2api_tasks(
+            images = generate_ai_image_tasks_with_transient_retry(
+                actor=actor,
                 prompt=prompt,
                 model=model,
                 size=size,
@@ -11173,7 +11275,8 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
     use_sync_api = mode == "inpaint" or not chatgpt2api_image_tasks_enabled()
     if not use_sync_api:
         try:
-            task_result = generate_images_via_chatgpt2api_tasks(
+            task_result = generate_ai_image_tasks_with_transient_retry(
+                actor=actor,
                 prompt=prompt,
                 model=model,
                 size=size,
