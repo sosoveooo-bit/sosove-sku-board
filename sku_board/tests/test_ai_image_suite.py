@@ -69,6 +69,22 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(all("authKey" not in node for node in public_nodes))
         self.assertEqual([node["rootUrl"] for node in public_nodes], ["https://image-a.example.com", "https://image-b.example.com"])
 
+    def test_chatgpt2api_disabled_node_ids_keeps_unhealthy_node_out_of_scheduler(self) -> None:
+        raw_nodes = json.dumps(
+            [
+                {"id": "primary", "baseUrl": "https://primary.example.com", "authKey": "secret-a"},
+                {"id": "slow-node", "baseUrl": "https://slow.example.com", "authKey": "secret-b"},
+            ]
+        )
+        with patch.dict(
+            os.environ,
+            {"CHATGPT2API_NODES_JSON": raw_nodes, "CHATGPT2API_DISABLED_NODE_IDS": "slow-node"},
+            clear=False,
+        ):
+            nodes = backend.chatgpt2api_service_nodes()
+
+        self.assertEqual([node["id"] for node in nodes], ["primary"])
+
     def test_ai_image_health_aggregates_nodes_and_supports_single_node_query(self) -> None:
         nodes = [
             {"id": "a", "name": "VPS A", "baseUrl": "https://a.example.com/v1", "rootUrl": "https://a.example.com", "authKey": "secret-a"},

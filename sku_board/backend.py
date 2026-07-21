@@ -4386,6 +4386,11 @@ def normalize_chatgpt2api_base_url(value: Any) -> str:
 def chatgpt2api_service_nodes() -> list[dict[str, Any]]:
     """Load multiple chatgpt2api VPS nodes while preserving the legacy single-node env vars."""
     shared_key = text(os.environ.get("CHATGPT2API_AUTH_KEY"), "chatgpt2api").strip()
+    disabled_node_ids = {
+        re.sub(r"[^a-z0-9_-]+", "-", value.strip().lower()).strip("-")
+        for value in re.split(r"[,;\n]+", text(os.environ.get("CHATGPT2API_DISABLED_NODE_IDS")))
+        if value.strip()
+    }
     raw_nodes = text(os.environ.get("CHATGPT2API_NODES_JSON")).strip()
     candidates: list[Any] = []
     if raw_nodes:
@@ -4428,6 +4433,8 @@ def chatgpt2api_service_nodes() -> list[dict[str, Any]]:
         if not base_url or not auth_key or not truthy(raw_node.get("enabled"), True):
             continue
         node_id = re.sub(r"[^a-z0-9_-]+", "-", text(raw_node.get("id") or raw_node.get("name"), f"node-{index + 1}").lower()).strip("-") or f"node-{index + 1}"
+        if node_id in disabled_node_ids:
+            continue
         nodes.append(
             {
                 "id": node_id,
