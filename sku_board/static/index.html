@@ -1,0 +1,1341 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SOSOVE 主推品作战看板</title>
+    <link rel="icon" href="/static/assets/sosove-logo.jpeg" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260721-ai-image-timeout-failover-48" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark">
+            <img src="/static/assets/sosove-logo.jpeg" alt="SOSOVE" />
+          </span>
+          <div>
+            <p class="eyebrow">SOSOVE / SKU Board</p>
+            <h1>主推品作战看板</h1>
+          </div>
+        </div>
+        <nav class="nav-tabs" aria-label="工作区">
+          <button class="nav-tab active" data-view="board" type="button">主推品</button>
+          <button class="nav-tab" data-view="materials" type="button">素材复盘</button>
+          <button class="nav-tab" data-view="feedback" type="button">投放反馈</button>
+          <button class="nav-tab" data-view="tasks" type="button">本周任务</button>
+          <button class="nav-tab" data-view="adLaunches" type="button">素材投放</button>
+          <button class="nav-tab" data-view="adAnalysis" type="button">广告分析</button>
+          <button class="nav-tab" data-view="aiImages" type="button">AI生图</button>
+          <button class="nav-tab" data-view="designTasks" type="button">客户设计任务</button>
+          <button class="nav-tab" data-view="accounts" type="button">账号管理</button>
+          <button class="nav-tab" data-view="metaCredentials" type="button">凭证管理</button>
+        </nav>
+        <div class="top-actions">
+          <div class="auth-strip" id="auth-strip">
+            <button id="login-open-btn" class="ghost-btn auth-login-btn" type="button">登录</button>
+            <span id="auth-user-chip" class="auth-user-chip" hidden></span>
+            <button id="logout-btn" class="ghost-btn auth-logout-btn" type="button" hidden>退出</button>
+          </div>
+          <label class="search-box">
+            <span>搜索</span>
+            <input id="search-input" type="search" placeholder="SKU / 商品 / 卖点 / 负责人" autocomplete="off" />
+          </label>
+          <button id="export-csv-btn" class="ghost-btn" type="button">导出 CSV</button>
+          <button id="import-shopline-btn" class="ghost-btn" type="button">导入 Shopline</button>
+          <select id="facebook-range-select" class="facebook-range-select" aria-label="FB 广告同步范围">
+            <option value="today">今天</option>
+            <option value="yesterday">昨天</option>
+            <option value="last_7d" selected>近 7 天</option>
+            <option value="last_30d">近 30 天</option>
+          </select>
+          <button id="sync-facebook-btn" class="ghost-btn fb-sync-btn" type="button">同步 FB 广告</button>
+          <button id="delete-all-btn" class="ghost-btn danger" type="button">清空商品</button>
+          <button id="add-sku-btn" class="primary-btn" type="button">+ 添加 SKU</button>
+        </div>
+      </header>
+
+      <section id="dashboard-login-required" class="account-empty dashboard-lock">
+        <strong>请先登录</strong>
+        <p>登录后才能查看商品、广告数据、素材复盘、本周任务和 AI 生图信息。</p>
+        <button class="primary-btn" data-open-login-from-dashboard type="button">登录看板</button>
+      </section>
+
+      <section class="summary-grid" aria-label="总览">
+        <article class="summary-card featured">
+          <span>主推 SKU</span>
+          <strong id="summary-main">-</strong>
+          <small id="summary-count">全部 - 款</small>
+        </article>
+        <article class="summary-card">
+          <span>广告花费</span>
+          <strong id="summary-spend">-</strong>
+          <small>跨平台汇总</small>
+        </article>
+        <article class="summary-card">
+          <span>广告盈亏</span>
+          <strong id="summary-profit">-</strong>
+          <small id="summary-roas">ROAS -</small>
+        </article>
+        <article class="summary-card">
+          <span>待办任务</span>
+          <strong id="summary-tasks">-</strong>
+          <small id="summary-materials">素材缺口 -</small>
+        </article>
+        <article class="summary-card">
+          <span>翻新缺口</span>
+          <strong id="summary-refresh">-</strong>
+          <small id="summary-feedback">反馈缺失 -</small>
+        </article>
+      </section>
+
+      <section class="control-band" aria-label="筛选">
+        <div class="filter-group">
+          <label>
+            状态
+            <select id="status-filter">
+              <option value="">全部</option>
+              <option value="main">主推</option>
+              <option value="test">测试</option>
+              <option value="paused">暂停</option>
+              <option value="dropped">下架</option>
+            </select>
+          </label>
+          <label>
+            负责人
+            <select id="owner-filter">
+              <option value="">全部</option>
+            </select>
+          </label>
+          <label>
+            盈亏
+            <select id="profit-filter">
+              <option value="">全部</option>
+              <option value="profit">赚钱</option>
+              <option value="loss">亏损</option>
+              <option value="flat">持平</option>
+              <option value="no_spend">未投放</option>
+            </select>
+          </label>
+          <label>
+            动作
+            <select id="action-filter">
+              <option value="">全部</option>
+              <option value="stop">止损</option>
+              <option value="loss">亏损复盘</option>
+              <option value="creative">换素材角度</option>
+              <option value="landing">查承接页</option>
+              <option value="scale">放量</option>
+              <option value="material">补素材</option>
+              <option value="refresh">翻新</option>
+              <option value="feedback">补反馈</option>
+            </select>
+          </label>
+        </div>
+        <div class="filter-actions">
+          <button class="ghost-btn" data-action-filter="scale" type="button">看放量</button>
+          <button class="ghost-btn danger" data-action-filter="stop" type="button">看止损</button>
+          <button class="ghost-btn warn" data-action-filter="material" type="button">看缺素材</button>
+          <button id="clear-filter-btn" class="ghost-btn" type="button">清空</button>
+        </div>
+      </section>
+
+      <section class="insight-panel" aria-label="智能建议">
+        <div class="insight-head">
+          <div>
+            <span class="panel-kicker">智能建议 · CEO 视角</span>
+            <p id="insight-headline">正在读取看板数据...</p>
+          </div>
+          <button id="refresh-board-btn" class="mini-btn" type="button">刷新</button>
+        </div>
+        <div id="insight-grid" class="insight-grid"></div>
+      </section>
+
+      <section class="board-panel" aria-label="SKU 作战表">
+        <div class="board-head">
+          <div>
+            <h2>主推 <span id="filtered-count">-</span> 款</h2>
+            <p id="source-line">本地数据</p>
+          </div>
+          <div class="legend">
+            <span><i class="dot good"></i> 放量</span>
+            <span><i class="dot warn"></i> 补素材</span>
+            <span><i class="dot danger"></i> 止损</span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="sku-table">
+            <thead>
+              <tr>
+                <th>状态</th>
+                <th>商品（含★红）</th>
+                <th>主卖点</th>
+                <th>设计 + ★</th>
+                <th>投放</th>
+                <th>本周任务</th>
+                <th>备注</th>
+                <th>广告盈亏</th>
+                <th>投放反馈</th>
+                <th>翻新</th>
+              </tr>
+            </thead>
+            <tbody id="sku-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="materials-panel" class="workspace-panel" data-panel="materials" aria-label="素材复盘" hidden>
+        <div class="workspace-head">
+          <div>
+            <span class="panel-kicker">Creative Review</span>
+            <h2>素材复盘</h2>
+            <p>按 SKU 检查图片、剪辑、翻新缺口和设计备注。</p>
+          </div>
+          <button class="mini-btn" data-jump-action="material" type="button">只看缺素材</button>
+        </div>
+        <div id="material-kpis" class="workspace-kpis"></div>
+        <div id="material-review-list" class="review-grid"></div>
+      </section>
+
+      <section id="feedback-panel" class="workspace-panel" data-panel="feedback" aria-label="投放反馈" hidden>
+        <div class="workspace-head">
+          <div>
+            <span class="panel-kicker">Launch Feedback</span>
+            <h2>投放反馈</h2>
+            <p>集中看投手反馈、缺反馈 SKU、亏损止损和放量线索。</p>
+          </div>
+          <button class="mini-btn" data-jump-action="feedback" type="button">只看缺反馈</button>
+        </div>
+        <div id="feedback-kpis" class="workspace-kpis"></div>
+        <div class="feedback-layout">
+          <section>
+            <h3>最新反馈</h3>
+            <div id="feedback-stream" class="stack-list"></div>
+          </section>
+          <section>
+            <h3>待补反馈 / 重点复盘</h3>
+            <div id="feedback-watch-list" class="stack-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="tasks-panel" class="workspace-panel" data-panel="tasks" aria-label="本周任务" hidden>
+        <div class="workspace-head">
+          <div>
+            <span class="panel-kicker">Weekly Command</span>
+            <h2>本周任务</h2>
+            <p>把每个 SKU 的设计、剪辑、复盘、脚本任务汇总成可点击进度。</p>
+          </div>
+          <div class="workspace-actions">
+            <button class="mini-btn" id="task-auto-fill-btn" type="button">一键补建议</button>
+            <button class="mini-btn" data-jump-action="refresh" type="button">只看需翻新</button>
+          </div>
+        </div>
+        <div id="task-kpis" class="workspace-kpis"></div>
+        <div class="task-board">
+          <section class="task-column">
+            <h3>系统建议</h3>
+            <div id="task-suggestion-list" class="stack-list"></div>
+          </section>
+          <section class="task-column">
+            <h3>未完成</h3>
+            <div id="task-open-list" class="stack-list"></div>
+          </section>
+          <section class="task-column">
+            <h3>已完成</h3>
+            <div id="task-done-list" class="stack-list"></div>
+          </section>
+          <section class="task-column">
+            <h3>本周优先</h3>
+            <div id="task-priority-list" class="stack-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="ad-launches-panel" class="workspace-panel ad-launch-panel" data-panel="adLaunches" aria-label="素材投放" hidden>
+        <div class="workspace-head">
+          <div>
+            <span class="panel-kicker">Creative Launch</span>
+            <h2>素材投放</h2>
+            <p>把剪辑好的视频或图片上传到 Meta，生成暂停广告，确认后再上线投放。</p>
+          </div>
+          <button class="mini-btn" id="ad-launch-refresh-btn" type="button">刷新投放数据</button>
+        </div>
+        <div id="ad-launch-login-required" class="account-empty" hidden>
+          <strong>请先登录</strong>
+          <p>登录后管理员、运营、选品可以创建 Meta 投放草稿、上传素材并创建暂停广告。</p>
+          <button class="primary-btn" data-open-login-from-ad-launch type="button">登录</button>
+        </div>
+        <div id="ad-launch-workspace" class="ad-launch-layout">
+          <form id="ad-launch-form" class="ad-launch-builder" autocomplete="off" novalidate>
+            <aside class="ad-launch-stepper" aria-label="素材投放步骤">
+              <button class="ad-launch-step active" data-ad-launch-step-jump="0" type="button">
+                <span>1</span>
+                <strong>广告系列</strong>
+                <small>商品、广告户、预算</small>
+              </button>
+              <button class="ad-launch-step" data-ad-launch-step-jump="1" type="button">
+                <span>2</span>
+                <strong>选择受众</strong>
+                <small>地区、语言、年龄</small>
+              </button>
+              <button class="ad-launch-step" data-ad-launch-step-jump="2" type="button">
+                <span>3</span>
+                <strong>创意与投放位</strong>
+                <small>素材、文案、版位</small>
+              </button>
+              <button class="ad-launch-step" data-ad-launch-step-jump="3" type="button">
+                <span>4</span>
+                <strong>跟踪与批量创建</strong>
+                <small>像素、备注、草稿</small>
+              </button>
+            </aside>
+
+            <div class="ad-launch-composer">
+              <div class="ad-launch-step-panel" data-ad-launch-step-panel="0">
+                <span class="panel-kicker">Step 01</span>
+                <h3>先确定商品、系列和广告组</h3>
+                <p class="account-help">默认会新建 Meta 系列和广告组，创建出来都是暂停状态。</p>
+                <div class="form-two">
+                  <label>关联商品
+                    <select id="ad-launch-product"></select>
+                  </label>
+                  <label>选择广告户（必选）
+                    <select id="ad-launch-account"></select>
+                  </label>
+                </div>
+                <div id="ad-launch-account-info" class="ad-launch-account-info">正在读取凭证中心的广告户…</div>
+                <div class="form-two">
+                  <label>系列方式
+                    <select id="ad-launch-campaign-mode">
+                      <option value="create" selected>新建系列</option>
+                      <option value="select">选择已有系列</option>
+                    </select>
+                  </label>
+                  <label>系列目标
+                    <select id="ad-launch-objective"></select>
+                  </label>
+                </div>
+                <div id="ad-launch-campaign-create" class="ad-launch-mode-box">
+                  <label>新系列名称
+                    <input id="ad-launch-campaign-name" placeholder="SKU-国家-素材角度-日期" />
+                  </label>
+                </div>
+                <label id="ad-launch-campaign-select-wrap" hidden>选择已有系列
+                  <select id="ad-launch-campaign"></select>
+                </label>
+                <div class="form-two">
+                  <label>广告组方式
+                    <select id="ad-launch-adset-mode">
+                      <option value="create" selected>新建广告组</option>
+                      <option value="select">选择已有广告组</option>
+                    </select>
+                  </label>
+                  <label>日预算
+                    <input id="ad-launch-daily-budget" type="number" min="1" step="0.01" value="10" />
+                  </label>
+                </div>
+                <div id="ad-launch-adset-create" class="ad-launch-mode-box">
+                  <div class="form-two">
+                    <label>新广告组名称
+                      <input id="ad-launch-adset-name" placeholder="JP-宽泛-日预算10" />
+                    </label>
+                    <label>优化目标
+                      <select id="ad-launch-optimization"></select>
+                    </label>
+                  </div>
+                </div>
+                <label id="ad-launch-adset-select-wrap" hidden>选择已有广告组
+                  <select id="ad-launch-adset"></select>
+                </label>
+              </div>
+
+              <div class="ad-launch-step-panel" data-ad-launch-step-panel="1" hidden>
+                <span class="panel-kicker">Step 02</span>
+                <h3>选择受众</h3>
+                <p class="account-help">国家、年龄、性别会进入 Meta 定向；省市和兴趣先作为投放备注保存，后续可接 Meta 搜索 ID。</p>
+                <label>地区
+                  <input id="ad-launch-countries" value="JP" placeholder="JP 或 US,CA" />
+                </label>
+                <div class="form-two">
+                  <label>省份 / 州
+                    <input id="ad-launch-regions" placeholder="Tokyo, Osaka 或留空" />
+                  </label>
+                  <label>城市
+                    <input id="ad-launch-cities" placeholder="Shibuya, Kyoto 或留空" />
+                  </label>
+                </div>
+                <label>语言
+                  <input id="ad-launch-languages" placeholder="Japanese, English 或留空" />
+                </label>
+                <div class="ad-launch-choice-row">
+                  <span>性别</span>
+                  <label><input name="ad-launch-gender" type="radio" value="all" checked /> 全部</label>
+                  <label><input name="ad-launch-gender" type="radio" value="male" /> 男</label>
+                  <label><input name="ad-launch-gender" type="radio" value="female" /> 女</label>
+                </div>
+                <div class="form-two">
+                  <label>最小年龄
+                    <input id="ad-launch-age-min" type="number" min="13" max="65" value="18" />
+                  </label>
+                  <label>最大年龄
+                    <input id="ad-launch-age-max" type="number" min="13" max="65" value="65" />
+                  </label>
+                </div>
+                <label class="ad-launch-checkline">
+                  <input id="ad-launch-advanced-audience" type="checkbox" checked />
+                  <span>使用进阶赋能型受众作为宽泛测试起点</span>
+                </label>
+                <div class="ad-launch-mode-box">
+                  <label>包含兴趣 / 人群
+                    <input id="ad-launch-interest-include" placeholder="one piece dress, summer outfit, fashion shoppers" />
+                  </label>
+                  <label>排除人群
+                    <input id="ad-launch-interest-exclude" placeholder="已购买、员工、历史无效人群" />
+                  </label>
+                  <label>间推 / 参考商品
+                    <input id="ad-launch-audience-seed" placeholder="输入商品 ID 或相近爆品关键词" />
+                  </label>
+                </div>
+              </div>
+
+              <div class="ad-launch-step-panel" data-ad-launch-step-panel="2" hidden>
+                <span class="panel-kicker">Step 03</span>
+                <div class="ad-launch-creative-head">
+                  <div>
+                    <h3>上传素材并设置创意</h3>
+                    <p class="account-help">先选择素材形式，再上传剪辑好的图片或视频，右侧会同步生成广告预览。</p>
+                  </div>
+                  <label class="ad-launch-checkline">
+                    <input id="ad-launch-multi-material" type="checkbox" />
+                    <span>多素材广告</span>
+                  </label>
+                  </div>
+                  <div class="ad-launch-identity-row">
+                    <label>选择主页
+                      <select id="ad-launch-page-id">
+                        <option value="">请先选择广告户</option>
+                      </select>
+                    </label>
+                    <label>Instagram 账号
+                      <select id="ad-launch-ig-id">
+                        <option value="">可选：不绑定 Instagram</option>
+                      </select>
+                    </label>
+                  </div>
+                <div class="ad-launch-order-row">
+                  <span>广告样式</span>
+                  <label><input name="ad-launch-creative-order" type="radio" value="left_to_right" checked /> 从左往右</label>
+                  <label><input name="ad-launch-creative-order" type="radio" value="right_to_left" /> 从右往左</label>
+                </div>
+
+                <div class="ad-launch-creative-grid">
+                  <section class="ad-launch-upload-board">
+                    <div class="ad-launch-material-tabs" role="tablist" aria-label="素材类型">
+                      <button class="active" data-ad-launch-material-tab="single_image" type="button">单图</button>
+                      <button data-ad-launch-material-tab="carousel" type="button">轮播图</button>
+                      <button data-ad-launch-material-tab="video" type="button">视频</button>
+                      <button data-ad-launch-material-tab="post" type="button">现有帖子</button>
+                      <button data-ad-launch-material-tab="dynamic" type="button">动态广告</button>
+                    </div>
+                    <div class="ad-launch-upload-stage">
+                      <input id="ad-launch-file" type="file" accept="image/*" hidden />
+                      <div id="ad-launch-material-preview" class="ad-launch-material-preview">还没有上传素材</div>
+                      <div class="ad-launch-upload-actions">
+                        <button class="ghost-btn" id="ad-launch-library-btn" type="button">从素材库选择</button>
+                        <button class="primary-btn" id="ad-launch-upload-btn" type="button">点击上传</button>
+                      </div>
+                      <div id="ad-launch-material-guidance" class="ad-launch-material-guidance"></div>
+                      <div class="ad-launch-ai-card">
+                        <div class="ad-launch-ai-head">
+                          <div>
+                            <strong>AI 生成图片素材</strong>
+                            <span id="ad-launch-ai-status">连接 chatgpt2api</span>
+                          </div>
+                          <button class="primary-btn" id="ad-launch-ai-generate-btn" type="button">生成图片</button>
+                        </div>
+                        <textarea id="ad-launch-ai-prompt" placeholder="例如：Japanese ecommerce fashion ad image, denim wide pants, clean studio light, premium fabric texture, model wearing, no text"></textarea>
+                        <div class="form-two">
+                          <label>模型
+                            <select id="ad-launch-ai-model">
+                              <option value="gpt-image-2">gpt-image-2</option>
+                              <option value="codex-gpt-image-2">codex-gpt-image-2</option>
+                            </select>
+                          </label>
+                          <label>尺寸
+                            <select id="ad-launch-ai-size">
+                              <option value="1024x1024">1:1 · 1024</option>
+                              <option value="1024x1536">2:3 · 1024x1536</option>
+                              <option value="1536x1024">3:2 · 1536x1024</option>
+                            </select>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                    <p id="ad-launch-material-warning" class="ad-launch-material-warning">请先上传素材并填写文案。</p>
+                    <label class="ad-launch-checkline">
+                      <input id="ad-launch-advantage-creative" type="checkbox" checked />
+                      <span>开启进阶赋能型素材</span>
+                    </label>
+                  </section>
+
+                  <section class="ad-launch-copy-board">
+                    <label>广告名称
+                      <input id="ad-launch-name" placeholder="SKU-素材名-日期（发布前填写）" />
+                    </label>
+                    <label>广告标题
+                      <input id="ad-launch-headline" placeholder="主卖点标题（发布前填写）" />
+                    </label>
+                    <label>正文文案
+                      <textarea id="ad-launch-primary-text" placeholder="投放正文：痛点 + 卖点 + 行动引导（发布前填写）"></textarea>
+                    </label>
+                    <div class="form-two">
+                      <label>行动号召
+                        <select id="ad-launch-cta"></select>
+                      </label>
+                      <label>推广网址
+                        <input id="ad-launch-link-url" placeholder="https://sosove.com/products/...（发布前填写）" />
+                      </label>
+                    </div>
+                    <div class="ad-launch-choice-row">
+                      <span>版位</span>
+                      <label><input name="ad-launch-placement-mode" type="radio" value="advantage" checked /> 自动版位</label>
+                      <label><input name="ad-launch-placement-mode" type="radio" value="manual" /> 选择版位</label>
+                    </div>
+                    <div id="ad-launch-placement-list" class="ad-launch-placement-grid">
+                      <label><input data-ad-launch-placement="facebook_feed" type="checkbox" checked /> Facebook Feed</label>
+                      <label><input data-ad-launch-placement="instagram_feed" type="checkbox" checked /> Instagram Feed</label>
+                      <label><input data-ad-launch-placement="instagram_reels" type="checkbox" checked /> Instagram Reels</label>
+                      <label><input data-ad-launch-placement="stories" type="checkbox" checked /> Stories</label>
+                      <label><input data-ad-launch-placement="audience_network" type="checkbox" /> Audience Network</label>
+                    </div>
+                  </section>
+
+                </div>
+              </div>
+
+              <div class="ad-launch-step-panel" data-ad-launch-step-panel="3" hidden>
+                <span class="panel-kicker">Step 04</span>
+                <h3>跟踪、备注和创建方式</h3>
+                <div class="form-two">
+                  <label>Pixel ID
+                    <input id="ad-launch-pixel-id" placeholder="可选：Meta Pixel ID" />
+                  </label>
+                  <label>转化事件
+                    <select id="ad-launch-conversion-event">
+                      <option value="PURCHASE" selected>Purchase</option>
+                      <option value="ADD_TO_CART">AddToCart</option>
+                      <option value="VIEW_CONTENT">ViewContent</option>
+                      <option value="LEAD">Lead</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="form-two">
+                  <label>创建条数
+                    <input id="ad-launch-batch-count" type="number" min="1" max="20" value="1" />
+                  </label>
+                  <label>命名规则
+                    <input id="ad-launch-naming-rule" placeholder="{sku}-{country}-{date}-{material}" />
+                  </label>
+                </div>
+                <label>备注
+                  <textarea id="ad-launch-note" placeholder="素材角度、设计版本、测试目的、投放注意事项"></textarea>
+                </label>
+                <div class="ad-launch-safety-box">
+                  <strong>创建安全线</strong>
+                  <p>保存草稿不会调用 Meta。点击记录里的“创建暂停广告”才会上传素材、创建系列、广告组、创意和广告，并且默认全部暂停。</p>
+                </div>
+              </div>
+
+              <div class="ad-launch-form-footer">
+                <button class="ghost-btn" id="ad-launch-prev-btn" type="button">上一步</button>
+                <button class="primary-btn" id="ad-launch-next-btn" type="button">下一步</button>
+                <button class="primary-btn" id="ad-launch-save-btn" type="submit" hidden>保存投放草稿</button>
+              </div>
+            </div>
+
+            <aside class="ad-launch-summary-rail">
+              <div class="ad-launch-summary-card ad-launch-ad-preview">
+                <div class="ad-preview-toolbar">
+                  <strong>广告预览</strong>
+                  <select id="ad-launch-preview-type">
+                    <option value="feed" selected>Facebook 动态消息</option>
+                    <option value="story">Instagram Stories</option>
+                    <option value="reels">Instagram Reels</option>
+                  </select>
+                </div>
+                <div id="ad-launch-preview-card" class="ad-preview-card"></div>
+              </div>
+              <div class="ad-launch-summary-card">
+                <span class="panel-kicker">Launch Overview</span>
+                <h3>投放概览</h3>
+                <div id="ad-launch-live-summary" class="ad-launch-live-summary"></div>
+              </div>
+              <div class="ad-launch-summary-card">
+                <span class="panel-kicker">Audience</span>
+                <h3>受众概览</h3>
+                <div class="ad-launch-gauge">
+                  <div id="ad-launch-estimate-needle"></div>
+                </div>
+                <strong id="ad-launch-estimated-size">-</strong>
+                <p id="ad-launch-estimated-copy">根据地区、年龄、性别和版位做本地预估。</p>
+                <div id="ad-launch-audience-summary" class="ad-launch-live-summary"></div>
+              </div>
+            </aside>
+          </form>
+
+          <div class="ad-launch-main">
+            <div id="ad-launch-kpis" class="workspace-kpis"></div>
+            <div class="design-task-toolbar ad-launch-toolbar">
+              <label>时间范围
+                <select id="ad-launch-range">
+                  <option value="today">今天</option>
+                  <option value="yesterday">昨天</option>
+                  <option value="last_7d" selected>近 7 天</option>
+                  <option value="last_30d">近 30 天</option>
+                </select>
+              </label>
+              <label class="search-box">
+                <span>搜索</span>
+                <input id="ad-launch-search" type="search" placeholder="商品 / 广告户 / 素材 / Meta ID" autocomplete="off" />
+              </label>
+            </div>
+            <div id="ad-launch-list" class="ad-launch-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="ad-analysis-panel" class="workspace-panel ad-analysis-panel" data-panel="adAnalysis" aria-label="广告分析" hidden>
+        <div class="workspace-head ad-analysis-head">
+          <div>
+            <span class="panel-kicker">Meta Ads Intelligence</span>
+            <h2>广告分析</h2>
+            <p>直接读取凭证中心绑定的 Meta 广告户，自动判断放量、止损、保留小跑、补素材和异常广告。</p>
+          </div>
+          <div class="workspace-actions">
+            <label class="ad-analysis-switch">
+              <input id="meta-analysis-use-purchase" type="checkbox" checked />
+              <span>使用 Meta Purchase 事件</span>
+            </label>
+            <button class="mini-btn" id="meta-analysis-refresh-btn" type="button">刷新并分析</button>
+          </div>
+        </div>
+        <div class="ad-analysis-controls">
+          <label>Business Center / BC
+            <select id="meta-analysis-business-filter">
+              <option value="">全部 BC</option>
+            </select>
+          </label>
+          <label>广告户
+            <select id="meta-analysis-account-filter">
+              <option value="">全部广告户</option>
+            </select>
+          </label>
+          <label>时间范围
+            <select id="meta-analysis-range">
+              <option value="today">今天</option>
+              <option value="yesterday">昨天</option>
+              <option value="last_7d" selected>近 7 天</option>
+              <option value="last_30d">近 30 天</option>
+            </select>
+          </label>
+          <label>目标 CPA
+            <input id="meta-analysis-target-cpa" type="number" min="0" step="0.01" placeholder="可选" />
+          </label>
+          <label>无单止损花费
+            <input id="meta-analysis-stop-spend" type="number" min="0.01" step="0.01" value="5" />
+          </label>
+          <label>无单止损点击
+            <input id="meta-analysis-stop-clicks" type="number" min="1" step="1" value="30" />
+          </label>
+          <label class="ad-analysis-search">搜索广告
+            <input id="meta-analysis-search" type="search" placeholder="广告户 / 系列 / 商品 / 广告 ID" autocomplete="off" />
+          </label>
+          <label>建议动作
+            <select id="meta-analysis-action-filter">
+              <option value="">全部动作</option>
+              <option value="__stop__">建议止损</option>
+              <option value="scale_observe">放量观察</option>
+              <option value="keep_small_run">保留小跑</option>
+              <option value="__material__">补素材</option>
+              <option value="copy_variant">复制变体</option>
+              <option value="immediate_close">立即关闭</option>
+              <option value="pause_observe">暂停观察</option>
+              <option value="__anomaly__">异常广告</option>
+              <option value="watch">继续观察</option>
+            </select>
+          </label>
+        </div>
+        <div id="meta-analysis-status" class="ad-analysis-status">进入本页后会自动读取 Meta 广告数据。</div>
+        <div id="meta-analysis-kpis" class="ad-analysis-kpis"></div>
+        <div class="ad-analysis-grid">
+          <section class="ad-analysis-card ad-analysis-command-card">
+            <div class="ad-analysis-card-head">
+              <div>
+                <span class="panel-kicker">Decision Desk</span>
+                <h3>今日动作结论</h3>
+              </div>
+              <span id="meta-analysis-row-count" class="metric-pill">0 条广告</span>
+            </div>
+            <div id="meta-analysis-conclusions" class="ad-analysis-conclusions"></div>
+          </section>
+          <section class="ad-analysis-card">
+            <div class="ad-analysis-card-head">
+              <div>
+                <span class="panel-kicker">Account Split</span>
+                <h3>广告户表现</h3>
+              </div>
+            </div>
+            <div id="meta-analysis-accounts" class="ad-analysis-account-list"></div>
+          </section>
+        </div>
+        <section class="ad-analysis-card ad-analysis-table-card">
+          <div class="ad-analysis-card-head">
+            <div>
+              <span class="panel-kicker">Action Table</span>
+              <h3>广告动作表</h3>
+              <p>按花费排序，直接查看建议动作、原因、明日预算和止损线。</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="ad-analysis-table">
+              <thead>
+                <tr>
+                  <th>广告户</th>
+                  <th>广告 / 商品</th>
+                  <th>花费</th>
+                  <th>曝光 / 点击</th>
+                  <th>CTR / CPC</th>
+                  <th>购买 / ROAS</th>
+                  <th>建议动作</th>
+                  <th>判断原因</th>
+                  <th>明日预算 / 止损线</th>
+                </tr>
+              </thead>
+              <tbody id="meta-analysis-table-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="ai-images-panel" class="workspace-panel ai-image-panel" data-panel="aiImages" aria-label="AI生图" hidden>
+        <div class="workspace-head">
+          <div>
+            <span class="panel-kicker">AI Creative</span>
+            <h2>AI生图</h2>
+          </div>
+          <div class="workspace-actions">
+            <button class="mini-btn" id="ai-image-recover-btn" type="button">恢复远端套图</button>
+            <button class="mini-btn" id="ai-image-refresh-btn" type="button">刷新配置</button>
+          </div>
+        </div>
+        <div id="ai-image-login-required" class="account-empty" hidden>
+          <strong>请先登录</strong>
+          <p>登录后管理员、运营、选品、设计可以按商品生成投放图片素材。</p>
+          <button class="primary-btn" data-open-login-from-ai-image type="button">登录</button>
+        </div>
+        <div id="ai-image-workspace" class="ai-image-shell">
+          <aside class="ai-image-sidebar" aria-label="AI生图任务">
+            <button class="ai-image-new-btn" id="ai-image-new-btn" type="button">＋ 新建对话</button>
+            <div id="ai-image-task-list" class="ai-image-task-list"></div>
+            <button class="mini-btn" id="ai-image-clear-btn" type="button">清空记录</button>
+          </aside>
+
+          <section class="ai-image-board" aria-label="AI生图工作台">
+            <div class="ai-image-board-head">
+              <div>
+                <span class="panel-kicker">Generation Stream</span>
+                <h3 id="ai-image-active-title">AI 生图任务</h3>
+              </div>
+              <div class="ai-image-board-tools">
+                <div class="ai-image-status" id="ai-image-status">连接 chatgpt2api</div>
+                <div class="ai-image-health-card unknown" id="ai-image-health-card">
+                  <div>
+                    <strong id="ai-image-health-label">未检测</strong>
+                    <span id="ai-image-health-message">点击检测服务，确认生图接口是否可用。</span>
+                    <small id="ai-image-health-meta">不会触发生图扣费</small>
+                  </div>
+                  <button class="mini-btn" id="ai-image-health-btn" type="button">检测服务</button>
+                </div>
+                <div class="ai-image-node-list" id="ai-image-node-list" aria-live="polite"></div>
+              </div>
+            </div>
+
+            <div id="ai-image-results" class="ai-image-results"></div>
+
+            <form id="ai-image-form" class="ai-image-dock" autocomplete="off">
+              <div class="ai-image-skill-bar">
+                <div class="ai-image-skill-identity">
+                  <span>Active Skill</span>
+                  <strong id="ai-image-skill-name">GPT-Image2 SOSOVE</strong>
+                  <small id="ai-image-skill-meta">正在读取配置</small>
+                </div>
+                <div class="ai-image-lock-control">
+                  <span>商品一致性</span>
+                  <div id="ai-image-lock-strip" class="ai-image-lock-strip" aria-label="商品一致性强度"></div>
+                </div>
+              </div>
+              <div id="ai-image-mode-strip" class="ai-image-mode-strip" aria-label="生图模式"></div>
+              <div id="ai-image-director-mode-strip" class="ai-image-director-mode-strip" aria-label="套图导演流程" hidden></div>
+              <div id="ai-image-generation-profile-strip" class="ai-image-generation-profile-strip" aria-label="生成策略" hidden></div>
+              <div class="ai-image-dock-toolbar">
+                <input id="ai-image-reference-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+                <input id="ai-image-model-reference-file" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                <input id="ai-image-style-set-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+                <input id="ai-image-mask-file" type="file" accept="image/png" hidden />
+                <button class="ghost-btn" id="ai-image-upload-btn" type="button">上传图片</button>
+                <button class="ghost-btn" id="ai-image-model-upload-btn" type="button" title="上传需要换装的模特原图" hidden>上传模特图片</button>
+                <button class="ghost-btn ai-image-style-set-btn" id="ai-image-style-set-upload-btn" type="button" title="上传其他产品的页面图，只参考整套视觉风格" hidden>上传系列风格</button>
+                <button class="ghost-btn" id="ai-image-mask-btn" type="button" hidden>上传蒙版</button>
+                <button class="ghost-btn" id="ai-image-product-prompt-btn" type="button">更新专业提示词</button>
+                <label class="ai-image-product-control">商品
+                  <select id="ai-image-product"></select>
+                </label>
+                <label class="ai-image-product-control" id="ai-image-country-control" hidden>目标国家
+                  <select id="ai-image-country"></select>
+                </label>
+                <label class="ai-image-product-control" id="ai-image-cod-hook-type-control" hidden>噱头类型
+                  <select id="ai-image-cod-hook-type"></select>
+                </label>
+                <button class="ghost-btn" id="ai-image-settings-btn" type="button" aria-expanded="false">图像设置</button>
+                <span class="ai-image-dock-summary" id="ai-image-dock-summary">自动 · 1:1 · 1张</span>
+              </div>
+
+              <div id="ai-image-settings-panel" class="ai-image-settings-panel" hidden>
+                <div class="ai-image-settings-row">
+                  <label>模型
+                    <select id="ai-image-model"></select>
+                  </label>
+                  <label>质量
+                    <select id="ai-image-quality">
+                      <option value="auto">自动</option>
+                      <option value="low">低</option>
+                      <option value="medium">中</option>
+                      <option value="high">高</option>
+                    </select>
+                  </label>
+                </div>
+                <section class="ai-director-settings" id="ai-director-settings" hidden>
+                  <div class="ai-director-settings-head">
+                    <div>
+                      <span>AI DIRECTOR</span>
+                      <strong>导演模型</strong>
+                    </div>
+                    <span class="ai-director-config-state" id="ai-director-config-state">未配置</span>
+                  </div>
+                  <div class="ai-director-settings-grid">
+                    <label class="wide">API 地址
+                      <input id="ai-director-base-url" type="url" placeholder="https://example.com/v1" spellcheck="false" />
+                    </label>
+                    <label>模型
+                      <input id="ai-director-model" list="ai-director-model-options" placeholder="gpt-5.6-terra" spellcheck="false" />
+                      <datalist id="ai-director-model-options">
+                        <option value="gpt-5.6-terra"></option>
+                        <option value="gpt-5.6-sol"></option>
+                      </datalist>
+                    </label>
+                    <label class="ai-director-fallback-field">自动备援
+                      <output id="ai-director-fallback-note">主模型异常后自动切换备用模型</output>
+                    </label>
+                    <label>超时（秒）
+                      <input id="ai-director-timeout" type="number" min="5" max="180" step="5" value="60" />
+                    </label>
+                    <label>质检通过分
+                      <input id="ai-director-review-threshold" type="number" min="50" max="95" step="1" value="78" />
+                    </label>
+                    <label class="wide">API 密钥
+                      <input id="ai-director-api-key" type="password" placeholder="留空则保持已保存密钥" autocomplete="new-password" spellcheck="false" />
+                    </label>
+                  </div>
+                  <div class="ai-director-settings-switches">
+                    <label><input id="ai-director-enabled" type="checkbox" />启用导演模型</label>
+                    <label><input id="ai-director-vision" type="checkbox" />发送产品图分析</label>
+                    <label><input id="ai-director-review-enabled" type="checkbox" />成图 AI 质检与一次补图</label>
+                  </div>
+                  <div class="ai-director-settings-actions">
+                    <button class="ghost-btn" id="ai-director-test-btn" type="button">测试连接</button>
+                    <button class="primary-btn" id="ai-director-save-btn" type="button">保存配置</button>
+                  </div>
+                  <small id="ai-director-settings-message">密钥仅保存在服务端，不会返回页面。</small>
+                </section>
+                <input id="ai-image-size" type="hidden" value="1024x1024" />
+                <div>
+                  <div class="ai-image-setting-title">宽高比</div>
+                  <div id="ai-image-size-presets" class="ai-image-size-presets"></div>
+                </div>
+                <div>
+                  <div class="ai-image-setting-title">生成数量</div>
+                  <div id="ai-image-count-presets" class="ai-image-count-presets"></div>
+                </div>
+              </div>
+
+              <div id="ai-image-reference-strip" class="ai-image-reference-strip" hidden></div>
+              <div id="ai-image-template-strip" class="ai-image-template-strip"></div>
+              <div id="ai-image-preflight" class="ai-image-preflight" aria-live="polite"></div>
+
+              <label class="ai-image-prompt-wrap ai-image-intent-wrap" aria-label="创作需求">
+                <span>创作需求</span>
+                <textarea id="ai-image-intent" placeholder="例如：东京街头秋季穿搭，突出显腿长，背景不要白色"></textarea>
+                <button class="primary-btn ai-image-submit-btn" id="ai-image-generate-btn" type="submit" aria-label="生成图片">生成</button>
+              </label>
+              <details id="ai-image-prompt-details" class="ai-image-prompt-details">
+                <summary>
+                  <span>专业提示词</span>
+                  <small id="ai-image-prompt-meta">等待生成</small>
+                </summary>
+                <label class="ai-image-advanced-prompt" aria-label="专业图片提示词">
+                  <textarea id="ai-image-prompt" placeholder="选择商品、模式或模板后自动生成，也可以手动修改"></textarea>
+                </label>
+              </details>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section id="design-tasks-panel" class="workspace-panel design-task-panel" data-panel="designTasks" aria-label="客户设计任务" hidden>
+        <div class="workspace-head">
+          <div>
+            <span class="panel-kicker">Customer Design Order</span>
+            <h2>客户设计任务</h2>
+            <p>选品给设计下单，设计接单后更新进度、成片链接和交付备注。</p>
+          </div>
+          <button class="mini-btn" id="design-task-refresh-btn" type="button">刷新任务</button>
+        </div>
+        <div id="design-task-login-required" class="account-empty" hidden>
+          <strong>请先登录</strong>
+          <p>登录后可以查看客户设计任务；选品和管理员可以给设计下单。</p>
+          <button class="primary-btn" data-open-login-from-design-task type="button">登录</button>
+        </div>
+        <div id="design-task-workspace" class="design-task-layout">
+          <form id="design-task-form" class="account-card design-task-form" autocomplete="off">
+            <span class="panel-kicker">Assign</span>
+            <h3>下发设计任务</h3>
+            <label>客户账号 / 客户名
+              <div class="split-input">
+                <select id="design-task-customer"></select>
+                <input id="design-task-customer-name" placeholder="手动填写客户名" />
+              </div>
+            </label>
+            <label>关联商品
+              <select id="design-task-product"></select>
+            </label>
+            <label>设计人员
+              <select id="design-task-assignee" required></select>
+            </label>
+            <div class="form-two">
+              <label>下单模板
+                <select id="design-task-template"></select>
+              </label>
+              <label>优先级
+                <select id="design-task-priority"></select>
+              </label>
+            </div>
+            <label>任务标题
+              <input id="design-task-title" placeholder="例如：牛仔裤 15 秒日本广告素材" required />
+            </label>
+            <div class="form-two">
+              <label>素材范围
+                <select id="design-task-scope"></select>
+              </label>
+              <label>交付计入
+                <select id="design-task-delivery"></select>
+              </label>
+            </div>
+            <div class="form-two">
+              <label>截止日期
+                <input id="design-task-due-date" type="date" />
+              </label>
+            </div>
+            <label>设计要求
+              <textarea id="design-task-requirements" placeholder="成片时长、画面方向、主卖点、需要突出哪些细节、是否套用素材库等" required></textarea>
+            </label>
+            <label>脚本文案
+              <textarea id="design-task-script" placeholder="可填写日语口播文案、字幕方向、镜头顺序，后续生成剪片段文案会按这里适配"></textarea>
+            </label>
+            <button class="primary-btn" type="submit">下发给设计</button>
+            <p class="account-help">只有管理员和选品账号可以下单。</p>
+          </form>
+          <div class="design-task-main">
+            <div id="design-task-kpis" class="workspace-kpis"></div>
+            <div class="design-task-toolbar">
+              <label>状态
+                <select id="design-task-status-filter">
+                  <option value="">全部任务</option>
+                </select>
+              </label>
+              <label>设计
+                <select id="design-task-owner-filter">
+                  <option value="">全部设计</option>
+                </select>
+              </label>
+              <label class="search-box">
+                <span>搜索</span>
+                <input id="design-task-search" type="search" placeholder="客户 / 商品 / 任务" autocomplete="off" />
+              </label>
+            </div>
+            <div id="design-task-list" class="design-task-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="accounts-panel" class="workspace-panel account-panel" data-panel="accounts" aria-label="账号管理" hidden>
+        <div class="workspace-head">
+          <div>
+            <span class="panel-kicker">Account Access</span>
+            <h2>登录账号管理</h2>
+            <p>新增账号、修改密码、重置密码和停用账号。</p>
+          </div>
+          <button class="mini-btn" id="account-refresh-btn" type="button">刷新</button>
+        </div>
+        <div id="account-login-required" class="account-empty" hidden>
+          <strong>请先登录</strong>
+          <p>登录后可以修改自己的密码；管理员可以新增账号和管理所有账号。</p>
+          <button class="primary-btn" data-open-login-from-account type="button">登录</button>
+        </div>
+        <div class="account-layout" id="account-workspace">
+          <div class="account-side">
+            <form id="account-create-form" class="account-card" autocomplete="off">
+              <span class="panel-kicker">Add Account</span>
+              <h3>添加登录账号</h3>
+              <label>账号 <input id="account-username" name="username" placeholder="customer_01" /></label>
+              <label>显示名称 <input id="account-name" name="name" placeholder="客户 / 设计姓名" /></label>
+              <label>
+                权限
+                <select id="account-role" name="role"></select>
+              </label>
+              <label>初始密码 <input id="account-password" name="password" type="password" placeholder="至少 8 位" /></label>
+              <button class="primary-btn" type="submit">创建账号</button>
+              <p class="account-help">只有管理员可以创建账号。</p>
+            </form>
+            <form id="account-password-form" class="account-card" autocomplete="off">
+              <span class="panel-kicker">Account Security</span>
+              <h3>修改当前登录密码</h3>
+              <label>当前密码 <input id="account-current-password" type="password" placeholder="当前登录密码" /></label>
+              <label>新密码 <input id="account-new-password" type="password" placeholder="至少 8 位" /></label>
+              <button class="ghost-btn account-save-password" type="submit">更新我的密码</button>
+            </form>
+          </div>
+          <div class="account-card account-list-card">
+            <div class="account-list-head">
+              <div>
+                <span class="panel-kicker">Login Users</span>
+                <h3>已有账号</h3>
+              </div>
+              <span id="account-count" class="account-count">0 个账号</span>
+            </div>
+            <div id="account-users-list" class="account-users-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="meta-credentials-panel" class="workspace-panel meta-credentials-panel" data-panel="metaCredentials" aria-label="Meta 凭证管理" hidden>
+        <div class="workspace-head">
+          <div>
+            <span class="panel-kicker">Meta Credential Center</span>
+            <h2>广告凭证管理</h2>
+            <p>统一管理个人授权与系统用户凭证，自动同步广告户、BM、主页和 Instagram 资产，并按广告户分配团队使用权限。</p>
+          </div>
+          <div class="workspace-actions">
+            <button class="mini-btn" id="meta-credential-refresh-btn" type="button">刷新凭证</button>
+            <button class="mini-btn" id="meta-system-wizard-open-btn" type="button">添加系统凭证</button>
+            <button class="primary-btn" id="meta-binding-open-btn" type="button">分配广告户</button>
+          </div>
+        </div>
+        <div id="meta-credential-login-required" class="account-empty" hidden>
+          <strong>请先登录</strong>
+          <p>登录后才能查看 Meta 凭证状态。</p>
+          <button class="primary-btn" data-open-login-from-meta-credential type="button">登录</button>
+        </div>
+        <div id="meta-credential-admin-required" class="account-empty" hidden>
+          <strong>仅管理员可管理凭证</strong>
+          <p>运营和选品会在投放时使用已分配的广告户，但不会看到原始 Token 或管理入口。</p>
+        </div>
+        <div id="meta-credential-workspace" class="meta-credential-layout">
+          <aside class="meta-credential-side">
+            <section class="account-card meta-connect-card">
+              <span class="panel-kicker">Company Login</span>
+              <h3>连接 Facebook 个号</h3>
+              <p class="meta-connect-lead">登录后自动读取该个号可访问的 BM、广告户、公共主页和 Instagram，后续可直接创建系统凭证。</p>
+              <button class="primary-btn meta-connect-btn" id="meta-credential-oauth-btn" type="button">
+                <span class="meta-connect-dot" aria-hidden="true"></span>
+                添加新的 Facebook 个号
+              </button>
+              <button class="ghost-btn meta-existing-sync-btn" id="meta-credential-existing-sync-btn" type="button">同步已有系统连接</button>
+              <div id="meta-oauth-status" class="meta-oauth-status" role="status">系统登录通道检查中…</div>
+              <div class="meta-connect-flow">
+                <span><b>01</b>登录个号</span>
+                <span><b>02</b>同步资产</span>
+                <span><b>03</b>绑定凭证</span>
+              </div>
+            </section>
+            <details class="meta-advanced-import">
+              <summary>高级：手动导入凭证</summary>
+              <form id="meta-credential-form" class="account-card meta-credential-form" autocomplete="off">
+                <label>凭证名称 <input id="meta-credential-name" placeholder="例如：JP BM 系统用户" maxlength="120" /></label>
+                <label>凭证类型
+                  <select id="meta-credential-type">
+                    <option value="system">系统用户凭证</option>
+                    <option value="personal">个人授权凭证</option>
+                  </select>
+                </label>
+                <label>访问 Token
+                  <textarea id="meta-credential-token" rows="5" placeholder="粘贴已有 System User Token 或个人长期 Token"></textarea>
+                </label>
+                <button class="primary-btn" type="submit">加密保存并同步资产</button>
+                <p class="account-help">仅管理员可使用；Token 只保存在服务器加密文件中。</p>
+              </form>
+            </details>
+            <div class="meta-security-note">
+              <strong>使用规则</strong>
+              <span>个号登录后自动同步可访问的 BM、广告户和主页。</span>
+              <span>系统凭证用于稳定拉数、创建广告和团队分配。</span>
+              <span>运营和选品只看到已分配的广告资产。</span>
+            </div>
+          </aside>
+          <div class="meta-credential-main">
+            <div id="meta-credential-kpis" class="workspace-kpis"></div>
+            <div class="meta-credential-toolbar">
+              <div>
+                <span class="panel-kicker">Credential Inventory</span>
+                <h3>已接入凭证</h3>
+              </div>
+              <span id="meta-credential-count" class="account-count">0 个凭证</span>
+            </div>
+            <div id="meta-credential-list" class="meta-credential-list"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside id="detail-drawer" class="detail-drawer" hidden>
+      <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+        <div class="drawer-head">
+          <div>
+            <span id="drawer-sku" class="drawer-sku">-</span>
+            <h2 id="drawer-title">商品详情</h2>
+          </div>
+          <button id="drawer-close-btn" class="icon-btn" type="button" aria-label="关闭">×</button>
+        </div>
+        <div id="drawer-body" class="drawer-body"></div>
+      </div>
+    </aside>
+
+    <dialog id="sku-dialog" class="sku-dialog">
+      <form id="sku-form" method="dialog">
+        <div class="dialog-head">
+          <h2>添加 SKU</h2>
+          <button class="icon-btn" data-dialog-close type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="dialog-grid">
+          <label>SKU <input name="sku" required /></label>
+          <label>商品名 <input name="title" required /></label>
+          <label>负责人 <input name="owner" value="未分配" /></label>
+          <label>状态
+            <select name="status">
+              <option value="test">测试</option>
+              <option value="main">主推</option>
+              <option value="paused">暂停</option>
+            </select>
+          </label>
+          <label class="wide">副标题 <input name="subtitle" /></label>
+          <label class="wide">主卖点 <input name="headline" placeholder="例如：显脸小、不像老花镜" /></label>
+          <label class="wide">卖点标签 <input name="points" placeholder="用英文逗号分隔" /></label>
+          <label>花费 <input name="spend" type="number" step="0.01" value="0" /></label>
+          <label>收入 <input name="revenue" type="number" step="0.01" value="0" /></label>
+          <label>订单 <input name="orders" type="number" value="0" /></label>
+          <label>素材任务数 <input name="taskTotal" type="number" value="3" /></label>
+        </div>
+        <div class="dialog-actions">
+          <button class="ghost-btn" data-dialog-close type="button">取消</button>
+          <button class="primary-btn" value="default" type="submit">保存 SKU</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="shopline-dialog" class="sku-dialog shopline-dialog">
+      <div class="dialog-head">
+        <div>
+          <h2>导入 Shopline 商品</h2>
+          <p id="shopline-status" class="dialog-subtitle">正在读取连接状态...</p>
+        </div>
+        <button class="icon-btn" data-shopline-close type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="shopline-toolbar">
+        <label class="search-box">
+          <span>筛选</span>
+          <input id="shopline-search" type="search" placeholder="SKU / 商品名 / 分类" autocomplete="off" />
+        </label>
+        <select id="shopline-status-filter" class="shopline-status-filter" aria-label="Shopline 商品状态">
+          <option value="active">只看上架</option>
+          <option value="">全部状态</option>
+          <option value="draft">草稿</option>
+        </select>
+        <button class="ghost-btn" id="shopline-refresh-btn" type="button">刷新列表</button>
+        <button class="ghost-btn" id="shopline-select-all-btn" type="button">全选可导入</button>
+      </div>
+      <div id="shopline-hint" class="shopline-hint"></div>
+      <div id="shopline-products" class="shopline-products"></div>
+      <div class="dialog-actions">
+        <button class="ghost-btn" data-shopline-close type="button">取消</button>
+        <button class="primary-btn" id="shopline-import-selected-btn" type="button">导入选中</button>
+      </div>
+    </dialog>
+
+    <dialog id="facebook-binding-dialog" class="sku-dialog facebook-binding-dialog">
+      <div class="dialog-head">
+        <div>
+          <h2>绑定 FB 广告系列</h2>
+          <p id="facebook-binding-subtitle" class="dialog-subtitle">选择广告户和对应系列，后续同步会优先按绑定关系回写。</p>
+        </div>
+        <button class="icon-btn" data-facebook-binding-close type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="facebook-binding-body">
+        <div id="facebook-binding-current" class="shopline-hint"></div>
+        <div class="facebook-binding-grid">
+          <label>
+            广告户
+            <select id="facebook-binding-account"></select>
+          </label>
+          <label>
+            对应系列
+            <select id="facebook-binding-campaign"></select>
+          </label>
+        </div>
+        <label class="facebook-binding-search">
+          搜索系列
+          <input id="facebook-binding-search" type="search" placeholder="系列名 / 广告户 / campaign id" autocomplete="off" />
+        </label>
+        <div id="facebook-binding-preview" class="facebook-binding-preview"></div>
+      </div>
+      <div class="dialog-actions">
+        <button class="ghost-btn" id="facebook-binding-refresh-btn" type="button">刷新 FB 系列</button>
+        <button class="ghost-btn danger" id="facebook-binding-clear-btn" type="button">解除绑定</button>
+        <button class="primary-btn" id="facebook-binding-save-btn" type="button">保存绑定</button>
+      </div>
+    </dialog>
+
+    <dialog id="meta-binding-dialog" class="sku-dialog meta-binding-dialog">
+      <div class="dialog-head">
+        <div>
+          <h2>分配广告户与凭证</h2>
+          <p class="dialog-subtitle">选定广告户后，投放与数据同步会自动使用绑定凭证；可选择允许使用该广告户的运营账号。</p>
+        </div>
+        <button class="icon-btn" data-meta-binding-close type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="meta-binding-body">
+        <label>凭证 <select id="meta-binding-credential"></select></label>
+        <label>Business Center / BC <select id="meta-binding-business"></select></label>
+        <label>广告户 <select id="meta-binding-account"></select></label>
+        <div id="meta-binding-account-info" class="meta-binding-account-info"></div>
+        <div>
+          <span class="meta-binding-label">允许使用该广告户的账号</span>
+          <div id="meta-binding-users" class="meta-binding-users"></div>
+          <p class="account-help">不选择成员时仅管理员可操作；选择运营/选品后，他们可以在素材投放中使用该广告户。</p>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button class="ghost-btn" data-meta-binding-close type="button">取消</button>
+        <button class="primary-btn" id="meta-binding-save-btn" type="button">保存广告户分配</button>
+      </div>
+    </dialog>
+
+    <dialog id="meta-system-wizard-dialog" class="sku-dialog meta-system-wizard-dialog">
+      <div class="dialog-head meta-system-wizard-head">
+        <div>
+          <span class="panel-kicker">System Credential Wizard</span>
+          <h2>添加系统凭证</h2>
+          <p class="dialog-subtitle">按个号 → BM → 广告账户 → 主页完成授权，系统凭证创建后可拉取所选广告户的全部广告数据。</p>
+        </div>
+        <button class="icon-btn" data-meta-system-wizard-close type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="meta-system-steps" aria-label="系统凭证步骤">
+        <span class="active"><b>01</b>授权个号</span>
+        <span><b>02</b>选择 BM</span>
+        <span><b>03</b>广告资产</span>
+        <span><b>04</b>确认创建</span>
+      </div>
+      <form id="meta-system-wizard-form" class="meta-system-wizard-body" autocomplete="off">
+        <div class="meta-system-wizard-form">
+          <label>系统凭证名称
+            <input id="meta-system-wizard-name" placeholder="例如：日本广告系统用户-01" maxlength="120" />
+          </label>
+          <label>选择个号
+            <select id="meta-system-wizard-personal"></select>
+          </label>
+          <label>选择 BM
+            <select id="meta-system-wizard-business"></select>
+          </label>
+          <label class="wide">已有 System User Token（可选）
+            <textarea id="meta-system-wizard-token" rows="3" placeholder="已在 Meta BM 中生成系统用户 Token 时粘贴；留空时系统按所选个号和 BM 自动创建。"></textarea>
+          </label>
+        </div>
+        <div id="meta-system-wizard-source-info" class="meta-system-source-info"></div>
+        <div class="meta-system-assets-grid">
+          <section>
+            <div class="meta-system-assets-head">
+              <div><span class="panel-kicker">Ad Accounts</span><h3>选择广告账户</h3></div>
+              <label class="meta-check-all"><input id="meta-system-account-all" type="checkbox" />全选</label>
+            </div>
+            <div id="meta-system-wizard-accounts" class="meta-system-asset-list"></div>
+          </section>
+          <section>
+            <div class="meta-system-assets-head">
+              <div><span class="panel-kicker">Pages</span><h3>选择公共主页（投放必选）</h3></div>
+              <label class="meta-check-all"><input id="meta-system-page-all" type="checkbox" />全选</label>
+            </div>
+            <div id="meta-system-wizard-pages" class="meta-system-asset-list"></div>
+          </section>
+        </div>
+        <label class="meta-policy-confirm"><input id="meta-system-policy" type="checkbox" />我已确认该个号、BM、广告户和主页均已获得公司授权，并同意由系统凭证进行广告数据读取和广告投放。</label>
+            <p id="meta-system-wizard-hint" class="account-help"></p>
+        <div class="dialog-actions">
+          <button class="ghost-btn" data-meta-system-wizard-close type="button">取消</button>
+          <button class="primary-btn" id="meta-system-wizard-save-btn" type="submit">创建系统凭证并同步</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="login-dialog" class="sku-dialog login-dialog">
+      <form id="login-form" method="dialog">
+        <div class="dialog-head">
+          <div>
+            <h2>登录</h2>
+            <p class="dialog-subtitle">登录后可分配设计负责人</p>
+          </div>
+          <button class="icon-btn" data-login-close type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="login-grid">
+          <label>
+            账号
+            <select id="login-username"></select>
+          </label>
+          <label>
+            密码
+            <input id="login-password" type="password" autocomplete="current-password" placeholder="输入密码" />
+          </label>
+        </div>
+        <p id="login-error" class="login-error" hidden></p>
+        <div class="dialog-actions">
+          <button class="ghost-btn" data-login-close type="button">取消</button>
+          <button class="primary-btn" type="submit">登录</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="image-preview-dialog" class="image-preview-dialog" aria-label="商品图片预览">
+      <div class="image-preview-head">
+        <div>
+          <span class="panel-kicker">Product Image</span>
+          <h2 id="image-preview-title">商品图片</h2>
+        </div>
+        <button class="icon-btn" data-image-preview-close type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="image-preview-stage">
+        <img id="image-preview-img" src="" alt="" />
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/static/app.js?v=20260721-ai-image-timeout-failover-48"></script>
+  </body>
+</html>

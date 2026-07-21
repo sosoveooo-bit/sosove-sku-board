@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 160" role="img" aria-label="round glasses">
+  <rect width="220" height="160" rx="18" fill="#fbfaf5"/>
+  <circle cx="70" cy="86" r="35" fill="none" stroke="#2d2824" stroke-width="8"/>
+  <circle cx="150" cy="86" r="35" fill="none" stroke="#2d2824" stroke-width="8"/>
+  <path d="M105 84c8-7 12-7 20 0" fill="none" stroke="#2d2824" stroke-width="7" stroke-linecap="round"/>
+  <path d="M35 80 17 74M185 80l18-6" stroke="#2d2824" stroke-width="7" stroke-linecap="round"/>
+  <path d="M53 103c11 8 25 10 39 0M132 103c13 10 28 8 39 0" stroke="#b58c69" stroke-width="4" stroke-linecap="round"/>
+</svg>

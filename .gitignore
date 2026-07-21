@@ -1,0 +1,30 @@
+﻿# Python/runtime files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secrets and local panel state
+.env
+.env.*
+!.env.example
+data/
+*.log
+*.sqlite
+*.db
+*.key
+*secret*
+*credential*
+*.pem
+*.p12
+*.pfx
+
+# Source tests are safe to version even though their filenames mention credentials.
+!sku_board/tests/test_meta_credentials.py
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 160" role="img" aria-label="square glasses">
+  <rect width="220" height="160" rx="18" fill="#f7f4ec"/>
+  <rect x="34" y="56" width="70" height="52" rx="15" fill="none" stroke="#141414" stroke-width="8"/>
+  <rect x="116" y="56" width="70" height="52" rx="15" fill="none" stroke="#141414" stroke-width="8"/>
+  <path d="M104 80c5-5 7-5 12 0" fill="none" stroke="#141414" stroke-width="7" stroke-linecap="round"/>
+  <path d="M34 75 17 69M186 75l17-6" stroke="#141414" stroke-width="7" stroke-linecap="round"/>
+  <path d="M47 94c13 4 28 5 44 0M129 94c16 5 31 4 44 0" stroke="#6fa8b7" stroke-width="4" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 160" role="img" aria-label="classic glasses">
+  <rect width="220" height="160" rx="18" fill="#f8f7f1"/>
+  <path d="M45 73c12-10 40-10 52 0 8 7 8 28-1 35-10 8-39 9-51-1-12-10-11-25 0-34Z" fill="none" stroke="#231d1b" stroke-width="8"/>
+  <path d="M123 73c12-10 40-10 52 0 11 9 12 24 0 34-12 10-41 9-51 1-9-7-9-28-1-35Z" fill="none" stroke="#231d1b" stroke-width="8"/>
+  <path d="M98 81c10-7 15-7 25 0" fill="none" stroke="#231d1b" stroke-width="7" stroke-linecap="round"/>
+  <path d="M35 73 19 67M185 73l16-6" stroke="#231d1b" stroke-width="7" stroke-linecap="round"/>
+  <path d="M49 98c16 6 32 6 44 0M128 98c14 6 31 6 44 0" stroke="#d8c09c" stroke-width="4" stroke-linecap="round"/>
+</svg>

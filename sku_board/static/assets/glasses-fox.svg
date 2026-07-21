@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 160" role="img" aria-label="fox glasses">
+  <rect width="220" height="160" rx="18" fill="#f6f6f2"/>
+  <path d="M29 77c18-19 57-22 73-6 10 10 5 27-12 34-20 9-46 4-58-9-8-8-9-13-3-19Z" fill="none" stroke="#171717" stroke-width="7"/>
+  <path d="M118 71c16-16 55-13 73 6 6 6 5 11-3 19-12 13-38 18-58 9-17-7-22-24-12-34Z" fill="none" stroke="#171717" stroke-width="7"/>
+  <path d="M101 79c8-6 10-6 18 0" fill="none" stroke="#171717" stroke-width="6" stroke-linecap="round"/>
+  <path d="M29 79 13 74M191 79l16-5" stroke="#171717" stroke-width="6" stroke-linecap="round"/>
+  <path d="M45 90c13 8 31 10 48 2M127 92c17 8 35 6 48-2" stroke="#8fb8d8" stroke-width="4" stroke-linecap="round"/>
+</svg>
