@@ -5713,6 +5713,19 @@ function waitForAiImageRetry(milliseconds, signal = aiImageGenerationAbortContro
   });
 }
 
+async function waitForAiImageJob(payload, { signal, onPending } = {}) {
+  let current = payload || {};
+  let pollCount = 0;
+  while (current?.pending && current.jobId) {
+    if (signal?.aborted) throw aiImageGenerationAbortError();
+    onPending?.(current.message || "远端生图任务处理中");
+    await waitForAiImageRetry(Math.min(3000, 1100 + pollCount * 80), signal);
+    current = await api(`/api/sku-board/ai-image-jobs/${encodeURIComponent(current.jobId)}`, { signal });
+    pollCount += 1;
+  }
+  return current;
+}
+
 function cancelAiImageGeneration() {
   const controller = aiImageGenerationAbortController;
   const conversation = aiImageActiveConversation();
@@ -5805,10 +5818,17 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
       progress.pageStates[page] = attempt ? "retrying" : reviewInstruction ? "quality-retry" : "running";
       updateAiImageSuiteProgress(conversation, progress, button);
       try {
-        const payload = await api("/api/sku-board/ad-launch-ai-image-edit", {
+        const submittedPayload = await api("/api/sku-board/ad-launch-ai-image-edit", {
           method: "POST",
           body: buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, runId, page === 1 ? null : styleAnchor, reviewInstruction, editSource),
           signal: aiImageGenerationAbortController?.signal,
+        });
+        const payload = await waitForAiImageJob(submittedPayload, {
+          signal: aiImageGenerationAbortController?.signal,
+          onPending: (message) => {
+            pageMeta.message = message;
+            updateAiImageSuiteProgress(conversation, progress, button);
+          },
         });
         const returnedMaterials = mergeAiImageSuitePayload(conversation, payload);
         const returnedMaterial = returnedMaterials.find((material) => Number(material.suitePage) === page);
@@ -6327,6 +6347,12 @@ async function generateAiImage(event) {
         }),
       });
     }
+    payload = await waitForAiImageJob(payload, {
+      signal: aiImageGenerationAbortController?.signal,
+      onPending: (message) => {
+        $("#ai-image-status").textContent = message;
+      },
+    });
     const previews = payload.previewDataUrls?.length ? payload.previewDataUrls : [payload.previewDataUrl].filter(Boolean);
     const materials = (payload.materials?.length ? payload.materials : [payload.material].filter(Boolean)).map((material, index) => ({
       ...material,

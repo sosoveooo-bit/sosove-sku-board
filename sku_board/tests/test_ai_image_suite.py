@@ -2,6 +2,8 @@
 import json
 import os
 import tempfile
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -394,6 +396,35 @@ class AiImageSuiteTests(unittest.TestCase):
                 self.assertEqual(result["returnedCount"], 1)
 
         self.assertEqual(generate.call_count, 4)
+
+    def test_background_image_job_returns_immediately_and_can_be_polled(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        actor = {"username": "designer-job", "role": "designer"}
+        generated = {"ok": True, "material": {"id": "AI-JOBTEST"}, "materials": [{"id": "AI-JOBTEST"}]}
+
+        def fake_generate(_payload, _actor):
+            entered.set()
+            release.wait(timeout=2)
+            return generated
+
+        with patch.object(backend, "generate_ad_launch_ai_image", side_effect=fake_generate):
+            submitted = backend.start_ai_image_job("text", {"prompt": "product photo"}, actor)
+            self.assertTrue(submitted["pending"])
+            self.assertTrue(entered.wait(timeout=1))
+            pending = backend.get_ai_image_job(submitted["jobId"], actor)
+            self.assertTrue(pending["pending"])
+            release.set()
+            completed = pending
+            for _ in range(20):
+                completed = backend.get_ai_image_job(submitted["jobId"], actor)
+                if not completed.get("pending"):
+                    break
+                time.sleep(0.01)
+
+        self.assertTrue(completed["ok"])
+        self.assertFalse(completed["pending"])
+        self.assertEqual(completed["material"]["id"], "AI-JOBTEST")
 
     def test_retryable_provider_message_is_rerouted_once(self) -> None:
         with (

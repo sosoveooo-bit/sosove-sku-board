@@ -45,6 +45,7 @@ from sku_board.backend import (
     generate_ad_launch_ai_image_edit,
     complete_meta_oauth,
     get_ai_director_settings,
+    get_ai_image_job,
     import_shopline_products,
     list_auth_users,
     list_ad_launches,
@@ -64,6 +65,7 @@ from sku_board.backend import (
     read_ai_image_output,
     reset_user_password,
     save_ai_director_settings,
+    start_ai_image_job,
     set_meta_credential_active,
     set_user_active,
     set_meta_ad_status,
@@ -113,6 +115,10 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/sku-board/ai-image-output/"):
             material_id = unquote(parsed.path.removeprefix("/api/sku-board/ai-image-output/")).strip("/")
             self.handle_auth_ai_image_output(material_id)
+            return
+        if parsed.path.startswith("/api/sku-board/ai-image-jobs/"):
+            job_id = unquote(parsed.path.removeprefix("/api/sku-board/ai-image-jobs/")).strip("/")
+            self.handle_auth_read(lambda user: get_ai_image_job(job_id, user))
             return
         if parsed.path == "/api/sku-board/users":
             self.handle_auth_read(lambda user: list_auth_users(user))
@@ -195,14 +201,14 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/sku-board/ad-launch-ai-image":
             self.handle_auth_mutation(
-                lambda payload, user: generate_ad_launch_ai_image(payload, user),
+                lambda payload, user: start_ai_image_job("text", payload, user),
                 HTTPStatus.CREATED,
                 ai_image_operation="text-to-image",
             )
             return
         if parsed.path == "/api/sku-board/ad-launch-ai-image-edit":
             self.handle_auth_upload(
-                lambda fields, files, user: generate_ad_launch_ai_image_edit(fields, files, user),
+                lambda fields, files, user: start_ai_image_job("edit", fields, user, files),
                 HTTPStatus.CREATED,
                 ai_image_operation="reference-image",
             )

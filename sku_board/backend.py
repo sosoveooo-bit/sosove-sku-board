@@ -60,6 +60,8 @@ _AI_IMAGE_NODE_RUNTIME_STATS: dict[str, dict[str, Any]] = {}
 _AI_IMAGE_REQUEST_QUEUE = threading.Condition()
 _AI_IMAGE_ACTIVE_REQUESTS = 0
 _AI_IMAGE_ACTIVE_REQUESTS_BY_USER: dict[str, int] = {}
+_AI_IMAGE_JOB_LOCK = threading.Lock()
+_AI_IMAGE_JOBS: dict[str, dict[str, Any]] = {}
 
 
 DEFAULT_ITEMS: list[dict[str, Any]] = [
@@ -11534,6 +11536,149 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         "codHookType": cod_hook_type if template_key == "codHook" else "",
         "productReferenceIndexes": product_reference_indexes,
         **skill_meta,
+    }
+
+
+def ai_image_job_id() -> str:
+    return f"AIJ-{uuid.uuid4().hex[:14].upper()}"
+
+
+def prune_ai_image_jobs() -> None:
+    """Keep a bounded in-memory result cache for browser polling."""
+    now_ts = time.time()
+    ttl = clamp(int(number(os.environ.get("AI_IMAGE_JOB_TTL_SECONDS"), 86400)), 900, 7 * 86400)
+    with _AI_IMAGE_JOB_LOCK:
+        expired = [
+            job_id
+            for job_id, job in _AI_IMAGE_JOBS.items()
+            if now_ts - float(job.get("createdTs") or now_ts) > ttl
+        ]
+        for job_id in expired:
+            _AI_IMAGE_JOBS.pop(job_id, None)
+        if len(_AI_IMAGE_JOBS) > 300:
+            oldest = sorted(_AI_IMAGE_JOBS.items(), key=lambda item: float(item[1].get("createdTs") or 0))[: len(_AI_IMAGE_JOBS) - 300]
+            for job_id, _job in oldest:
+                _AI_IMAGE_JOBS.pop(job_id, None)
+
+
+def snapshot_ai_image_job_files(files: dict[str, Any]) -> dict[str, Any]:
+    """Copy multipart uploads before the HTTP handler releases FieldStorage."""
+    snapshots: dict[str, Any] = {}
+    for key, item in files.items():
+        filename = Path(str(getattr(item, "filename", "") or f"{key}.png")).name
+        file_handle = getattr(item, "file", None)
+        data = file_handle.read() if file_handle is not None else b""
+        snapshots[text(key)] = SimpleNamespace(filename=filename, file=BytesIO(data))
+    return snapshots
+
+
+def start_ai_image_job(
+    mode: str,
+    payload: dict[str, Any],
+    actor: dict[str, Any],
+    files: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the long remote poll in a worker so Cloudflare never waits for it."""
+    if not can_use_ai_image(actor):
+        raise ValueError("只有管理员、运营、选品或设计可以生成投放图片")
+    normalized_mode = text(mode).strip().lower()
+    if normalized_mode not in {"text", "edit"}:
+        raise ValueError("不支持的生图任务类型")
+    job_id = ai_image_job_id()
+    actor_snapshot = dict(actor)
+    payload_snapshot = dict(payload)
+    file_snapshots = snapshot_ai_image_job_files(files or {}) if normalized_mode == "edit" else {}
+    username = limited_text(actor_snapshot.get("username"), "unknown", 80)
+    entry = {
+        "id": job_id,
+        "owner": username,
+        "role": role_of(actor_snapshot),
+        "mode": normalized_mode,
+        "status": "queued",
+        "createdAt": now_iso(),
+        "updatedAt": now_iso(),
+        "createdTs": time.time(),
+        "message": "任务已提交，正在等待远端生图服务处理",
+        "result": None,
+        "error": "",
+    }
+    prune_ai_image_jobs()
+    with _AI_IMAGE_JOB_LOCK:
+        _AI_IMAGE_JOBS[job_id] = entry
+
+    def run_job() -> None:
+        with _AI_IMAGE_JOB_LOCK:
+            current = _AI_IMAGE_JOBS.get(job_id)
+            if current:
+                current.update({"status": "running", "updatedAt": now_iso(), "message": "正在调用远端账号池生成图片"})
+        try:
+            result = (
+                generate_ad_launch_ai_image(payload_snapshot, actor_snapshot)
+                if normalized_mode == "text"
+                else generate_ad_launch_ai_image_edit(payload_snapshot, file_snapshots, actor_snapshot)
+            )
+        except Exception as exc:
+            message = str(exc).strip() or f"生图任务在 {type(exc).__name__} 阶段中断"
+            log_ai_image_error(
+                "background-job-failed",
+                {"jobId": job_id, "username": username, "role": role_of(actor_snapshot), "mode": normalized_mode, "message": limited_text(message, limit=1200)},
+            )
+            with _AI_IMAGE_JOB_LOCK:
+                current = _AI_IMAGE_JOBS.get(job_id)
+                if current:
+                    current.update({"status": "error", "updatedAt": now_iso(), "message": "远端生图任务失败", "error": message})
+            return
+        with _AI_IMAGE_JOB_LOCK:
+            current = _AI_IMAGE_JOBS.get(job_id)
+            if current:
+                current.update({"status": "success", "updatedAt": now_iso(), "message": "图片已生成", "result": result})
+
+    threading.Thread(target=run_job, name=f"ai-image-job-{job_id[-6:].lower()}", daemon=True).start()
+    return {
+        "ok": True,
+        "pending": True,
+        "jobId": job_id,
+        "status": "queued",
+        "message": "图片任务已进入后台队列，页面会自动同步结果",
+    }
+
+
+def get_ai_image_job(job_id: Any, actor: dict[str, Any]) -> dict[str, Any]:
+    value = text(job_id).upper()
+    prune_ai_image_jobs()
+    with _AI_IMAGE_JOB_LOCK:
+        job = dict(_AI_IMAGE_JOBS.get(value) or {})
+    if not job:
+        raise ValueError("生图任务不存在或已过期")
+    owner = text(job.get("owner"))
+    if owner != text(actor.get("username")) and not is_admin(actor):
+        raise ValueError("无权查看该生图任务")
+    status = text(job.get("status"), "queued")
+    if status in {"queued", "running"}:
+        return {
+            "ok": True,
+            "pending": True,
+            "jobId": value,
+            "status": status,
+            "message": text(job.get("message"), "正在生成图片"),
+            "updatedAt": text(job.get("updatedAt")),
+        }
+    if status == "error":
+        return {
+            "ok": False,
+            "error": text(job.get("error"), "远端生图任务失败"),
+            "errorCode": "ai_image_job_failed",
+            "jobId": value,
+        }
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    return {
+        **result,
+        "ok": True,
+        "pending": False,
+        "jobId": value,
+        "status": "success",
+        "message": text(job.get("message"), "图片已生成"),
+        "updatedAt": text(job.get("updatedAt")),
     }
 
 
