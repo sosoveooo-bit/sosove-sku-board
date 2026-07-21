@@ -27,10 +27,12 @@ class FakeTaskSession:
     def __init__(self) -> None:
         self.task_id = ""
         self.submitted_data = {}
+        self.submit_timeout = None
 
     def post(self, _endpoint, *, data=None, **_kwargs):
         self.submitted_data = dict(data or {})
         self.task_id = data["client_task_id"]
+        self.submit_timeout = _kwargs.get("timeout")
         return FakeResponse({"id": self.task_id})
 
     def get(self, _endpoint, **_kwargs):
@@ -1370,6 +1372,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertRegex(session.task_id, r"^sosove-a1b2c3d4e5f6-p05-r[0-9a-f]{6}-a1$")
         self.assertFalse({"account", "accountId", "account_id", "access_token"} & set(session.submitted_data))
         self.assertEqual(session.submitted_data["quality"], "high")
+        self.assertEqual(session.submit_timeout, 90)
         self.assertEqual(result["outputs"], [])
         self.assertIn("Too many open files", result["errors"][0]["message"])
 

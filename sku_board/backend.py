@@ -10602,7 +10602,10 @@ def _generate_images_via_chatgpt2api_tasks_single(
     submit_endpoint = f"{root_url}/api/image-tasks/{'edits' if is_edit else 'generations'}"
     poll_endpoint = f"{root_url}/api/image-tasks"
     headers = {"Authorization": f"Bearer {auth_key}"}
-    submit_timeout = clamp(int(number(os.environ.get("CHATGPT2API_IMAGE_TASK_SUBMIT_TIMEOUT"), 30)), 5, 90)
+    # Remote account pools can take longer than 30 seconds to accept a task while
+    # they rotate an available image account. This runs in a background job, so
+    # the longer submission window does not keep the browser waiting.
+    submit_timeout = clamp(int(number(os.environ.get("CHATGPT2API_IMAGE_TASK_SUBMIT_TIMEOUT"), 90)), 5, 90)
     poll_timeout = clamp(int(number(os.environ.get("CHATGPT2API_IMAGE_TASK_TIMEOUT"), 600)), 30, 1800)
     poll_interval = max(0.5, min(number(os.environ.get("CHATGPT2API_IMAGE_TASK_POLL_INTERVAL"), 2), 10))
     task_prompts = [limited_text(item, "", 7000) for item in (prompts or []) if text(item)]
