@@ -15,6 +15,7 @@ import time
 import uuid
 import csv
 from collections import Counter
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
@@ -56,6 +57,9 @@ META_OAUTH_STATES: dict[str, dict[str, Any]] = {}
 _META_AD_ANALYSIS_MODULE: Any | None = None
 _AI_IMAGE_NODE_RUNTIME_LOCK = threading.Lock()
 _AI_IMAGE_NODE_RUNTIME_STATS: dict[str, dict[str, Any]] = {}
+_AI_IMAGE_REQUEST_QUEUE = threading.Condition()
+_AI_IMAGE_ACTIVE_REQUESTS = 0
+_AI_IMAGE_ACTIVE_REQUESTS_BY_USER: dict[str, int] = {}
 
 
 DEFAULT_ITEMS: list[dict[str, Any]] = [
@@ -4665,6 +4669,22 @@ def ai_image_retryable_error(value: Any) -> bool:
             "http 530",
             "bad gateway",
             "gateway timeout",
+            "no available image quota",
+            "image quota exhausted",
+        )
+    )
+
+
+def ai_image_quota_error(value: Any) -> bool:
+    source = nested_error_text(value).lower()
+    return any(
+        marker in source
+        for marker in (
+            "no available image quota",
+            "image quota exhausted",
+            "insufficient image quota",
+            "生图额度不足",
+            "图片额度不足",
         )
     )
 
@@ -4676,6 +4696,55 @@ def ai_image_generation_result_timed_out(result: Any) -> bool:
         return True
     errors = result.get("errors") if isinstance(result.get("errors"), list) else []
     return any(ai_image_timeout_error(item) for item in errors)
+
+
+def ai_image_generation_result_quota_exhausted(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    errors = result.get("errors") if isinstance(result.get("errors"), list) else []
+    return bool(errors) and any(ai_image_quota_error(item) for item in errors)
+
+
+def reset_ai_image_request_queue() -> None:
+    """Clear process-local request counters; used by deterministic tests only."""
+    global _AI_IMAGE_ACTIVE_REQUESTS
+    with _AI_IMAGE_REQUEST_QUEUE:
+        _AI_IMAGE_ACTIVE_REQUESTS = 0
+        _AI_IMAGE_ACTIVE_REQUESTS_BY_USER.clear()
+        _AI_IMAGE_REQUEST_QUEUE.notify_all()
+
+
+@contextmanager
+def ai_image_request_slot(actor: dict[str, Any] | None = None):
+    """Queue panel requests so several users do not exhaust every VPS at once."""
+    global _AI_IMAGE_ACTIVE_REQUESTS
+    username = limited_text((actor or {}).get("username"), "anonymous", 80).lower() or "anonymous"
+    max_active = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_MAX_ACTIVE_REQUESTS"), 6)), 1, 24)
+    max_per_user = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_MAX_ACTIVE_PER_USER"), 2)), 1, 6)
+    queue_timeout = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_QUEUE_TIMEOUT"), 900)), 30, 1800)
+    started = time.monotonic()
+    with _AI_IMAGE_REQUEST_QUEUE:
+        while (
+            _AI_IMAGE_ACTIVE_REQUESTS >= max_active
+            or int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(username, 0)) >= max_per_user
+        ):
+            remaining = queue_timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise ValueError("生图任务排队超时，请稍后重试或减少同时生成的页面数量")
+            _AI_IMAGE_REQUEST_QUEUE.wait(timeout=min(5.0, remaining))
+        _AI_IMAGE_ACTIVE_REQUESTS += 1
+        _AI_IMAGE_ACTIVE_REQUESTS_BY_USER[username] = int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(username, 0)) + 1
+    try:
+        yield
+    finally:
+        with _AI_IMAGE_REQUEST_QUEUE:
+            _AI_IMAGE_ACTIVE_REQUESTS = max(0, _AI_IMAGE_ACTIVE_REQUESTS - 1)
+            next_count = max(0, int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(username, 0)) - 1)
+            if next_count:
+                _AI_IMAGE_ACTIVE_REQUESTS_BY_USER[username] = next_count
+            else:
+                _AI_IMAGE_ACTIVE_REQUESTS_BY_USER.pop(username, None)
+            _AI_IMAGE_REQUEST_QUEUE.notify_all()
 
 
 def chatgpt2api_base_url() -> str:
@@ -10736,6 +10805,36 @@ def generate_images_via_chatgpt2api_tasks(
     allow_partial: bool = False,
     page_indexes: list[int] | None = None,
     suite_run_id: str = "",
+    actor: dict[str, Any] | None = None,
+) -> list[tuple[bytes, str]] | dict[str, Any]:
+    """Dispatch an image request after taking a fair, process-wide panel slot."""
+    with ai_image_request_slot(actor):
+        return _dispatch_images_via_chatgpt2api_tasks(
+            prompt=prompt,
+            model=model,
+            size=size,
+            count=count,
+            quality=quality,
+            reference_images=reference_images,
+            prompts=prompts,
+            allow_partial=allow_partial,
+            page_indexes=page_indexes,
+            suite_run_id=suite_run_id,
+        )
+
+
+def _dispatch_images_via_chatgpt2api_tasks(
+    *,
+    prompt: str,
+    model: str,
+    size: str,
+    count: int,
+    quality: str = "auto",
+    reference_images: list[tuple[str, bytes, str]] | None = None,
+    prompts: list[str] | None = None,
+    allow_partial: bool = False,
+    page_indexes: list[int] | None = None,
+    suite_run_id: str = "",
 ) -> list[tuple[bytes, str]] | dict[str, Any]:
     """Dispatch image tasks across all configured VPS nodes in parallel."""
     nodes = chatgpt2api_service_nodes()
@@ -10763,7 +10862,10 @@ def generate_images_via_chatgpt2api_tasks(
                 not isinstance(result, dict)
                 or (bool(result.get("outputs")) and not bool(result.get("timedOut")))
             )
-            force_cooldown = ai_image_generation_result_timed_out(result)
+            force_cooldown = (
+                ai_image_generation_result_timed_out(result)
+                or ai_image_generation_result_quota_exhausted(result)
+            )
             latency_ms = max(1, int((time.perf_counter() - started) * 1000))
             if isinstance(result, dict):
                 node_id = text(node.get("id"))
@@ -10779,7 +10881,7 @@ def generate_images_via_chatgpt2api_tasks(
                 result["nodeResults"] = [{"nodeId": node_id, "nodeName": node_name, "latencyMs": latency_ms, "success": success}]
             return result
         except Exception as exc:
-            force_cooldown = ai_image_timeout_error(exc)
+            force_cooldown = ai_image_timeout_error(exc) or ai_image_quota_error(exc)
             raise
         finally:
             record_ai_image_node_runtime(
@@ -10835,10 +10937,13 @@ def generate_images_via_chatgpt2api_tasks(
                 not isinstance(result, dict)
                 or (bool(result.get("outputs")) and not bool(result.get("timedOut")))
             )
-            force_cooldown = ai_image_generation_result_timed_out(result)
+            force_cooldown = (
+                ai_image_generation_result_timed_out(result)
+                or ai_image_generation_result_quota_exhausted(result)
+            )
             return node, result, int((time.perf_counter() - started) * 1000), success
         except Exception as exc:
-            force_cooldown = ai_image_timeout_error(exc)
+            force_cooldown = ai_image_timeout_error(exc) or ai_image_quota_error(exc)
             raise
         finally:
             record_ai_image_node_runtime(
@@ -11064,6 +11169,7 @@ def generate_ai_image_tasks_with_transient_retry(
                 allow_partial=allow_partial,
                 page_indexes=page_indexes,
                 suite_run_id=suite_run_id,
+                actor=actor,
             )
         except ImageTaskApiUnavailable:
             raise

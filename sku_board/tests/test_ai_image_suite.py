@@ -303,6 +303,46 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(backend.ai_image_timeout_error(error))
         self.assertTrue(backend.ai_image_generation_result_timed_out({"errors": [error], "timedOut": False}))
 
+    def test_quota_exhaustion_immediately_cools_down_the_failed_node(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        backend.reset_ai_image_request_queue()
+        node = {
+            "id": "quota-empty",
+            "name": "Quota Empty",
+            "baseUrl": "https://quota-empty.example.com/v1",
+            "rootUrl": "https://quota-empty.example.com",
+            "authKey": "secret",
+            "weight": 1,
+        }
+        quota_result = {
+            "outputs": [],
+            "errors": [{"index": 0, "message": "no available image quota (tried 20 tokens)"}],
+            "pending": [],
+            "taskIds": ["quota-task"],
+            "timedOut": False,
+        }
+
+        with patch.object(backend, "chatgpt2api_service_nodes", return_value=[node]), patch.object(
+            backend,
+            "_generate_images_via_chatgpt2api_tasks_single",
+            return_value=quota_result,
+        ):
+            result = backend.generate_images_via_chatgpt2api_tasks(
+                prompt="page",
+                model="gpt-image-2",
+                size="1500x2000",
+                count=1,
+                prompts=["page"],
+                page_indexes=[0],
+                allow_partial=True,
+                actor={"username": "designer", "role": "designer"},
+            )
+
+        self.assertTrue(backend.ai_image_generation_result_quota_exhausted(result))
+        self.assertTrue(backend.ai_image_retryable_error("no available image quota (tried 20 tokens)"))
+        self.assertEqual(backend.ai_image_node_runtime_stats("quota-empty")["failureStreak"], 2)
+        self.assertTrue(backend.ai_image_node_runtime_stats("quota-empty")["cooldownUntil"])
+
     def test_saved_image_preview_uses_local_file_route_instead_of_base64(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(backend, "AD_LAUNCH_UPLOAD_DIR", Path(temp_dir)):
             materials, previews = backend.save_ai_image_outputs(
