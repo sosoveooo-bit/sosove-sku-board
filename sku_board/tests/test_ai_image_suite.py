@@ -415,6 +415,40 @@ class AiImageSuiteTests(unittest.TestCase):
 
         self.assertEqual(generate.call_count, 4)
 
+    def test_image_request_queue_serves_waiting_users_in_fifo_order(self) -> None:
+        backend.reset_ai_image_request_queue()
+        order: list[str] = []
+
+        def worker(username: str) -> None:
+            with backend.ai_image_request_slot({"username": username, "role": "designer"}):
+                order.append(username)
+
+        with patch.dict(
+            os.environ,
+            {"CHATGPT2API_PANEL_MAX_ACTIVE_REQUESTS": "1", "CHATGPT2API_PANEL_MAX_ACTIVE_PER_USER": "1"},
+            clear=False,
+        ):
+            with backend.ai_image_request_slot({"username": "admin", "role": "admin"}):
+                designer_thread = threading.Thread(target=worker, args=("designer",))
+                designer_thread.start()
+                for _ in range(100):
+                    with backend._AI_IMAGE_REQUEST_QUEUE:
+                        if len(backend._AI_IMAGE_REQUEST_WAITERS) >= 1:
+                            break
+                    time.sleep(0.005)
+                admin_thread = threading.Thread(target=worker, args=("admin",))
+                admin_thread.start()
+                for _ in range(100):
+                    with backend._AI_IMAGE_REQUEST_QUEUE:
+                        if len(backend._AI_IMAGE_REQUEST_WAITERS) >= 2:
+                            break
+                    time.sleep(0.005)
+            designer_thread.join(timeout=2)
+            admin_thread.join(timeout=2)
+
+        self.assertEqual(order, ["designer", "admin"])
+        backend.reset_ai_image_request_queue()
+
     def test_background_image_job_returns_immediately_and_can_be_polled(self) -> None:
         entered = threading.Event()
         release = threading.Event()
@@ -464,6 +498,8 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(result, [(b"generated-image", "image/png")])
         self.assertEqual(generate.call_count, 2)
         self.assertTrue(backend.ai_image_retryable_error("请稍后重试"))
+        self.assertTrue(backend.ai_image_retryable_error("image generation failed"))
+        self.assertTrue(backend.ai_image_retryable_error("生图接口没有返回图片"))
         self.assertFalse(backend.ai_image_retryable_error("content policy blocked"))
 
     def test_japan_fashion_landing_uses_the_locked_32_page_brand_case_rhythm(self) -> None:
@@ -2654,15 +2690,22 @@ USB供电
         with (
             patch("requests.post", return_value=refresh_response),
             patch("requests.get", return_value=accounts_response),
-            patch.object(backend, "chatgpt2api_auth_key", return_value="test-key"),
-            patch.object(backend, "chatgpt2api_root_url", return_value="http://image.test/v1"),
+            patch.object(
+                backend,
+                "chatgpt2api_service_nodes",
+                return_value=[
+                    {"id": "node-a", "name": "Node A", "rootUrl": "http://image-a.test", "authKey": "test-a"},
+                    {"id": "node-b", "name": "Node B", "rootUrl": "http://image-b.test", "authKey": "test-b"},
+                ],
+            ),
             patch.object(backend, "parse_chatgpt2api_json_response", side_effect=lambda response, **_kwargs: response.body),
         ):
-            result = backend.refresh_ai_image_account_pool({"role": "admin"})
+            result = backend.refresh_ai_image_account_pool({"username": "designer", "role": "designer"})
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["remaining"], 3)
-        self.assertEqual(result["quotaReady"], 1)
+        self.assertEqual(result["remaining"], 6)
+        self.assertEqual(result["quotaReady"], 2)
+        self.assertEqual([node["id"] for node in result["nodes"]], ["node-a", "node-b"])
 
 
 if __name__ == "__main__":

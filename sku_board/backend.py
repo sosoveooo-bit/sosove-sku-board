@@ -60,6 +60,7 @@ _AI_IMAGE_NODE_RUNTIME_STATS: dict[str, dict[str, Any]] = {}
 _AI_IMAGE_REQUEST_QUEUE = threading.Condition()
 _AI_IMAGE_ACTIVE_REQUESTS = 0
 _AI_IMAGE_ACTIVE_REQUESTS_BY_USER: dict[str, int] = {}
+_AI_IMAGE_REQUEST_WAITERS: list[tuple[str, str]] = []
 _AI_IMAGE_JOB_LOCK = threading.Lock()
 _AI_IMAGE_JOBS: dict[str, dict[str, Any]] = {}
 
@@ -4680,6 +4681,11 @@ def ai_image_retryable_error(value: Any) -> bool:
             "gateway timeout",
             "no available image quota",
             "image quota exhausted",
+            "image generation failed",
+            "image task returned no image data",
+            "no image result",
+            "upstream completed without generating images",
+            "生图接口没有返回图片",
         )
     )
 
@@ -4720,40 +4726,60 @@ def reset_ai_image_request_queue() -> None:
     with _AI_IMAGE_REQUEST_QUEUE:
         _AI_IMAGE_ACTIVE_REQUESTS = 0
         _AI_IMAGE_ACTIVE_REQUESTS_BY_USER.clear()
+        _AI_IMAGE_REQUEST_WAITERS.clear()
         _AI_IMAGE_REQUEST_QUEUE.notify_all()
 
 
 @contextmanager
 def ai_image_request_slot(actor: dict[str, Any] | None = None):
-    """Queue panel requests so several users do not exhaust every VPS at once."""
+    """Queue panel requests in fair user order so one account cannot monopolize every VPS."""
     global _AI_IMAGE_ACTIVE_REQUESTS
     username = limited_text((actor or {}).get("username"), "anonymous", 80).lower() or "anonymous"
     max_active = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_MAX_ACTIVE_REQUESTS"), 6)), 1, 24)
-    max_per_user = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_MAX_ACTIVE_PER_USER"), 2)), 1, 6)
+    max_per_user = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_MAX_ACTIVE_PER_USER"), 1)), 1, 6)
     queue_timeout = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_QUEUE_TIMEOUT"), 900)), 30, 1800)
     started = time.monotonic()
+    ticket = uuid.uuid4().hex
+    entered = False
     with _AI_IMAGE_REQUEST_QUEUE:
-        while (
-            _AI_IMAGE_ACTIVE_REQUESTS >= max_active
-            or int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(username, 0)) >= max_per_user
-        ):
-            remaining = queue_timeout - (time.monotonic() - started)
-            if remaining <= 0:
-                raise ValueError("生图任务排队超时，请稍后重试或减少同时生成的页面数量")
-            _AI_IMAGE_REQUEST_QUEUE.wait(timeout=min(5.0, remaining))
-        _AI_IMAGE_ACTIVE_REQUESTS += 1
-        _AI_IMAGE_ACTIVE_REQUESTS_BY_USER[username] = int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(username, 0)) + 1
+        _AI_IMAGE_REQUEST_WAITERS.append((ticket, username))
+        try:
+            while True:
+                first_eligible = next(
+                    (
+                        waiter_ticket
+                        for waiter_ticket, waiter_username in _AI_IMAGE_REQUEST_WAITERS
+                        if int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(waiter_username, 0)) < max_per_user
+                    ),
+                    "",
+                )
+                if _AI_IMAGE_ACTIVE_REQUESTS < max_active and first_eligible == ticket:
+                    _AI_IMAGE_REQUEST_WAITERS.remove((ticket, username))
+                    _AI_IMAGE_ACTIVE_REQUESTS += 1
+                    _AI_IMAGE_ACTIVE_REQUESTS_BY_USER[username] = int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(username, 0)) + 1
+                    entered = True
+                    break
+                remaining = queue_timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise ValueError("生图任务排队超时，请稍后重试或减少同时生成的页面数量")
+                _AI_IMAGE_REQUEST_QUEUE.wait(timeout=min(5.0, remaining))
+        except Exception:
+            if (ticket, username) in _AI_IMAGE_REQUEST_WAITERS:
+                _AI_IMAGE_REQUEST_WAITERS.remove((ticket, username))
+                _AI_IMAGE_REQUEST_QUEUE.notify_all()
+            raise
     try:
         yield
     finally:
-        with _AI_IMAGE_REQUEST_QUEUE:
-            _AI_IMAGE_ACTIVE_REQUESTS = max(0, _AI_IMAGE_ACTIVE_REQUESTS - 1)
-            next_count = max(0, int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(username, 0)) - 1)
-            if next_count:
-                _AI_IMAGE_ACTIVE_REQUESTS_BY_USER[username] = next_count
-            else:
-                _AI_IMAGE_ACTIVE_REQUESTS_BY_USER.pop(username, None)
-            _AI_IMAGE_REQUEST_QUEUE.notify_all()
+        if entered:
+            with _AI_IMAGE_REQUEST_QUEUE:
+                _AI_IMAGE_ACTIVE_REQUESTS = max(0, _AI_IMAGE_ACTIVE_REQUESTS - 1)
+                next_count = max(0, int(_AI_IMAGE_ACTIVE_REQUESTS_BY_USER.get(username, 0)) - 1)
+                if next_count:
+                    _AI_IMAGE_ACTIVE_REQUESTS_BY_USER[username] = next_count
+                else:
+                    _AI_IMAGE_ACTIVE_REQUESTS_BY_USER.pop(username, None)
+                _AI_IMAGE_REQUEST_QUEUE.notify_all()
 
 
 def chatgpt2api_base_url() -> str:
@@ -10613,7 +10639,7 @@ def _generate_images_via_chatgpt2api_tasks_single(
     # they rotate an available image account. This runs in a background job, so
     # the longer submission window does not keep the browser waiting.
     submit_timeout = clamp(int(number(os.environ.get("CHATGPT2API_IMAGE_TASK_SUBMIT_TIMEOUT"), 90)), 5, 90)
-    poll_timeout = clamp(int(number(os.environ.get("CHATGPT2API_IMAGE_TASK_TIMEOUT"), 600)), 30, 1800)
+    poll_timeout = clamp(int(number(os.environ.get("CHATGPT2API_IMAGE_TASK_TIMEOUT"), 300)), 30, 1800)
     poll_interval = max(0.5, min(number(os.environ.get("CHATGPT2API_IMAGE_TASK_POLL_INTERVAL"), 2), 10))
     task_prompts = [limited_text(item, "", 7000) for item in (prompts or []) if text(item)]
     if not task_prompts:
@@ -11698,32 +11724,27 @@ def refresh_ai_image_account_pool(actor: dict[str, Any]) -> dict[str, Any]:
 
     import requests
 
-    auth_key = chatgpt2api_auth_key()
-    root_url = chatgpt2api_root_url()
-    endpoint = f"{root_url}/api/accounts/refresh"
     timeout = clamp(int(number(os.environ.get("CHATGPT2API_ACCOUNT_REFRESH_TIMEOUT"), 180)), 30, 900)
-    try:
-        response = requests.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {auth_key}", "Content-Type": "application/json"},
-            json={"access_tokens": []},
-            timeout=timeout,
-        )
-    except requests.Timeout as exc:
-        raise ValueError(f"刷新生图账号池超时：{timeout} 秒内没有完成") from exc
-    except requests.RequestException as exc:
-        raise ValueError(f"连接生图账号刷新接口失败：{exc}") from exc
-    body = parse_chatgpt2api_json_response(
-        response,
-        operation="生图账号池刷新",
-        stage="account-pool-refresh",
-        endpoint=endpoint,
-    )
+    nodes = chatgpt2api_service_nodes()
 
-    accounts_endpoint = f"{root_url}/api/accounts"
-    remaining = 0
-    quota_ready = 0
-    try:
+    def refresh_node(node: dict[str, Any]) -> dict[str, Any]:
+        auth_key = text(node.get("authKey"))
+        root_url = text(node.get("rootUrl"))
+        endpoint = f"{root_url}/api/accounts/refresh"
+        headers = {"Authorization": f"Bearer {auth_key}", "Content-Type": "application/json"}
+        try:
+            response = requests.post(endpoint, headers=headers, json={"access_tokens": []}, timeout=timeout)
+        except requests.Timeout as exc:
+            raise ValueError(f"账号池刷新超时：{timeout} 秒内没有完成") from exc
+        except requests.RequestException as exc:
+            raise ValueError(f"连接账号池刷新接口失败：{exc}") from exc
+        body = parse_chatgpt2api_json_response(
+            response,
+            operation="生图账号池刷新",
+            stage="account-pool-refresh",
+            endpoint=endpoint,
+        )
+        accounts_endpoint = f"{root_url}/api/accounts"
         accounts_response = requests.get(
             accounts_endpoint,
             headers={"Authorization": f"Bearer {auth_key}"},
@@ -11736,24 +11757,62 @@ def refresh_ai_image_account_pool(actor: dict[str, Any]) -> dict[str, Any]:
             endpoint=accounts_endpoint,
         )
         accounts = accounts_body.get("items") if isinstance(accounts_body.get("items"), list) else []
-        remaining = len(accounts)
-        quota_ready = sum(
-            1
-            for account in accounts
-            if isinstance(account, dict)
-            and text(account.get("status"), "正常") not in {"禁用", "限流", "异常"}
-            and int(number(account.get("quota"), 0)) > 0
-        )
-    except Exception as exc:
-        log_ai_image_error("account-pool-list", {"endpoint": accounts_endpoint, "error": limited_text(exc, limit=220)})
+        node_errors = body.get("errors") if isinstance(body.get("errors"), list) else []
+        return {
+            "id": text(node.get("id")),
+            "name": text(node.get("name"), "生图节点"),
+            "remaining": len(accounts),
+            "quotaReady": sum(
+                1
+                for account in accounts
+                if isinstance(account, dict)
+                and text(account.get("status"), "正常") not in {"禁用", "限流", "异常"}
+                and (truthy(account.get("image_quota_unknown"), False) or int(number(account.get("quota"), 0)) > 0)
+            ),
+            "errors": len(node_errors),
+            "ok": True,
+        }
 
-    errors = body.get("errors") if isinstance(body.get("errors"), list) else []
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    node_results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(8, len(nodes)), thread_name_prefix="ai-image-refresh") as executor:
+        futures = {executor.submit(refresh_node, node): node for node in nodes}
+        for future in as_completed(futures):
+            node = futures[future]
+            try:
+                node_results.append(future.result())
+            except Exception as exc:
+                log_ai_image_error(
+                    "account-pool-refresh",
+                    {"nodeId": text(node.get("id")), "nodeName": text(node.get("name")), "error": limited_text(exc, limit=300)},
+                )
+                node_results.append(
+                    {
+                        "id": text(node.get("id")),
+                        "name": text(node.get("name"), "生图节点"),
+                        "remaining": 0,
+                        "quotaReady": 0,
+                        "errors": 1,
+                        "ok": False,
+                        "message": limited_text(exc, limit=240),
+                    }
+                )
+    node_order = {text(node.get("id")): index for index, node in enumerate(nodes)}
+    node_results.sort(key=lambda item: node_order.get(text(item.get("id")), len(nodes)))
+    successful_nodes = [item for item in node_results if item.get("ok")]
+    if not successful_nodes:
+        raise ValueError("全部生图节点账号池刷新失败，请检查 chatgpt2api 服务状态")
+    remaining = sum(int(number(item.get("remaining"), 0)) for item in successful_nodes)
+    quota_ready = sum(int(number(item.get("quotaReady"), 0)) for item in successful_nodes)
+    error_count = sum(int(number(item.get("errors"), 0)) for item in node_results)
     return {
         "ok": True,
         "remaining": remaining,
         "quotaReady": quota_ready,
-        "errors": len(errors),
-        "message": f"生图账号池已刷新：{quota_ready or remaining} 个账号可继续尝试",
+        "errors": error_count,
+        "nodes": node_results,
+        "message": f"已刷新 {len(successful_nodes)}/{len(nodes)} 个生图节点：{quota_ready or remaining} 个账号可继续尝试",
     }
 
 
