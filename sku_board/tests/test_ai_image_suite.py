@@ -229,7 +229,7 @@ class AiImageSuiteTests(unittest.TestCase):
             }
 
         started = time.perf_counter()
-        with patch.dict(os.environ, {"CHATGPT2API_HEDGE_NODE_COUNT": "2"}, clear=False), patch.object(
+        with patch.dict(os.environ, {"CHATGPT2API_HEDGE_NODE_COUNT": "2", "CHATGPT2API_HEDGE_DELAY_SECS": "0.02"}, clear=False), patch.object(
             backend,
             "chatgpt2api_service_nodes",
             return_value=nodes,
@@ -255,6 +255,46 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(result["outputs"][0]["nodeId"], "fast")
         self.assertEqual(result["winningNodeId"], "fast")
         self.assertEqual(result["hedgedNodeCount"], 2)
+
+    def test_single_page_does_not_duplicate_a_fast_primary_request(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        nodes = [
+            {"id": "primary", "name": "Primary VPS", "baseUrl": "https://primary.example.com/v1", "rootUrl": "https://primary.example.com", "authKey": "primary"},
+            {"id": "backup", "name": "Backup VPS", "baseUrl": "https://backup.example.com/v1", "rootUrl": "https://backup.example.com", "authKey": "backup"},
+        ]
+
+        result_payload = {
+            "outputs": [{"index": 0, "taskId": "task-primary", "image": (b"image", "image/png")}],
+            "errors": [],
+            "pending": [],
+            "taskIds": ["task-primary"],
+            "timedOut": False,
+        }
+
+        with patch.dict(os.environ, {"CHATGPT2API_HEDGE_NODE_COUNT": "2", "CHATGPT2API_HEDGE_DELAY_SECS": "0.2"}, clear=False), patch.object(
+            backend,
+            "chatgpt2api_service_nodes",
+            return_value=nodes,
+        ), patch.object(
+            backend,
+            "_generate_images_via_chatgpt2api_tasks_single",
+            return_value=result_payload,
+        ) as generate:
+            result = backend.generate_images_via_chatgpt2api_tasks(
+                prompt="single page",
+                model="gpt-image-2",
+                size="1500x2000",
+                count=1,
+                prompts=["single page"],
+                page_indexes=[0],
+                allow_partial=True,
+                suite_run_id="a1b2c3d4e5f6",
+            )
+
+        self.assertEqual(generate.call_count, 1)
+        self.assertEqual(result["outputs"][0]["nodeId"], "primary")
+        self.assertEqual(result["winningNodeId"], "primary")
+        self.assertEqual(result["hedgedNodeCount"], 1)
 
     def test_ten_page_suite_balances_three_three_two_two_across_four_nodes(self) -> None:
         backend.reset_ai_image_node_runtime_stats()
@@ -1297,6 +1337,10 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertIn("Number.POSITIVE_INFINITY", app_source)
         self.assertIn("2 张以上参考", app_source)
         self.assertIn("(conversation.referenceImages || []).filter((reference) => reference.file)", app_source)
+        self.assertIn("function aiImageSuiteReferencesForPage", app_source)
+        self.assertIn("const AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT = 2", app_source)
+        self.assertIn("const AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT = 5", app_source)
+        self.assertIn('formData.append("referenceUploadCount"', app_source)
 
     def test_suite_task_id_round_trip(self) -> None:
         task_id = "sosove-a1b2c3d4e5f6-p07-r112233-a2"

@@ -175,7 +175,9 @@ const AI_IMAGE_COD_HOOK_TYPES = [
 const AI_IMAGE_STATE_STORAGE_KEY = "sosove.sku-board.ai-image-state.v1";
 const AI_IMAGE_STATE_STORAGE_VERSION = 1;
 const AI_IMAGE_STATE_MAX_CONVERSATIONS = 12;
-const AI_IMAGE_SUITE_WORKER_COUNT = 8;
+const AI_IMAGE_SUITE_WORKER_COUNT = 4;
+const AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT = 2;
+const AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT = 5;
 const AI_IMAGE_SUITE_MAX_RETRIES = 2;
 const AI_IMAGE_SUITE_AUTO_RETRY_CYCLES = 2;
 const AI_IMAGE_SUITE_REVIEW_BATCH_SIZE = 4;
@@ -5608,9 +5610,80 @@ async function reviewAiImageSuitePageNumbers(conversation, pageNumbers = [], att
   return { reviewed: true, results: allResults, status: "ok", threshold };
 }
 
+const AI_IMAGE_SUITE_REFERENCE_ROLE_KEYWORDS = {
+  detail: ["detail", "material", "texture", "construction", "macro", "spec", "\u7ec6\u8282", "\u6750\u8d28", "\u9762\u6599", "\u5de5\u827a", "\u53c2\u6570"],
+  usage: ["usage", "use", "operation", "wearing", "action", "\u4f7f\u7528", "\u64cd\u4f5c", "\u7a7f\u7740", "\u4f69\u6234"],
+  scene: ["scene", "lifestyle", "outdoor", "home", "office", "commute", "\u573a\u666f", "\u6237\u5916", "\u901a\u52e4", "\u5ba4\u5185", "\u5bb6\u5ead"],
+  person: ["model", "person", "portrait", "doctor", "expert", "\u6a21\u7279", "\u4eba\u7269", "\u7528\u6237", "\u533b\u5e08", "\u4e13\u5bb6"],
+  package: ["package", "accessory", "size", "dimension", "specification", "\u5305\u88c5", "\u914d\u4ef6", "\u5c3a\u5bf8", "\u89c4\u683c", "\u4ea7\u54c1\u4fe1\u606f"],
+  layout: ["layout", "hero", "promotion", "review", "comparison", "\u6392\u7248", "\u9996\u56fe", "\u4fc3\u9500", "\u597d\u8bc4", "\u5bf9\u6bd4"],
+  styleSet: ["visual system", "style", "campaign", "series", "\u7cfb\u5217", "\u98ce\u683c", "\u89c6\u89c9"],
+};
+
+function aiImageSuiteReferenceRoleScore(roleKey, pagePlanText = "") {
+  return (AI_IMAGE_SUITE_REFERENCE_ROLE_KEYWORDS[roleKey] || [])
+    .reduce((score, keyword) => score + (pagePlanText.includes(keyword) ? 1 : 0), 0);
+}
+
+function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
+  const references = normalizeAiImageReferenceRoles(
+    (conversation.referenceImages || []).filter((reference) => reference.file),
+  );
+  if (references.length <= AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT) return references;
+
+  const products = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "product");
+  const productSources = products.length ? products : references.slice(0, 1);
+  const selected = [];
+  const add = (reference) => {
+    if (reference && !selected.includes(reference)) selected.push(reference);
+  };
+
+  if (page === 1) {
+    productSources.slice(0, 4).forEach(add);
+    const supplements = references.filter((reference) => !selected.includes(reference));
+    const preferred = supplements.find((reference) => ["styleSet", "layout"].includes(reference.role))
+      || supplements[0];
+    add(preferred);
+    return selected.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT);
+  }
+
+  add(productSources[(Math.max(1, Number(page)) - 1) % productSources.length]);
+  const pagePlanText = JSON.stringify(conversation.suitePages?.[page - 1] || {}).toLowerCase();
+  const supplemental = references
+    .map((reference, index) => ({
+      reference,
+      role: reference.role,
+      index,
+    }))
+    .filter((item) => item.role !== "product" && !selected.includes(item.reference));
+  supplemental.sort((left, right) => {
+    const scoreDifference = aiImageSuiteReferenceRoleScore(right.role, pagePlanText)
+      - aiImageSuiteReferenceRoleScore(left.role, pagePlanText);
+    if (scoreDifference) return scoreDifference;
+    const pageOffset = Math.max(0, Number(page) - 2);
+    return ((left.index - pageOffset + references.length) % references.length)
+      - ((right.index - pageOffset + references.length) % references.length);
+  });
+  add(supplemental[0]?.reference);
+  return selected.slice(0, AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT);
+}
+
 function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, runId, styleAnchor = null, reviewInstruction = "", editSource = null) {
   const formData = new FormData();
-  formData.append("prompt", prompt);
+  const allReferences = (conversation.referenceImages || []).filter((reference) => reference.file);
+  const references = editSource?.file ? [] : aiImageSuiteReferencesForPage(conversation, page);
+  const requestPrompt = references.length && references.length < allReferences.length
+    ? aiImageTemplatePrompt(conversation.templateKey || "main", aiImageProductBySku(conversation.productSku), true, {
+      mode: conversation.mode,
+      size: conversation.size,
+      userIntent: effectiveIntent,
+      lockLevel: conversation.lockLevel,
+      country: conversation.suiteCountry || "KR",
+      codHookType: conversation.codHookType || "hook",
+      referenceRoles: references,
+    })
+    : prompt;
+  formData.append("prompt", requestPrompt);
   formData.append("mode", "edit");
   formData.append("model", conversation.model);
   formData.append("size", conversation.size);
@@ -5629,7 +5702,12 @@ function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, 
   formData.append("suitePageIndexes", JSON.stringify([page]));
   if (reviewInstruction) formData.append("suiteReviewInstruction", reviewInstruction);
   const activeStyleAnchor = editSource?.file ? null : styleAnchor;
-  const references = (conversation.referenceImages || []).filter((reference) => reference.file);
+  const productReferenceIndexes = references
+    .map((reference, index) => ({ reference, index: index + 1, role: aiImageReferenceRoleKey(reference, index) }))
+    .filter((item) => item.role === "product")
+    .map((item) => item.index);
+  formData.append("productReferenceIndexes", JSON.stringify(productReferenceIndexes));
+  formData.append("referenceUploadCount", String(references.length + (activeStyleAnchor?.file && page !== 1 ? 1 : 0) + (editSource?.file ? 1 : 0)));
   references.forEach((reference, index) => {
     formData.append(`reference${index}`, reference.file, reference.name);
   });

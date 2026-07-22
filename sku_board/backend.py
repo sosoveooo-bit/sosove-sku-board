@@ -10984,7 +10984,7 @@ def _dispatch_images_via_chatgpt2api_tasks(
                 force_cooldown=force_cooldown,
             )
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 
     task_prompts = [limited_text(item, "", 7000) for item in (prompts or []) if text(item)]
     total = len(task_prompts) if task_prompts else count
@@ -11041,11 +11041,9 @@ def _dispatch_images_via_chatgpt2api_tasks(
                 force_cooldown=force_cooldown,
             )
 
-    # A single page used to wait for one VPS for the full timeout before the
-    # retry scheduler could try another VPS.  Send the same page to two healthy
-    # pools at once and return the first complete image.  The slower task is
-    # allowed to finish in the background so its account/conversation cleanup
-    # still runs normally on chatgpt2api.
+    # Give the healthiest VPS a head start. Only start a duplicate task when
+    # the primary has not completed within the hedge delay. This preserves fast
+    # failover without doubling every reference upload and account charge.
     hedge_node_count = clamp(
         int(number(os.environ.get("CHATGPT2API_HEDGE_NODE_COUNT"), 2)),
         1,
@@ -11064,13 +11062,32 @@ def _dispatch_images_via_chatgpt2api_tasks(
             max_workers=len(hedge_node_indexes),
             thread_name_prefix="ai-image-hedge",
         )
-        futures = {
-            executor.submit(run_group, node_index, [0]): node_index
-            for node_index in hedge_node_indexes
-        }
+        primary_node_index = hedge_node_indexes[0]
+        primary_future = executor.submit(run_group, primary_node_index, [0])
+        futures = {primary_future: primary_node_index}
+        processed_futures: set[Any] = set()
         winner: tuple[dict[str, Any], Any, int, bool] | None = None
+        hedge_delay = max(0.0, min(number(os.environ.get("CHATGPT2API_HEDGE_DELAY_SECS"), 45), 120.0))
         try:
+            try:
+                completed = primary_future.result(timeout=hedge_delay)
+                processed_futures.add(primary_future)
+                hedge_results.append(completed)
+                if completed[3]:
+                    winner = completed
+            except FutureTimeoutError:
+                pass
+            except Exception as exc:
+                processed_futures.add(primary_future)
+                hedge_failures.append((nodes[primary_node_index], exc))
+
+            if winner is None:
+                for node_index in hedge_node_indexes[1:]:
+                    future = executor.submit(run_group, node_index, [0])
+                    futures[future] = node_index
             for future in as_completed(futures):
+                if future in processed_futures:
+                    continue
                 try:
                     completed = future.result()
                     hedge_results.append(completed)
@@ -11119,7 +11136,7 @@ def _dispatch_images_via_chatgpt2api_tasks(
                     "success": node_success,
                 }
             ]
-            decorated["hedgedNodeCount"] = len(hedge_node_indexes)
+            decorated["hedgedNodeCount"] = len(futures)
             decorated["winningNodeId"] = node_id
             return decorated
 
@@ -11139,7 +11156,7 @@ def _dispatch_images_via_chatgpt2api_tasks(
             "taskIds": [],
             "nodeResults": [],
             "timedOut": bool(hedge_failures),
-            "hedgedNodeCount": len(hedge_node_indexes),
+            "hedgedNodeCount": len(futures),
         }
         for node, result, latency_ms, node_success in hedge_results:
             node_id = text(node.get("id"))
