@@ -4738,8 +4738,11 @@ def ai_image_request_slot(actor: dict[str, Any] | None = None):
     """Queue panel requests in fair user order so one account cannot monopolize every VPS."""
     global _AI_IMAGE_ACTIVE_REQUESTS
     username = limited_text((actor or {}).get("username"), "anonymous", 80).lower() or "anonymous"
+    # The suite UI dispatches four pages at a time. Keep the same per-user
+    # capacity here so those pages can use the four configured image nodes
+    # concurrently instead of waiting in a process-local serial queue.
     max_active = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_MAX_ACTIVE_REQUESTS"), 6)), 1, 24)
-    max_per_user = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_MAX_ACTIVE_PER_USER"), 1)), 1, 6)
+    max_per_user = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_MAX_ACTIVE_PER_USER"), 4)), 1, 6)
     queue_timeout = clamp(int(number(os.environ.get("CHATGPT2API_PANEL_QUEUE_TIMEOUT"), 900)), 30, 1800)
     started = time.monotonic()
     ticket = uuid.uuid4().hex

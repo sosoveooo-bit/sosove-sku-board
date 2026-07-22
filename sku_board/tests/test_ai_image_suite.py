@@ -539,6 +539,35 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(order, ["designer", "admin"])
         backend.reset_ai_image_request_queue()
 
+    def test_image_request_queue_allows_four_suite_pages_for_one_user(self) -> None:
+        backend.reset_ai_image_request_queue()
+        release = threading.Event()
+        entered = threading.Event()
+        active_lock = threading.Lock()
+        active = 0
+
+        def worker() -> None:
+            nonlocal active
+            with backend.ai_image_request_slot({"username": "designer", "role": "designer"}):
+                with active_lock:
+                    active += 1
+                    if active == 4:
+                        entered.set()
+                release.wait(timeout=2)
+
+        with patch.dict(os.environ, {}, clear=True):
+            threads = [threading.Thread(target=worker) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            self.assertTrue(entered.wait(timeout=1), "four suite pages should run concurrently for one user")
+            release.set()
+            for thread in threads:
+                thread.join(timeout=2)
+
+        self.assertEqual(active, 4)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        backend.reset_ai_image_request_queue()
+
     def test_background_image_job_returns_immediately_and_can_be_polled(self) -> None:
         entered = threading.Event()
         release = threading.Event()
