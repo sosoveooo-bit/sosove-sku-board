@@ -1522,17 +1522,17 @@ class AiImageSuiteTests(unittest.TestCase):
     def test_frontend_reference_roles_are_generic_and_suites_stay_in_edit_mode(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
-        for label in ("主商品", "产品细节", "使用方式", "场景参考", "人物参考", "排版风格", "系列风格参考", "包装与配件"):
+        for label in ("主商品", "产品细节", "使用方式", "场景参考", "人物参考", "包袋参考", "帽子参考", "鞋履参考", "首饰参考", "穿搭配饰", "排版风格", "系列风格参考", "包装与配件"):
             self.assertIn(label, app_source)
         self.assertIn("[Reference role map]", app_source)
         self.assertIn("data-ai-reference-keywords", app_source)
         self.assertIn("setAiImageReferenceKeyword", app_source)
-        self.assertIn("model appearance, age impression, hairstyle", app_source)
+        self.assertIn("exact identity source for face, hair, age impression", app_source)
         self.assertIn("environment, location, props, lighting and atmosphere", app_source)
         self.assertIn("full-page visual system", app_source)
         self.assertIn("[External style-set lock]", app_source)
         self.assertIn("ai-image-style-set-upload-btn", app_source)
-        self.assertIn('["scene", "person", "layout", "styleSet"]', app_source)
+        self.assertIn('["scene", "person", "bag", "hat", "shoes", "jewelry", "accessory", "package", "layout", "styleSet"]', app_source)
         self.assertIn('["product", "detail", "scene", "person"]', app_source)
         self.assertIn("conversation.mode === \"edit\" && current.length >= 2 && !suiteActive", app_source)
         self.assertIn("AI_IMAGE_SUITE_REVIEW_MAX_RETRIES = 1", app_source)
@@ -2299,7 +2299,7 @@ Type-C充电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "amazonAplus")
 
-        self.assertEqual(skill["version"], "2.3.0")
+        self.assertEqual(skill["version"], "2.4.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_AMAZON_APLUS_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -2396,7 +2396,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "rakutenSuite")
 
-        self.assertEqual(skill["version"], "2.3.0")
+        self.assertEqual(skill["version"], "2.4.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_RAKUTEN_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_RAKUTEN_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -2596,7 +2596,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "codKorea")
 
-        self.assertEqual(skill["version"], "2.3.0")
+        self.assertEqual(skill["version"], "2.4.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_COD_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_COD_KR_PLAN_VERSION)
         self.assertEqual(template["count"], 30)
@@ -3172,18 +3172,24 @@ USB供电
         self.assertEqual(template["size"], "750x1000")
         self.assertNotIn("suiteKey", template)
 
-    def test_virtual_try_on_template_is_exposed_with_dedicated_upload_controls(self) -> None:
+    def test_virtual_styling_template_is_exposed_with_dedicated_upload_controls(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
         html_source = (backend.ROOT_DIR / "static" / "index.html").read_text(encoding="utf-8")
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "virtualTryOn")
 
-        self.assertIn('{ key: "virtualTryOn", label: "模特换衣"', app_source)
+        self.assertIn('{ key: "virtualTryOn", label: "模特换装/搭配"', app_source)
         self.assertIn('templateKey === "virtualTryOn"', app_source)
-        self.assertIn("[Virtual try-on binding — highest priority]", app_source)
+        self.assertIn("[Virtual styling binding — highest priority]", app_source)
+        self.assertIn('{ key: "bag", label: "包袋参考"', app_source)
+        self.assertIn('{ key: "hat", label: "帽子参考"', app_source)
+        self.assertIn('{ key: "shoes", label: "鞋履参考"', app_source)
+        self.assertIn('{ key: "jewelry", label: "首饰参考"', app_source)
+        self.assertIn('file="${fileName}"', app_source)
+        self.assertIn("固定 1 张完整场景图", app_source)
         self.assertIn('id="ai-image-model-upload-btn"', html_source)
         self.assertIn('id="ai-image-model-reference-file"', html_source)
-        self.assertEqual(template["label"], "模特换衣")
+        self.assertEqual(template["label"], "模特换装/搭配")
         self.assertEqual(template["count"], 1)
         self.assertEqual(template["mode"], "compose")
         self.assertEqual(template["size"], "1024x1536")
@@ -3223,6 +3229,45 @@ USB供电
                 {"reference0": Upload(), "reference1": Upload()},
                 {"role": "admin"},
             )
+
+    def test_virtual_styling_backend_binds_named_items_and_forces_one_full_body_scene(self) -> None:
+        bindings = [
+            {"index": 1, "role": "product", "name": "skirt.png", "keywords": "保留裙型"},
+            {"index": 2, "role": "person", "name": "model.jpg", "keywords": "完整全身"},
+            {"index": 3, "role": "package", "name": "614615_2620167_5.jpg", "keywords": "替换原包"},
+            {"index": 4, "role": "product", "name": "white-shirt.jpg", "keywords": "替换白色T恤"},
+            {"index": 5, "role": "jewelry", "name": "ScreenShot_2026-05-18_114406_057.png", "keywords": "作为耳环佩戴"},
+            {"index": 6, "role": "hat", "name": "ScreenShot_2026-05-18_154352_589.png", "keywords": "帽子改成黑色"},
+            {"index": 7, "role": "shoes", "name": "ScreenShot_2026-07-22_143924_306.png", "keywords": "替换成白鞋"},
+            {"index": 8, "role": "scene", "name": "scene.jpg", "keywords": "使用该场景"},
+        ]
+        fields = {
+            "prompt": "按文件名替换包、衬衣、耳环、帽子和鞋，只生成单张完整模特场景，不要宫格。",
+            "mode": "compose",
+            "model": "gpt-image-2",
+            "size": "1024x1536",
+            "quality": "high",
+            "count": "4",
+            "templateKey": backend.AI_IMAGE_VIRTUAL_TRY_ON_TEMPLATE_KEY,
+            "referenceBindings": json.dumps(bindings, ensure_ascii=False),
+        }
+        output_images = [(b"generated-styled-look", "image/png")]
+        files = {f"reference{index}": Upload() for index in range(len(bindings))}
+        with (
+            patch.object(backend, "chatgpt2api_image_tasks_enabled", return_value=True),
+            patch.object(backend, "generate_images_via_chatgpt2api_tasks", return_value=output_images) as generate,
+            patch.object(backend, "save_ai_image_outputs", return_value=([{}], ["preview"])),
+        ):
+            payload = backend.generate_ad_launch_ai_image_edit(fields, files, {"role": "designer"})
+
+        generated_prompt = generate.call_args.kwargs["prompt"]
+        self.assertTrue(payload["ok"])
+        self.assertEqual(generate.call_args.kwargs["count"], 1)
+        self.assertEqual(len(generate.call_args.kwargs["reference_images"]), 8)
+        self.assertIn("[Server reference bindings", generated_prompt)
+        self.assertIn('Image 3=包装与配件 [file="614615_2620167_5.jpg"]', generated_prompt)
+        self.assertIn('Image 6=帽子参考 [file="ScreenShot_2026-05-18_154352_589.png"] (帽子改成黑色)', generated_prompt)
+        self.assertIn("exactly one continuous photorealistic full-body scene", generated_prompt)
 
     def test_cod_hook_strip_sizes_are_accepted_and_normalized_to_exact_pixels(self) -> None:
         from PIL import Image

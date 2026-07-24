@@ -5684,13 +5684,63 @@ def parse_chatgpt2api_json_response(
 
 
 AI_IMAGE_VIRTUAL_TRY_ON_TEMPLATE_KEY = "virtualTryOn"
+AI_IMAGE_VIRTUAL_STYLING_ROLE_LABELS = {
+    "product": "主商品",
+    "detail": "产品细节",
+    "usage": "使用方式",
+    "scene": "场景参考",
+    "person": "人物参考",
+    "bag": "包袋参考",
+    "hat": "帽子参考",
+    "shoes": "鞋履参考",
+    "jewelry": "首饰参考",
+    "accessory": "穿搭配饰",
+    "layout": "排版风格",
+    "styleSet": "系列风格参考",
+    "package": "包装与配件",
+}
 AI_IMAGE_VIRTUAL_TRY_ON_INSTRUCTION = (
-    "[Server-enforced virtual try-on lock — highest priority] Use reference images assigned as 主商品 as the exact garment source and the reference assigned as 人物参考 as the exact target model photograph. "
-    "Identify whether the product is a top, bottom, dress, outerwear or coordinated set. Preserve the garment's exact category, color, print, fabric appearance, neckline, sleeves, closures, pockets, seams, proportions and hem. "
-    "Preserve the target model's identity, face, hair, expression, skin, body proportions, pose, hands, crop, camera, lighting, background, accessories and all clothing outside the replacement area. "
-    "Replace only the clothing area covered by the supplied product. Keep the model's original bottom and shoes for a top; keep the original top and shoes for a bottom; for a dress or set replace only its covered layers. "
-    "Fit the exact garment naturally to the existing body and pose with realistic tension, folds, drape, occlusion and contact shadows. Remove the replaced garment cleanly. Return one photorealistic finished model photograph without text, panels, product cutout insets, collage borders or watermarks."
+    "[Server-enforced virtual try-on lock — highest priority] This is full model styling and scene composition, not clothing-only replacement. "
+    "Use 主商品 as exact garment or wearable-product sources, 人物参考 as the exact identity, face, hair, age impression, skin tone and body-proportion source, 场景参考 as the environment source, and 包袋参考, 帽子参考, 鞋履参考, 首饰参考 or 穿搭配饰 as exact styling-item sources. "
+    "For backward compatibility, any 包装与配件 file explicitly named in the user prompt is also an exact styling-item source. Follow filename-specific replacement and recolor requests exactly. "
+    "Compose in this order: scene, person identity and proportions, garments, shoes, bag, hat, then earrings or jewelry. Preserve each source item's category, shape, proportions, material, color and construction unless one attribute is explicitly changed. Preserve all unspecified person and outfit attributes. "
+    "A cropped person reference may be completed into a natural head-to-toe pose and the background may be replaced when requested. Integrate every layer with realistic anatomy, fit, scale, perspective, occlusion, contact and cast shadows. "
+    "Return exactly one continuous photorealistic full-body scene with one model and the complete outfit visible. No text, panel, split screen, grid, contact sheet, collage, product inset, duplicate model, logo or watermark."
 )
+
+
+def normalize_ai_image_reference_bindings(value: Any, reference_count: int) -> list[dict[str, Any]]:
+    try:
+        raw_items = json.loads(text(value, "[]"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw_items, list):
+        return []
+    bindings: list[dict[str, Any]] = []
+    for position, item in enumerate(raw_items[:reference_count]):
+        if not isinstance(item, dict):
+            continue
+        role = text(item.get("role")).strip()
+        if role not in AI_IMAGE_VIRTUAL_STYLING_ROLE_LABELS:
+            continue
+        name = limited_text(item.get("name"), "", 120).replace("\r", " ").replace("\n", " ")
+        keywords = limited_text(item.get("keywords"), "", 240).replace("\r", " ").replace("\n", " ")
+        bindings.append({"index": position + 1, "role": role, "name": name, "keywords": keywords})
+    return bindings
+
+
+def ai_image_virtual_styling_binding_instruction(bindings: list[dict[str, Any]]) -> str:
+    if not bindings:
+        return ""
+    mapped: list[str] = []
+    for binding in bindings:
+        label = AI_IMAGE_VIRTUAL_STYLING_ROLE_LABELS.get(text(binding.get("role")), "参考图")
+        filename = text(binding.get("name"))
+        keywords = text(binding.get("keywords"))
+        file_text = f' [file="{filename}"]' if filename else ""
+        keyword_text = f" ({keywords})" if keywords else ""
+        mapped.append(f"Image {binding['index']}={label}{file_text}{keyword_text}")
+    return "[Server reference bindings — exact file-to-image contract] " + "; ".join(mapped) + "."
 AI_IMAGE_LANDING_LEGACY_SUITE_KEY = "jp-landing-page-10"
 AI_IMAGE_LANDING_SUITE_KEY = "jp-landing-page-32"
 AI_IMAGE_AMAZON_APLUS_LEGACY_SUITE_KEY = "amazon-jp-aplus-7"
@@ -11781,7 +11831,7 @@ def generate_ad_launch_ai_image(payload: dict[str, Any], actor: dict[str, Any]) 
     skill_meta = normalize_ai_image_skill_meta(payload)
     template_key = limited_text(payload.get("templateKey"), "", 40)
     if template_key == AI_IMAGE_VIRTUAL_TRY_ON_TEMPLATE_KEY:
-        raise ValueError("模特换衣需要上传衣服产品图和模特图片")
+        raise ValueError("模特换装/搭配需要上传商品图和人物参考图")
     if normalize_ai_image_suite_key(payload.get("suiteKey")):
         raise ValueError("落地页套图需要上传产品参考图，请选择“日系落地页套图”并上传产品主图")
 
@@ -11933,10 +11983,19 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         raise ValueError("请先上传参考图片")
     if template_key == AI_IMAGE_VIRTUAL_TRY_ON_TEMPLATE_KEY:
         mode = "compose"
+        count = 1
         if len(reference_items) < 2:
-            raise ValueError("模特换衣需要上传衣服产品图和模特图片")
-        if not re.search(r"(?:人物参考|person reference|model source)", prompt, re.IGNORECASE):
+            raise ValueError("模特换装/搭配需要上传商品图和人物参考图")
+        reference_bindings = normalize_ai_image_reference_bindings(fields.get("referenceBindings"), len(reference_items))
+        has_bound_product = any(item.get("role") == "product" for item in reference_bindings)
+        has_bound_person = any(item.get("role") == "person" for item in reference_bindings)
+        if reference_bindings and not has_bound_product:
+            raise ValueError("请把至少一张服装或商品图片设置为主商品")
+        if not has_bound_person and not re.search(r"(?:人物参考|person reference|model source)", prompt, re.IGNORECASE):
             raise ValueError("请把目标模特图片设置为人物参考")
+        binding_instruction = ai_image_virtual_styling_binding_instruction(reference_bindings)
+        if binding_instruction and binding_instruction not in prompt:
+            prompt = f"{prompt}\n{binding_instruction}"
         if "[Server-enforced virtual try-on lock" not in prompt:
             prompt = f"{prompt}\n{AI_IMAGE_VIRTUAL_TRY_ON_INSTRUCTION}"
     if mode == "compose" and len(reference_items) < 2:

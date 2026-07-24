@@ -188,10 +188,15 @@ const AI_IMAGE_REFERENCE_ROLES = [
   { key: "detail", label: "产品细节", instruction: "Use only for observable construction, texture and detail evidence." },
   { key: "usage", label: "使用方式", instruction: "Use only for the natural operation, wearing or usage action." },
   { key: "scene", label: "场景参考", instruction: "Use only for environment, location, props, lighting and atmosphere; do not copy its product or clothing." },
-  { key: "person", label: "人物参考", instruction: "Use only for model appearance, age impression, hairstyle, body proportion and natural pose; keep the product and garment from Image 1." },
+  { key: "person", label: "人物参考", instruction: "Use as the exact identity source for face, hair, age impression, skin tone and body proportions. Clothing, accessories, pose, crop and background may change only when the current user prompt explicitly requests it." },
+  { key: "bag", label: "包袋参考", instruction: "Use as the exact bag source. Preserve its shape, material, color, hardware, strap and visible construction unless the current user prompt explicitly changes one attribute." },
+  { key: "hat", label: "帽子参考", instruction: "Use as the exact hat source. Preserve its shape, material, brim, crown and construction; apply an explicitly requested color change without redesigning it." },
+  { key: "shoes", label: "鞋履参考", instruction: "Use as the exact shoes source. Preserve shoe category, silhouette, color, sole, laces, material and construction." },
+  { key: "jewelry", label: "首饰参考", instruction: "Use as the exact jewelry source. Preserve its type, scale, shape, material, color and wearing position." },
+  { key: "accessory", label: "穿搭配饰", instruction: "Use as the exact requested styling item source, such as glasses, belt or scarf. Preserve the item's visible identity and place it naturally on the model." },
   { key: "layout", label: "排版风格", instruction: "Use only for composition, spacing, palette and typography rhythm." },
   { key: "styleSet", label: "系列风格参考", instruction: "Use only for the full-page visual system: palette, headline scale, information density, module shapes, callout rhythm, image-to-text ratio, macro or result presentation and cross-page pacing. Do not copy its product, people, text, logos, claims, badges or certifications." },
-  { key: "package", label: "包装与配件", instruction: "Use only for confirmed packaging and accessories; do not invent missing parts." },
+  { key: "package", label: "包装与配件", instruction: "Use only for confirmed packaging and accessories. In the 模特换装/搭配 template, an item explicitly named by filename in the current user prompt is an exact styling source and must be worn or carried as requested." },
 ];
 const AI_IMAGE_DIRECTOR_STAGES = [
   { key: "cache", label: "读取产品缓存" },
@@ -378,7 +383,7 @@ const AI_IMAGE_PROMPT_TEMPLATES = [
   { key: "main", label: "日系穿搭广告", size: "1024x1536", count: 4 },
   { key: "scene", label: "非白底场景", size: "1024x1536", count: 4 },
   { key: "model", label: "模特上身", size: "1024x1536", count: 4 },
-  { key: "virtualTryOn", label: "模特换衣", size: "1024x1536", count: 1, mode: "compose" },
+  { key: "virtualTryOn", label: "模特换装/搭配", size: "1024x1536", count: 1, mode: "compose" },
   { key: "poster", label: "Rakuten 单张海报", size: "1024x1536", count: 2 },
   { key: "landing", label: "日本落地页（可选数量）", size: "1500x2000", count: 32, mode: "edit", suiteKey: "jp-landing-page-32" },
   { key: "amazonAplus", label: "Amazon A+专区", size: "970x600", count: 9, mode: "edit", suiteKey: "amazon-jp-aplus-9" },
@@ -2012,7 +2017,7 @@ function aiImageTemplateDirection(templateKey, productName, size = "") {
     main: "Japanese womenswear lifestyle advertisement, Japanese woman age 25-35 wearing the product, natural confident pose, refined Tokyo editorial styling, layered real-world setting with depth, warm gray and muted green environment, premium but approachable ecommerce photography",
     scene: "non-white lifestyle scene in a bright Japanese apartment, cafe terrace or quiet Tokyo street, visible furniture or architecture, foreground and background layers, natural lived-in details, realistic depth, the product remains the clear focal point",
     model: "full-body or three-quarter model wearing the product, natural standing or walking pose, coordinated daily outfit visible from head to toe, accurate fit around waist, shoulders and hem, vertical Japanese catalog photography",
-    virtualTryOn: "photorealistic virtual try-on using the exact garment from every 主商品 reference and the exact person, face, hair, body proportions, pose, camera, lighting, background and accessories from the 人物参考 image. Replace only the clothing region covered by the supplied garment. Preserve all uncovered original clothing and the entire model photograph. Reconstruct realistic fit, fabric folds, seams, occlusion, contact shadows and garment length without changing the garment design or the model identity",
+    virtualTryOn: "one coherent photorealistic full-body fashion photograph assembled from the explicitly assigned references. Preserve the exact identity, face, hair, age impression, skin tone and body proportions from 人物参考. Use every 主商品 image as an exact garment or wearable-product source, and use 包袋参考, 帽子参考, 鞋履参考, 首饰参考, 穿搭配饰 and explicitly named 包装与配件 as exact item sources. Use 场景参考 for the requested environment. Expand a cropped person reference into a believable head-to-toe pose when requested, with natural anatomy, contact, scale, occlusion, fabric behavior and shadows. Return one standalone scene, never a grid or collage",
     detail: `premium ecommerce detail study for ${productName}, macro and medium close-up views of fabric texture, stitching, waist, neckline, sleeve, hem and construction, tactile material rendering on a warm light-gray textile surface`,
     facebook: "Facebook and Instagram feed ad creative, immediate focal point, product benefit readable at first glance, strong subject-background separation, energetic asymmetric composition, room for optional copy overlay, conversion-focused fashion photography",
     poster: "information-rich Japanese Rakuten fashion poster, large model on the right with full product silhouette, designed advertising area on the left, layered editorial panels, color swatch blocks, size badge shapes and benefit callouts, warm light-gray paper texture, red and gold accent shapes, use intentional blank label areas instead of fake readable text",
@@ -2080,18 +2085,20 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
   const materialRule = isGenericProductSuite
     ? "Photorealistic, category-accurate materials and surface texture, believable product physics and results, realistic skin when people appear, soft directional light, natural shadows and polished local ecommerce color grading."
     : globalRules.materialAndLight || "Photorealistic fabric texture, accurate folds and seams, soft directional daylight with controlled fill light, realistic skin, natural shadows, premium Japanese ecommerce color grading.";
-  const layoutRule = isGenericProductSuite
+  const layoutRule = isVirtualTryOn
+    ? "One coherent edge-to-edge full-body fashion photograph with one model, one continuous camera view and one continuous scene. Keep the complete head, hands, outfit, bag and shoes visible with natural scale and spacing."
+    : isGenericProductSuite
     ? "Clear product-first hierarchy, complete product visibility, category-appropriate proof, strong first-glance recognition, readable localized information zones and polished full-bleed ecommerce composition."
     : globalRules.advertisingLayout || "Clear visual hierarchy, complete garment silhouette, useful negative space, strong first-glance product recognition, polished commercial finish.";
   const sellingPointRule = isVirtualTryOn
-    ? "[Virtual try-on output] Create one clean finished model photograph without advertising text, benefit cards, comparison panels, product cutout insets or extra garments. The successful result is the supplied model naturally wearing the exact supplied product."
+    ? "[Virtual styling output] Create exactly one clean finished full-body model scene. Apply every garment and styling replacement explicitly requested by filename or selected role. Preserve every unspecified person or outfit attribute. No advertising text, benefit cards, comparison panels or product cutout insets."
     : sellingPoints.length
     ? `[Selling points] Express visually: ${sellingPoints.join("; ")}.`
     : isGenericProductSuite
     ? "[Selling points] Use the current user prompt as the source of truth. Visually prove the supplied main and secondary benefits with category-appropriate details, usage and results."
     : "[Selling points] Show flattering fit, wearable comfort and premium material through the image rather than text.";
   const negativeRule = isVirtualTryOn
-    ? "No face change, hairstyle change, age change, body reshaping, pose change, hand change, camera change, background change, skin retouching, accessory removal, extra clothing layer, leftover original garment inside the replaced region, product redesign, changed color or print, invented sleeve, collar, pocket, seam, button, zipper, hem, logo, warped anatomy, fused limbs, floating fabric, plastic skin, text, logo, watermark, frame or collage."
+    ? "No unrequested face, hairstyle, age, skin tone or body-proportion change. No omitted requested item, leftover replaced garment or accessory, item duplication, product redesign, unsupported color change, warped anatomy, fused limbs, floating clothing, wrong item scale, plastic skin, text, logo, watermark, split screen, before-and-after panel, grid, contact sheet, collage, card, inset or duplicate model."
     : isGenericProductSuite
     ? "No plain white outer background, isolated floating cutout, generic empty studio, product redesign, changed color, invented part, wrong use method, distorted anatomy, extra fingers or limbs, plastic skin, random letters, fake logo, watermark, frame or collage border."
     : globalRules.negativeConstraints || "No plain white background, no isolated floating product cutout, no generic empty studio, no product redesign, no changed color or pattern, no distorted anatomy, no extra fingers or limbs, no warped garment, no plastic skin, no random letters, no fake logo, no watermark, no frame or collage border.";
@@ -2112,10 +2119,10 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
     : "";
   const hasExternalStyleSet = (options.referenceRoles || []).some((reference, index) => aiImageReferenceRoleKey(reference, index) === "styleSet");
   const virtualTryOnRule = isVirtualTryOn
-    ? `[Virtual try-on binding — highest priority] Garment source: reference image${productReferenceIndexes.length > 1 ? "s" : ""} ${productReferenceIndexes.join(", ") || "assigned as 主商品"}. Model source: reference image${personReferenceIndexes.length > 1 ? "s" : ""} ${personReferenceIndexes.join(", ") || "assigned as 人物参考"}. First identify whether the supplied product is a top, bottom, dress, outerwear or coordinated set. Copy its exact category, color, print, fabric appearance, neckline, sleeves, closures, pockets, seams, proportions and hem. Keep the model reference's identity, face, hair, expression, skin, body proportions, pose, hands, crop, camera, lighting, background, accessories and uncovered clothing unchanged. Replace only the original clothing area covered by the product: for a top keep the model's original bottom and shoes; for a bottom keep the original top and shoes; for a dress or set replace only the corresponding covered layers. Fit the garment to the existing body and pose with realistic fabric tension, folds, drape, occlusion and contact shadows. Remove the replaced garment cleanly so it does not show through. Product accuracy and model identity have equal highest priority.`
+    ? `[Virtual styling binding — highest priority] The reference role map, filenames and current user prompt jointly define an exact item-to-image contract. Garment or wearable-product sources: reference image${productReferenceIndexes.length > 1 ? "s" : ""} ${productReferenceIndexes.join(", ") || "assigned as 主商品"}. Identity source: reference image${personReferenceIndexes.length > 1 ? "s" : ""} ${personReferenceIndexes.join(", ") || "assigned as 人物参考"}. Apply requested layers in this order: scene, person identity and proportions, garments, shoes, bag, hat, then earrings or other jewelry. For every requested replacement, copy the assigned source item's exact category, shape, proportions, color, print, material, hardware and construction; only make an attribute change such as recoloring when explicitly requested. Preserve the model's identity and every unspecified item. The prompt may explicitly replace accessories, change the scene, complete a cropped body, or adapt the pose so all products are visible. Integrate all layers with realistic fit, scale, perspective, occlusion, contact and cast shadows. Output exactly one continuous full-body photograph with one model; no grid, split screen, collage, card, inset or duplicated view.`
     : "";
   const referenceInstruction = isVirtualTryOn
-    ? "Use every reference assigned as 主商品 only as the exact garment source and the reference assigned as 人物参考 as the exact target photograph. This is clothing replacement, not ordinary multi-image blending. Preserve the target model photograph and edit only the clothing area covered by the supplied garment."
+    ? "Use the selected role and filename of every reference as a binding instruction. 主商品 supplies exact garments or wearable products; 人物参考 supplies identity; 场景参考 supplies the environment; 包袋参考, 帽子参考, 鞋履参考, 首饰参考 and 穿搭配饰 supply exact styling items. For backward compatibility, explicitly named 包装与配件 images also supply exact requested styling items."
     : aiImageReferenceInstruction(mode, hasReferences, { genericProduct: isGenericProductSuite });
   const sections = [
     userPromptFidelityRule,
@@ -3227,7 +3234,7 @@ function renderAiImageForm() {
   const codHookActive = conversation.templateKey === "codHook";
   const virtualTryOnActive = conversation.templateKey === "virtualTryOn";
   const activeTemplate = aiImageTemplateOptions().find((item) => item.key === conversation.templateKey) || null;
-  const currentCount = Number(suiteConfig?.count || conversation.count || state.aiImages.count || 1);
+  const currentCount = virtualTryOnActive ? 1 : Number(suiteConfig?.count || conversation.count || state.aiImages.count || 1);
   const currentCountry = conversation.suiteCountry || state.aiImages.suiteCountry || "KR";
   const currentCodHookType = aiImageCodHookTypeConfig(conversation.codHookType || "hook");
   $("#ai-image-product").innerHTML = productOptions(options.products || [], currentProduct);
@@ -3275,11 +3282,11 @@ function renderAiImageForm() {
   renderAiImageDirectorModes(conversation);
   renderAiImageGenerationProfiles(conversation);
   renderAiImageSizePresets(currentSize, suiteConfig);
-  renderAiImageCountPresets(currentCount, options.aiImage?.maxCount || 10, suiteConfig);
+  renderAiImageCountPresets(currentCount, options.aiImage?.maxCount || 10, suiteConfig, virtualTryOnActive ? "固定 1 张完整场景图" : "");
   renderAiImageTemplates(conversation);
   const refCount = conversation.referenceImages?.length || 0;
   const hasMask = Boolean(conversation.maskImage);
-  $("#ai-image-upload-btn").textContent = virtualTryOnActive ? "上传衣服产品图" : suiteActive || codHookActive ? "上传产品图片" : currentMode === "inpaint" ? "上传原图" : currentMode === "compose" ? "添加合成图" : "上传参考图";
+  $("#ai-image-upload-btn").textContent = virtualTryOnActive ? "上传商品/配饰图" : suiteActive || codHookActive ? "上传产品图片" : currentMode === "inpaint" ? "上传原图" : currentMode === "compose" ? "添加合成图" : "上传参考图";
   const modelUploadButton = $("#ai-image-model-upload-btn");
   if (modelUploadButton) modelUploadButton.hidden = !virtualTryOnActive;
   const styleSetUploadButton = $("#ai-image-style-set-upload-btn");
@@ -3291,7 +3298,7 @@ function renderAiImageForm() {
     : codHookActive
     ? `输入${currentCodHookType.label}提示词，例如：产品放大，韩国本土场景，韩文短标题；价格条请同时填写币种、原价和活动价`
     : virtualTryOnActive
-    ? "可选：填写换装范围或保留要求，例如：只替换上衣，保留原模特裤子、鞋子、姿势和背景"
+    ? "写明每个文件要替换什么，例如：换白衬衣、黑色帽子、白鞋和指定包，使用场景参考，输出单张完整全身图"
     : currentMode === "inpaint"
     ? "描述蒙版区域要改成什么，例如：把背景换成东京街景，衣服保持不变"
     : "用中文描述画面、模特、场景和要突出的卖点";
@@ -3434,7 +3441,7 @@ function syncAiImageStateFromConversation(conversation) {
 
 function aiImageConversationTitle(conversation = {}) {
   const product = aiImageOptions().products.find((item) => item.sku === conversation.productSku);
-  if (conversation.templateKey === "virtualTryOn" && !conversation.userIntent && !product?.title) return "模特换衣";
+  if (conversation.templateKey === "virtualTryOn" && !conversation.userIntent && !product?.title) return "模特换装/搭配";
   const source = (conversation.userIntent || product?.title || conversation.prompt || conversation.title || "新的生图任务").trim();
   return source.length > 24 ? `${source.slice(0, 24)}...` : source;
 }
@@ -3443,7 +3450,7 @@ function aiImageStatusText(options, conversation = {}) {
   const mode = aiImageModeLabel(conversation.mode || "text");
   const suiteConfig = aiImageSuiteConfig(conversation);
   const countryLabel = aiImageCodCountryActive(conversation) ? aiImageCodCountryConfig(conversation.suiteCountry || "KR").label : "";
-  const taskLabel = suiteConfig ? `${suiteConfig.label}${countryLabel ? ` · ${countryLabel}` : ""}` : conversation.templateKey === "virtualTryOn" ? "模特换衣" : mode;
+  const taskLabel = suiteConfig ? `${suiteConfig.label}${countryLabel ? ` · ${countryLabel}` : ""}` : conversation.templateKey === "virtualTryOn" ? "模特换装/搭配" : mode;
   const unit = suiteConfig?.unit || "张";
   if (conversation.status === "planning") return `${taskLabel}正在分析商品与编排分镜`;
   if (conversation.status === "planned") return `${taskLabel}方案已就绪，等待确认`;
@@ -3508,11 +3515,15 @@ function renderAiImageSizePresets(currentSize, suiteConfig = null) {
     .join("");
 }
 
-function renderAiImageCountPresets(currentCount, maxCount = 10, suiteConfig = null) {
+function renderAiImageCountPresets(currentCount, maxCount = 10, suiteConfig = null, fixedCountLabel = "") {
   const container = $("#ai-image-count-presets");
   if (!container) return;
   container.classList.toggle("cod-count-options", Boolean(suiteConfig?.countConfigurable));
   container.classList.toggle("landing-count-options", suiteConfig?.key === "jp-landing-page-32" && Boolean(suiteConfig?.countConfigurable));
+  if (fixedCountLabel) {
+    container.innerHTML = `<button class="ai-image-count active" type="button" disabled>${esc(fixedCountLabel)}</button>`;
+    return;
+  }
   if (suiteConfig) {
     if (suiteConfig.countConfigurable) {
       container.innerHTML = suiteConfig.countOptions
@@ -3812,7 +3823,7 @@ function setAiImageMode(modeKey) {
   if (!aiImageModeOptions().some((item) => item.key === modeKey)) return;
   const conversation = ensureAiImageConversation();
   if (conversation.templateKey === "virtualTryOn" && modeKey !== "compose") {
-    showToast("模特换衣会自动使用产品图与模特图合成模式");
+    showToast("模特换装/搭配会自动使用多图合成模式");
     return;
   }
   conversation.mode = modeKey;
@@ -3866,6 +3877,7 @@ function applyAiImageTemplate(templateKey) {
   if (template.key === "virtualTryOn") {
     conversation.mode = "compose";
     conversation.lockLevel = "exact";
+    conversation.count = 1;
   }
   const prompt = aiImageTemplatePrompt(template.key, product, Boolean(conversation.referenceImages?.length), {
     mode: conversation.mode || "text",
@@ -3985,6 +3997,11 @@ function aiImageReferenceRoleInstruction(key = "product") {
 function aiImageReferenceKeywordPlaceholder(key = "") {
   if (key === "scene") return "场景关键词：东京街道、日式公寓、自然光";
   if (key === "person") return "人物关键词：日本女性、40代、自然站姿";
+  if (key === "bag") return "包袋要求：替换原包、保持银色五金";
+  if (key === "hat") return "帽子要求：戴在人物头上、改成黑色";
+  if (key === "shoes") return "鞋履要求：替换原鞋、完整露出";
+  if (key === "jewelry") return "首饰要求：作为耳环佩戴、保持原尺寸";
+  if (["accessory", "package"].includes(key)) return "配饰要求：写明替换对象、佩戴位置或颜色";
   if (key === "layout") return "排版关键词：左文右图、大标题、留白克制";
   if (key === "styleSet") return "风格关键词：浅绿功效页、大标题、微距效果、对比模块";
   return "补充关键词（可选）";
@@ -3993,6 +4010,7 @@ function aiImageReferenceKeywordPlaceholder(key = "") {
 function aiImageReferenceKeywordHint(key = "") {
   if (key === "scene") return "描述地点、光线、氛围与道具";
   if (key === "person") return "描述年龄感、发型、体型与动作";
+  if (["bag", "hat", "shoes", "jewelry", "accessory", "package"].includes(key)) return "描述替换谁、佩戴位置、需要保留或修改的属性";
   if (key === "layout") return "描述单张构图、留白、标题区与图文位置";
   if (key === "styleSet") return "描述整套配色、信息层级、模块形状与呈现效果";
   return "补充该参考图需要提取的特征";
@@ -4006,9 +4024,15 @@ function aiImageReferenceRoleMap(references = [], hasReferences = false) {
   const imageMap = resolved.map((reference, index) => {
     const roleKey = aiImageReferenceRoleKey(reference, index);
     if (!roleKeys.includes(roleKey)) roleKeys.push(roleKey);
+    const fileName = String(reference.name || reference.file?.name || "")
+      .replace(/[\r\n\[\];]/g, " ")
+      .replace(/"/g, "'")
+      .trim()
+      .slice(0, 120);
     const keywords = String(reference.keywords || "").trim().slice(0, 240);
+    const fileText = fileName ? ` [file="${fileName}"]` : "";
     const keywordText = keywords ? ` (${keywords})` : "";
-    return `Image ${index + 1}=${aiImageReferenceRoleLabel(roleKey)}${keywordText}`;
+    return `Image ${index + 1}=${aiImageReferenceRoleLabel(roleKey)}${fileText}${keywordText}`;
   }).join("; ");
   const roleRules = roleKeys.map((roleKey) => `${aiImageReferenceRoleLabel(roleKey)}: ${aiImageReferenceRoleInstruction(roleKey)}`).join(" ");
   return `${imageMap}. Role rules: ${roleRules}`;
@@ -4018,6 +4042,18 @@ function normalizeAiImageReferenceRoles(references = []) {
   return references.map((reference, index) => ({
     ...reference,
     role: aiImageReferenceRoleKey(reference, index),
+    keywords: String(reference.keywords || "").trim().slice(0, 240),
+  }));
+}
+
+function aiImageReferenceBindings(references = []) {
+  return (Array.isArray(references) ? references : []).map((reference, index) => ({
+    index: index + 1,
+    role: aiImageReferenceRoleKey(reference, index),
+    name: String(reference.name || reference.file?.name || "")
+      .replace(/[\r\n\[\];]/g, " ")
+      .trim()
+      .slice(0, 120),
     keywords: String(reference.keywords || "").trim().slice(0, 240),
   }));
 }
@@ -4067,7 +4103,7 @@ function renderAiImageReferences() {
       <button class="ghost-btn" type="button" data-ai-reference-clear>清空</button>
     </div>
     ${mode !== "inpaint" ? `<p class="ai-image-reference-guide">${esc(virtualTryOnActive
-      ? "换装顺序：先上传衣服产品图，再上传模特图片。主商品锁定衣服款式、颜色和细节；人物参考锁定模特脸部、身材、姿势、背景和未被衣服覆盖的穿搭。"
+      ? "搭配顺序：上传商品/服装图和人物图，再把其余图片分别设为包袋、帽子、鞋履、首饰或场景参考。系统按文件名逐件替换，人物参考锁定脸部与身材；提示词可要求完整全身、换场景或只改某件配饰。固定输出 1 张连续场景图，不生成宫格。"
       : "其他产品的成套页面请选择“系列风格参考”，系统只提取配色、标题层级、信息密度、模块形状和呈现效果；商品、人物、文字、Logo 与数据不会作为当前产品内容。")}</p>` : ""}
     <div class="ai-image-reference-list">
       ${references.map((item, index) => {
@@ -4081,7 +4117,7 @@ function renderAiImageReferences() {
             <select data-ai-reference-role="${esc(item.id)}" aria-label="${esc(item.name || `参考图 ${index + 1}`)}的用途" ${index === 0 ? "disabled" : ""}>
               ${AI_IMAGE_REFERENCE_ROLES.map((role) => `<option value="${esc(role.key)}" ${role.key === roleKey ? "selected" : ""}>${esc(role.label)}</option>`).join("")}
             </select>
-            ${(["scene", "person", "layout", "styleSet"].includes(roleKey)) ? `
+            ${(["scene", "person", "bag", "hat", "shoes", "jewelry", "accessory", "package", "layout", "styleSet"].includes(roleKey)) ? `
               <input type="text" value="${esc(item.keywords || "")}" data-ai-reference-keywords="${esc(item.id)}" maxlength="240" placeholder="${esc(aiImageReferenceKeywordPlaceholder(roleKey))}" aria-label="${esc(aiImageReferenceRoleLabel(roleKey))}关键词" />
               <small class="ai-image-reference-keyword-hint">${esc(aiImageReferenceKeywordHint(roleKey))}</small>
             ` : ""}
@@ -6211,8 +6247,8 @@ function validateAiImageModeInputs(conversation) {
   if (conversation.templateKey === "virtualTryOn") {
     const hasProduct = references.some((reference, index) => reference.file && aiImageReferenceRoleKey(reference, index) === "product");
     const hasPerson = references.some((reference, index) => reference.file && aiImageReferenceRoleKey(reference, index) === "person");
-    if (!hasProduct) throw new Error("模特换衣需要先上传衣服产品图");
-    if (!hasPerson) throw new Error("模特换衣需要上传一张模特图片");
+    if (!hasProduct) throw new Error("模特换装/搭配需要先上传服装或商品图");
+    if (!hasPerson) throw new Error("模特换装/搭配需要上传一张人物参考图");
   }
   if (suiteConfig && !references.length) throw new Error(`${suiteConfig.label}需要先上传 1 张清晰的产品主图`);
   if (mode === "edit" && !references.length) throw new Error("参考图翻新需要先上传至少 1 张商品图");
@@ -6280,6 +6316,7 @@ async function generateAiImage(event) {
   if (conversation.templateKey === "virtualTryOn") {
     conversation.mode = "compose";
     conversation.lockLevel = "exact";
+    conversation.count = 1;
   }
   const suiteConfig = aiImageSuiteConfig(conversation);
   if (aiImageCodCountryActive(conversation)) {
@@ -6291,7 +6328,9 @@ async function generateAiImage(event) {
     ? (aiImageGenerationProfile(conversation).quality || "high")
     : $("#ai-image-quality")?.value || state.aiImages.quality || "auto";
   if (suiteConfig) conversation.suiteCount = suiteConfig.count;
-  conversation.count = suiteConfig?.count || Number(state.aiImages.count || conversation.count || 1);
+  conversation.count = conversation.templateKey === "virtualTryOn"
+    ? 1
+    : suiteConfig?.count || Number(state.aiImages.count || conversation.count || 1);
   const needsCompile = !aiImagePromptIsStructured(prompt)
     || !prompt.includes("[User-prompt fidelity lock — highest content priority]")
     || conversation.compiledIntent !== effectiveIntent
@@ -6447,6 +6486,7 @@ async function generateAiImage(event) {
       formData.append("templateKey", conversation.templateKey || "");
       formData.append("codHookType", conversation.codHookType || "hook");
       formData.append("productReferenceIndexes", JSON.stringify(productReferenceIndexes));
+      formData.append("referenceBindings", JSON.stringify(aiImageReferenceBindings(references)));
       formData.append("suiteKey", conversation.suiteKey || "");
       formData.append("suiteBrief", effectiveIntent);
       if (retryMissingPages) formData.append("suitePageIndexes", JSON.stringify(retryPageIndexes));
@@ -9197,6 +9237,10 @@ function bindEvents() {
     const button = event.target.closest("[data-ai-count]");
     if (!button) return;
     const conversation = ensureAiImageConversation();
+    if (conversation.templateKey === "virtualTryOn") {
+      showToast("模特换装/搭配固定生成 1 张完整场景图");
+      return;
+    }
     if (aiImageSuiteConfig(conversation)?.countConfigurable) {
       setAiImageSuiteCount(button.dataset.aiCount);
       return;

@@ -1,8 +1,8 @@
 {
   "id": "gpt-image2-sosove",
   "name": "GPT-Image2 SOSOVE Director",
-  "version": "2.3.0",
-  "updatedAt": "2026-07-23",
+  "version": "2.4.0",
+  "updatedAt": "2026-07-24",
   "defaults": {
     "lockLevel": "strict",
     "templateKey": "main",
@@ -74,11 +74,11 @@
     },
     {
       "key": "virtualTryOn",
-      "label": "模特换衣",
+      "label": "模特换装/搭配",
       "size": "1024x1536",
       "count": 1,
       "mode": "compose",
-      "direction": "Photorealistic virtual try-on. Use every reference assigned as main product as the exact garment source and the reference assigned as person reference as the exact target model photograph. Identify whether the product is a top, bottom, dress, outerwear or coordinated set. Preserve the exact garment category, color, print, fabric appearance, neckline, sleeves, closures, pockets, seams, proportions and hem. Preserve the model identity, face, hair, expression, skin, body proportions, pose, hands, crop, camera, lighting, background, accessories and uncovered clothing. Replace only the clothing region covered by the supplied garment, remove the replaced garment cleanly, and reconstruct realistic fit, tension, folds, drape, occlusion and contact shadows. Produce one finished model photograph with no advertising text, cards, cutout inset, collage, logo or watermark."
+      "direction": "Create one coherent photorealistic full-body styling scene from the assigned references. Preserve the exact identity, face, hair, age impression, skin tone and body proportions from the person reference. Use every main-product image as an exact garment or wearable-product source; use bag, hat, shoes, jewelry, styling-accessory and explicitly named package/accessory references as exact item sources; use the scene reference as the requested environment. Follow filename-specific replacement and recolor instructions. A cropped model may be completed naturally from head to toe when requested. Integrate garments and accessories with accurate fit, material, scale, perspective, occlusion and shadows. Preserve every unspecified attribute. Produce exactly one continuous photograph with one complete model, no advertising text, split screen, grid, collage, card, inset, logo or watermark."
     },
     {
       "key": "poster",
