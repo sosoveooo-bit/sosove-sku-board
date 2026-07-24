@@ -3,12 +3,14 @@ from __future__ import annotations
 import html
 import base64
 import hashlib
+import hmac
 import importlib.util
 import json
 import mimetypes
 import os
 import re
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -40,6 +42,8 @@ AI_IMAGE_ERROR_LOG = DATA_DIR / "ai_image_errors.log"
 AI_IMAGE_SKILL_FILE = ROOT_DIR / "skills" / "gpt-image2.json"
 AI_DIRECTOR_SETTINGS_FILE = DATA_DIR / "ai_director_settings.json"
 AI_DIRECTOR_CACHE_FILE = DATA_DIR / "ai_director_analysis_cache.json"
+AI_IMAGE_JOBS_FILE = DATA_DIR / "ai_image_jobs.json"
+AI_IMAGE_JOB_FILES_DIR = DATA_DIR / "ai_image_job_files"
 AI_DIRECTOR_KNOWN_MODELS = ("gpt-5.6-terra", "gpt-5.6-sol")
 META_AD_ANALYSIS_SCRIPT = Path(
     os.environ.get(
@@ -51,6 +55,7 @@ SESSION_FILE = DATA_DIR / "auth_sessions.json"
 META_CREDENTIAL_FILE = DATA_DIR / "meta_credentials.json"
 META_CREDENTIAL_KEY_FILE = DATA_DIR / "meta_credentials.key"
 AI_DIRECTOR_CACHE_VERSION = 3
+AI_IMAGE_JOB_STORE_VERSION = 1
 META_CREDENTIAL_STORE_VERSION = 1
 META_OAUTH_STATE_TTL_SECONDS = 15 * 60
 META_OAUTH_STATES: dict[str, dict[str, Any]] = {}
@@ -63,6 +68,11 @@ _AI_IMAGE_ACTIVE_REQUESTS_BY_USER: dict[str, int] = {}
 _AI_IMAGE_REQUEST_WAITERS: list[tuple[str, str]] = []
 _AI_IMAGE_JOB_LOCK = threading.Lock()
 _AI_IMAGE_JOBS: dict[str, dict[str, Any]] = {}
+_AI_IMAGE_JOB_THREADS: set[str] = set()
+_AI_IMAGE_REMOTE_SOURCE_LOCK = threading.Lock()
+_AI_IMAGE_REMOTE_SOURCES: dict[str, dict[str, Any]] = {}
+_AI_IMAGE_OUTPUT_CLEANUP_LOCK = threading.Lock()
+_AI_IMAGE_OUTPUT_LAST_CLEANUP_TS = 0.0
 
 
 DEFAULT_ITEMS: list[dict[str, Any]] = [
@@ -5468,6 +5478,72 @@ def check_ai_image_service(actor: dict[str, Any], node_id: str = "") -> dict[str
     }
 
 
+def ai_image_remote_storage_enabled() -> bool:
+    return truthy(os.environ.get("AI_IMAGE_REMOTE_STORAGE"), True)
+
+
+def ai_image_remote_path(value: Any) -> str:
+    parsed = urlparse(text(value))
+    marker = "/images/"
+    if not parsed.scheme or not parsed.netloc or marker not in parsed.path:
+        return ""
+    relative = parsed.path.split(marker, 1)[1].strip("/")
+    parts = Path(relative).parts
+    if not relative or any(part in {"", ".", ".."} for part in parts):
+        return ""
+    return Path(*parts).as_posix()
+
+
+def ai_image_remote_node(url: str, auth_key: str = "", node_id: str = "") -> dict[str, Any] | None:
+    nodes = chatgpt2api_service_nodes()
+    requested_id = text(node_id).lower()
+    if requested_id:
+        matched = next((node for node in nodes if text(node.get("id")).lower() == requested_id), None)
+        if matched:
+            return matched
+    candidates = [node for node in nodes if not auth_key or text(node.get("authKey")) == auth_key]
+    target = urlparse(url)
+    for node in candidates:
+        candidate = urlparse(text(node.get("rootUrl")))
+        if target.scheme == candidate.scheme and target.netloc == candidate.netloc:
+            return node
+    return candidates[0] if candidates else None
+
+
+def remember_ai_image_remote_source(image_data: bytes, url: str, auth_key: str) -> None:
+    remote_path = ai_image_remote_path(url)
+    node = ai_image_remote_node(url, auth_key=auth_key)
+    if not image_data or not remote_path or not node:
+        return
+    digest = hashlib.sha256(image_data).hexdigest()
+    source = {
+        "url": url,
+        "remotePath": remote_path,
+        "nodeId": text(node.get("id")),
+        "nodeName": text(node.get("name"), text(node.get("id"), "chatgpt2api")),
+        "createdTs": time.time(),
+    }
+    with _AI_IMAGE_REMOTE_SOURCE_LOCK:
+        _AI_IMAGE_REMOTE_SOURCES[digest] = source
+        if len(_AI_IMAGE_REMOTE_SOURCES) > 1000:
+            oldest = sorted(_AI_IMAGE_REMOTE_SOURCES.items(), key=lambda item: float(number(item[1].get("createdTs"), 0)))
+            for old_digest, _item in oldest[: len(_AI_IMAGE_REMOTE_SOURCES) - 1000]:
+                _AI_IMAGE_REMOTE_SOURCES.pop(old_digest, None)
+
+
+def ai_image_remote_source(image_data: bytes) -> dict[str, Any] | None:
+    if not image_data:
+        return None
+    digest = hashlib.sha256(image_data).hexdigest()
+    with _AI_IMAGE_REMOTE_SOURCE_LOCK:
+        source = _AI_IMAGE_REMOTE_SOURCES.get(digest)
+        return dict(source) if isinstance(source, dict) else None
+
+
+def ai_image_remote_outputs_ready(images: list[tuple[bytes, str]]) -> bool:
+    return bool(images) and ai_image_remote_storage_enabled() and all(ai_image_remote_source(image_data) for image_data, _mime in images)
+
+
 def image_bytes_list_from_chatgpt2api_response(body: dict[str, Any], auth_key: str) -> list[tuple[bytes, str]]:
     import requests
 
@@ -5478,6 +5554,20 @@ def image_bytes_list_from_chatgpt2api_response(body: dict[str, Any], auth_key: s
     for entry in data:
         item = entry if isinstance(entry, dict) else {}
         b64 = text(item.get("b64_json"))
+        url = text(item.get("url"))
+        if url and ai_image_remote_storage_enabled():
+            try:
+                response = requests.get(url, headers={"Authorization": f"Bearer {auth_key}"}, timeout=90)
+                if response.ok:
+                    mime = response.headers.get("Content-Type", "image/png").split(";")[0] or "image/png"
+                    remember_ai_image_remote_source(response.content, url, auth_key)
+                    outputs.append((response.content, mime))
+                    continue
+                if not b64:
+                    raise ValueError(f"下载生成图片失败：{response.status_code}")
+            except requests.RequestException as exc:
+                if not b64:
+                    raise ValueError(f"下载生成图片失败：{exc}") from exc
         if b64:
             if b64.startswith("data:"):
                 header, _, encoded = b64.partition(",")
@@ -5487,13 +5577,13 @@ def image_bytes_list_from_chatgpt2api_response(body: dict[str, Any], auth_key: s
                 outputs.append((base64.b64decode(b64), "image/png"))
             continue
 
-        url = text(item.get("url"))
         if not url:
             continue
         response = requests.get(url, headers={"Authorization": f"Bearer {auth_key}"}, timeout=90)
         if not response.ok:
             raise ValueError(f"下载生成图片失败：{response.status_code}")
         mime = response.headers.get("Content-Type", "image/png").split(";")[0] or "image/png"
+        remember_ai_image_remote_source(response.content, url, auth_key)
         outputs.append((response.content, mime))
     if not outputs:
         raise ValueError("生图接口没有返回 b64_json 或 url")
@@ -5608,15 +5698,17 @@ AI_IMAGE_AMAZON_APLUS_SUITE_KEY = "amazon-jp-aplus-9"
 AI_IMAGE_SUITE_KEY = AI_IMAGE_LANDING_SUITE_KEY
 AI_IMAGE_SUITE_COUNT = 32
 AI_IMAGE_SUITE_SIZE = "1500x2000"
-AI_IMAGE_SUITE_PLAN_VERSION = "director-v6-ja-brand-32"
+AI_IMAGE_SUITE_BRIEF_LIMIT = 24000
+AI_IMAGE_DIRECTOR_BRIEF_LIMIT = 24000
+AI_IMAGE_SUITE_PLAN_VERSION = "director-v8-prompt-fidelity"
 AI_IMAGE_JP_LANDING_COUNT_OPTIONS = (8, 12, 16, 20, 24, 30, 32)
 AI_IMAGE_AMAZON_APLUS_COUNT = 9
 AI_IMAGE_AMAZON_APLUS_SIZE = "970x600"
-AI_IMAGE_AMAZON_APLUS_PLAN_VERSION = "amazon-aplus-v3"
+AI_IMAGE_AMAZON_APLUS_PLAN_VERSION = "amazon-aplus-v4-prompt-fidelity"
 AI_IMAGE_RAKUTEN_SUITE_KEY = "rakuten-jp-product-9"
 AI_IMAGE_RAKUTEN_COUNT = 9
 AI_IMAGE_RAKUTEN_SIZE = "1200x1200"
-AI_IMAGE_RAKUTEN_PLAN_VERSION = "rakuten-director-v2"
+AI_IMAGE_RAKUTEN_PLAN_VERSION = "rakuten-director-v3-prompt-fidelity"
 AI_IMAGE_COD_LEGACY_SUITE_KEY = "cod-kr-landing-30"
 AI_IMAGE_COD_SUITE_KEY = "cod-country-landing-30"
 AI_IMAGE_COD_DETAIL_SUITE_KEY = "cod-country-detail-12"
@@ -5624,11 +5716,11 @@ AI_IMAGE_COD_KR_SUITE_KEY = AI_IMAGE_COD_SUITE_KEY
 AI_IMAGE_COD_KR_COUNT = 30
 AI_IMAGE_COD_COUNT_OPTIONS = (8, 12, 16, 20, 24, 30)
 AI_IMAGE_COD_KR_SIZE = "750x1000"
-AI_IMAGE_COD_KR_PLAN_VERSION = "cod-country-v13-product-agnostic-point-coverage"
+AI_IMAGE_COD_KR_PLAN_VERSION = "cod-country-v15-prompt-fidelity"
 AI_IMAGE_COD_DETAIL_COUNT = 22
 AI_IMAGE_COD_DETAIL_COUNT_OPTIONS = (12, 16, 20, 22)
 AI_IMAGE_COD_HOOK_STRIP_SIZES = {"750x150", "750x100"}
-AI_IMAGE_COD_DETAIL_PLAN_VERSION = "cod-detail-v8-product-agnostic-point-coverage"
+AI_IMAGE_COD_DETAIL_PLAN_VERSION = "cod-detail-v10-prompt-fidelity"
 AI_IMAGE_COD_COUNTRY_SUITE_KEYS = {
     AI_IMAGE_COD_SUITE_KEY,
     AI_IMAGE_COD_DETAIL_SUITE_KEY,
@@ -6848,6 +6940,36 @@ def extract_ai_image_suite_points(brief: str) -> list[dict[str, str]]:
         kind = "detail" if label in {"细节", "次卖点", "次要卖点"} or ordinal > 5 else "main"
         add_point(kind, title_value, description_value or "")
 
+    # Accept the common free-form format `卖点：` followed by `1. ...`, `2、...`.
+    # Without a dedicated heading state those lines were silently discarded and
+    # COD planning replaced them with generic fallback content.
+    current_section = ""
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if re.fullmatch(r"(?:主卖点|主要卖点|核心卖点|卖点)\s*[：:]", line, re.IGNORECASE):
+            current_section = "main"
+            continue
+        if re.fullmatch(r"(?:次卖点|次要卖点|细节卖点)\s*[：:]", line, re.IGNORECASE):
+            current_section = "detail"
+            continue
+        if current_section and re.match(
+            r"^(?:噱头|背书逻辑|产地背书|检测认证|医疗背书|大牌同源|销量背书|评价背书|专家背书|机构背书|认证背书|工艺背书|品牌背书|数据背书|用户评价)\s*[：:]",
+            line,
+            re.IGNORECASE,
+        ):
+            current_section = ""
+            continue
+        numbered_line = re.match(r"^(\d{1,2})\s*[.、)）:：-]\s*(.+)$", line)
+        if not current_section or not numbered_line:
+            continue
+        ordinal = int(numbered_line.group(1))
+        point_text = numbered_line.group(2).strip()
+        title_value, separator, description_value = point_text.partition("：")
+        if not separator:
+            title_value, separator, description_value = point_text.partition(":")
+        kind = "detail" if current_section == "detail" or ordinal > 5 else "main"
+        add_point(kind, title_value, description_value if separator else "")
+
     structured_match = re.search(
         r"\[Selling points\]\s*(?:Express visually:\s*)?(.*?)(?=\n\[[^\n]+\]|\Z)",
         source,
@@ -6864,24 +6986,31 @@ def extract_ai_image_suite_points(brief: str) -> list[dict[str, str]]:
     return points[:20]
 
 
-def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     source = text(brief)
     extracted = extract_ai_image_suite_points(source) or extract_ai_image_suite_points(base_prompt)
-    main_points: list[dict[str, str]] = []
-    detail_points: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    main_points: list[dict[str, Any]] = []
+    detail_points: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
-    def add(kind: str, value: Any, description: Any = "") -> None:
+    def add(kind: str, value: Any, description: Any = "", *, source_provided: bool = True) -> None:
         title_value = clean_ai_image_suite_text(value, 220)
         description_value = clean_ai_image_suite_text(description, 520)
         if not title_value:
             return
-        key = (kind, title_value.lower())
+        key = title_value.lower()
         if key in seen:
             return
         seen.add(key)
         target = detail_points if kind == "detail" else main_points
-        target.append({"kind": kind, "title": title_value, "description": description_value})
+        target.append(
+            {
+                "kind": kind,
+                "title": title_value,
+                "description": description_value,
+                "sourceProvided": source_provided,
+            }
+        )
 
     for item in extracted:
         add(text(item.get("kind"), "main"), item.get("title"), item.get("description"))
@@ -6892,7 +7021,7 @@ def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[d
         line = raw_line.strip()
         if not line:
             continue
-        if re.search(r"^(?:(?:\d+)\s*个?)?(?:大)?(?:主卖点|主要卖点|核心卖点)\s*[：:]?$", line, re.IGNORECASE) or re.search(r"(?:^|\s)(?:5\s*大?主卖点|主卖点\s*[（(]?\s*5)", line, re.IGNORECASE):
+        if re.search(r"^(?:(?:\d+)\s*个?)?(?:大)?(?:主卖点|主要卖点|核心卖点|卖点)\s*[：:]?$", line, re.IGNORECASE) or re.search(r"(?:^|\s)(?:5\s*大?主卖点|主卖点\s*[（(]?\s*5)", line, re.IGNORECASE):
             current_kind = "main"
             continue
         if re.search(r"^(?:(?:\d+)\s*个?)?(?:次卖点|次要卖点|细节卖点)\s*[：:]?$", line, re.IGNORECASE) or re.search(r"(?:^|\s)(?:10\s*个?次卖点|10\s*个?次要卖点|次卖点\s*[（(]?\s*10)", line, re.IGNORECASE):
@@ -6907,7 +7036,14 @@ def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[d
         cleaned = re.sub(r"^\d+\s*[.、)）:：-]\s*", "", cleaned)
         # Short source points such as “长续航”“防水” are valid selling points too.
         if len(cleaned) >= 2:
-            add("detail" if current_kind == "main" and len(main_points) >= 5 else current_kind, cleaned)
+            title_value, separator, description_value = cleaned.partition("：")
+            if not separator:
+                title_value, separator, description_value = cleaned.partition(":")
+            add(
+                "detail" if current_kind == "main" and len(main_points) >= 5 else current_kind,
+                title_value,
+                description_value if separator else "",
+            )
 
     fallback_main = [
         {"kind": "main", "title": "核心使用效果", "description": "根据产品图片和用户提示词展示最重要、最直观的使用结果。"},
@@ -6931,11 +7067,11 @@ def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[d
     for item in fallback_main:
         if len(main_points) >= 5:
             break
-        add("main", item["title"], item["description"])
+        add("main", item["title"], item["description"], source_provided=False)
     for item in fallback_details:
         if len(detail_points) >= 10:
             break
-        add("detail", item["title"], item["description"])
+        add("detail", item["title"], item["description"], source_provided=False)
     return main_points[:5], detail_points[:10]
 
 
@@ -7402,13 +7538,13 @@ def build_ai_image_rakuten_plan(base_prompt: str, brief: str, size: str = AI_IMA
     return pages
 
 
-def extract_ai_image_product_points(base_prompt: str, brief: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+def extract_ai_image_product_points(base_prompt: str, brief: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return a stable 5+10 product story without assuming a product category."""
     return extract_ai_image_cod_kr_points(base_prompt, brief)
 
 
 def bundle_ai_image_product_points(
-    points: list[dict[str, str]],
+    points: list[dict[str, Any]],
     fallback_title: str,
     fallback_description: str,
 ) -> dict[str, str]:
@@ -7506,45 +7642,45 @@ def jp_fashion_32_recipe(
 AI_IMAGE_JP_FASHION_32_RECIPES = (
     jp_fashion_32_recipe("全色商品阵列", "選べるカラーバリエーション", "overview", "所有参考图或提示词中确认的颜色，以完整实物挂装并列展示。", "暖白墙、浅木衣杆和柔和自然窗光。", "无人出镜，衣架间距整齐，所有款式正面完整可见。", "横向挂装阵列占主要画面，上方短标题、下方仅保留准确色名；不使用色块代替商品。", "颜色阵列", "第一眼看清完整颜色系列与统一版型。"),
     jp_fashion_32_recipe("面料纹理极致微距", "触れてわかる、上質な素材感", "main:2", "真实纤维、织纹、厚薄、垂坠或柔软状态的极近景。", "无场景化道具的柔和暗部微距台面。", "可用一只自然捏起面料边缘的手，不能遮挡纹理。", "单一满幅面料微距，标题与一个短说明放在低干扰安全区。", "面料微距", "让顾客像触摸一样看见面料质感。"),
-    jp_fashion_32_recipe("主色完整全身", "一枚で、きれいに決まる", "main:0", "日本成熟女性从头到脚完整穿着，版型、长度和落感清楚。", "明亮日式住宅，暖白墙、浅木家具和一株绿植。", "正面自然站立，肩线放松，双脚轻微错开，不做促销手势。", "单人大幅全身目录摄影，少量日文竖排或横排标题，人物与服装占主视觉。", "模特全身", "建立主色、主模特和整套品牌目录基准。"),
+    jp_fashion_32_recipe("主色完整全身", "一枚で、きれいに決まる", "main:0", "日本成熟女性从头到脚完整穿着，版型、长度和落感清楚。", "东京丸之内风格的真实办公室内景，窗边走道、浅木办公桌和柔和工作日自然光。", "从工位走向窗边或在走道自然停步，肩线放松，双脚轻微错开，不看镜头叫卖。", "单人大幅全身通勤目录摄影，办公环境有真实纵深，少量日文标题，人物与服装占主视觉。", "模特全身", "用办公室内的完整通勤穿搭建立主色、主模特和品牌目录基准。"),
     jp_fashion_32_recipe("结构细节微距", "細部まで、使いやすく", "detail:0", "口袋、开衩、腰头、门襟或关键结构的真实特写。", "与主视觉一致的浅灰背景和自然侧光。", "手指自然触碰或轻拉结构，不制造产品没有的部件。", "一个大幅结构微距配一条克制引导线和一个短标签。", "结构微距", "单独说明最重要的结构细节及使用价值。"),
-    jp_fashion_32_recipe("深色品牌主视觉", "日本女性の毎日に、心地よく", "overview", "深色主款完整穿着和一个可确认的核心卖点。", "浅色住宅内景，以黑色或深色服装形成强对比。", "提日常托特包自然站立或缓慢迈步，目光不直视镜头叫卖。", "大幅黑色主视觉，允许克制竖排日文、一个圆形材质标签和底部小型色序。", "品牌海报", "形成有品牌感的深浅反差主视觉。"),
-    jp_fashion_32_recipe("温度舒适与口袋", "暑い日も、さらりと快適", "detail:1", "用真实高温日常穿着状态和一个结构近景证明舒适或收纳。", "夏季日式客厅，窗光明亮，不用火焰或夸张热浪。", "自然站立，一手轻放口袋附近，动作不遮挡衣身。", "主模特占约三分之二，旁边允许一个圆形口袋/透气细节近景和两条短标签。", "舒适功能", "把体感舒适和一个实用结构放在同一页但保持主次。"),
+    jp_fashion_32_recipe("深色品牌主视觉", "日本女性の毎日に、心地よく", "overview", "深色主款完整穿着和一个可确认的核心卖点。", "东京商务区办公楼外立面与有顶步行廊，浅灰石材、玻璃反光和克制城市纵深。", "提日常托特包从办公楼自然走出，步幅小、肩线放松，目光不直视镜头。", "大幅室外通勤主视觉，办公楼线条形成构图，允许克制竖排日文、一个材质标签和底部小型色序。", "品牌海报", "用办公楼室外场景形成有品牌感的深浅反差主视觉。"),
+    jp_fashion_32_recipe("温度舒适与口袋", "暑い日も、さらりと快適", "detail:1", "用真实暖天气户外穿着状态和一个结构近景证明舒适或收纳。", "东京河畔公园或社区绿道，树荫、长椅和明亮自然光，不用火焰或夸张热浪。", "休闲散步时自然停步，一手轻放口袋附近，另一手持小水杯或帆布包，动作不遮挡衣身。", "主模特户外全身占约三分之二，旁边允许一个圆形口袋/透气细节近景和两条短标签。", "舒适功能", "把户外休闲穿着、体感舒适和一个实用结构放在同一页但保持主次。"),
     jp_fashion_32_recipe("多体型包容说明", "どんな体型にも、きれいに", "main:1", "以可确认尺码范围或不同体型穿着，说明版型包容度。", "统一暖白影棚式住宅背景。", "不同体型的日本成熟女性保持自然中性站姿，人物比例真实。", "一名主模特加最多三名窄幅体型参考；有尺码数据时才显示数字。", "体型包容", "清楚展示版型对不同体型的适配。"),
-    jp_fashion_32_recipe("显瘦Before After", "気になるラインを、すっきり", "main:0", "同模特、同机位、同姿势、同光线的公平穿着前后对比。", "同一明亮住宅背景。", "左右保持完全一致的自然站姿，不吸腹、不踮脚、不改变身体比例。", "严格左右两栏Before/After，只比较一个轮廓问题，底部可有一句日文结论。", "显瘦对比", "用公平对比证明主卖点的视觉改善。"),
-    jp_fashion_32_recipe("长度比例对比", "脚長見えの、くるぶし丈", "main:1", "同一模特展示普通长度与本品长度对腿部比例的影响。", "简洁暖白住宅或目录背景。", "正面自然站立，脚部完整可见，鞋履相同。", "一张大幅本品全身配一张窄幅对照，加入仅在来源明确时使用的长度标线。", "长度对比", "突出衣长或裤长如何改善整体比例。"),
-    jp_fashion_32_recipe("H线版型对比", "まっすぐ落ちる、美しいライン", "main:1", "正面全身对比与简洁H线轮廓辅助线。", "同一浅色住宅空间。", "模特正面中性站立，双腿自然，衣摆或裤管完整无遮挡。", "上半部双栏大图，下半部最多四个小型轮廓示意；不添加无关卖点。", "版型原理对比", "把版型修饰逻辑讲清楚。"),
-    jp_fashion_32_recipe("普通面料对比", "着心地の差は、生地の仕上げに", "main:2", "普通面料与本品面料的皱褶、垂感或触感公平对比。", "暖白纸张质感背景，配真实面料局部。", "无人或仅出现自然手部。", "上方普通面料局部标记不足，下方本品面料与穿着局部标记优势；一页只比较面料。", "面料对比", "通过真实质感对比证明品质差异。"),
-    jp_fashion_32_recipe("浅色完整全身", "明るい色も、すっきり上品", "overview", "浅色款从头到脚完整穿着和真实透视、垂坠效果。", "窗边暖白住宅、木质边柜和绿植。", "日本成熟女性自然站立，一手垂下，一手轻扶小包。", "单人大幅全身目录摄影，文字很少，人物周围保留自然呼吸感。", "浅色模特全身", "轮换颜色并证明浅色款也保持同一版型。"),
+    jp_fashion_32_recipe("显瘦Before After", "気になるラインを、すっきり", "main:0", "同一日本模特穿无品牌普通基础款与本品的公平对比；左侧必须是同品类但剪裁、腰头或垂感明显不同的普通款，右侧才是参考图中的本品，不能把本品复制、换色或镜像到左侧。", "东京办公楼半室外连廊，同一时段和接近的镜头高度，背景两侧保持可比但不做复制粘贴。", "左侧穿普通基础款自然静立，右侧穿本品向前小步或轻转10度；人物、鞋履和身体比例一致，但动作不能完全相同、镜像或克隆，不吸腹、不改变身材。", "左右两栏Before/After，左侧普通款明确标注「一般的なパンツ/ウェア」，右侧本品标注「本品」；只比较一个轮廓问题，产品侧面积更大、效果差异一眼可见。", "显瘦对比", "用普通基础款与本品的可见剪裁差异证明显瘦效果，而不是本品和自己对比。"),
+    jp_fashion_32_recipe("长度比例对比", "脚長見えの、くるぶし丈", "main:1", "同一日本模特分别穿无品牌普通长度基础款与本品，展示长度或比例差异；普通侧不能使用参考产品的版型、颜色或结构。", "日本商务街人行横道与办公楼入口，保持相近焦段和人物尺度，脚部完整可见。", "普通款侧在路口自然等候，本品侧从办公楼入口自然迈出；鞋履与身体比例一致，动作方向不同但可公平读取腿部比例。", "一张大幅本品全身配一张窄幅普通款对照，只在来源明确时加入长度标线，重点放大脚踝、裤长或衣长差异。", "长度对比", "用普通基础款和本品的不同实际长度突出整体比例改善。"),
+    jp_fashion_32_recipe("H线版型对比", "まっすぐ落ちる、美しいライン", "main:1", "同一日本模特穿普通基础版型与本品的正面全身对比；左侧普通款呈现常见外扩、贴腿或堆褶问题，右侧本品保留准确H线或来源确认的轮廓。", "明亮写字楼大厅与玻璃幕墙，同一自然光方向，左右取景区域不同但尺度可比。", "普通款侧双脚自然平行静立，本品侧自然小步停下或轻扶通勤包；不改变腿型、身高和身体比例，也不复制完全相同动作。", "双栏大图配简洁轮廓辅助线，右侧本品占比略大，下部最多两个轮廓证据，不添加无关卖点。", "版型原理对比", "把普通版型与本品版型的修饰逻辑讲清楚，避免本品自我对比。"),
+    jp_fashion_32_recipe("普通面料对比", "着心地の差は、生地の仕上げに", "main:2", "左侧使用无品牌普通同品类面料，右侧使用参考产品真实面料，对比皱褶、垂感或贴身状态；两侧不能是同一块本品面料的复制或换色。", "暖白纸张质感材料台配一小段办公通勤穿着背景，真实光线和同等测试条件。", "普通侧与本品侧使用两只不同但自然的手分别提起面料，抓取位置相近但不镜像复制；也可加入本品真实穿着局部。", "上下错位双区对比，普通面料标记一个问题，本品面料放大真实纤维与垂坠证据；一页只比较面料。", "面料对比", "用普通面料与本品真实面料的可见差异证明品质，而不是本品和自己对比。"),
+    jp_fashion_32_recipe("浅色完整全身", "明るい色も、すっきり上品", "overview", "浅色款从头到脚完整穿着和真实透视、垂坠效果。", "日本美术馆庭院或安静画廊外廊，适合周末约会的明亮自然光与克制建筑线条。", "日本成熟女性在约会或看展途中自然停步，一手垂下，一手轻扶小包，不摆拍叫卖。", "单人大幅室外约会穿搭摄影，文字很少，建筑留白与人物周围保留自然呼吸感。", "浅色模特全身", "用约会/看展场景轮换颜色并证明浅色款也保持同一版型。"),
     jp_fashion_32_recipe("周末咖啡馆场景", "週末は、お気に入りのカフェへ", "detail:3", "在真实日常场景展示穿搭、坐姿和搭配完成度。", "日式木质咖啡馆、窗边桌椅和温暖自然光。", "日本成熟女性自然坐姿或端杯，服装主体仍完整可见。", "大幅生活方式摄影，底部最多两个小型搭配注释。", "咖啡馆生活方式", "让商品进入可信的日本周末生活。"),
     jp_fashion_32_recipe("三段工艺细节", "長く愛用できる、丁寧な縫製", "detail:2", "领口、袖口、缝线或下摆三处真实工艺近景。", "统一暖米色信息背景。", "无人或仅出现整理衣物的手。", "三个横向大细节条按阅读顺序排列，每条只含一个短标签。", "工艺三段图", "集中展示三处工艺，但不混入其他卖点。"),
     jp_fashion_32_recipe("Staff试穿评价", "スタッフが着てみました", "detail:1", "两张真实试穿角度和一段普通穿着感受；数字只取自提示词。", "明亮日式试衣空间。", "同一日本成熟女性正面与侧后方自然站立。", "两张大幅试穿图加一张小头像和一段短评；不生成星级、销量或虚构身份。", "Staff试穿", "用可信的穿着体验补充版型理解。"),
-    jp_fashion_32_recipe("推荐叠穿搭配一", "おすすめコーデ", "detail:3", "主商品与一件外搭或内搭的完整搭配效果。", "明亮住宅玄关或衣帽空间。", "模特自然站立，外搭保持打开以露出主商品。", "主模特大图加左侧一件辅助单品线稿或小实物，不超过两个搭配标签。", "搭配提案", "展示一套日本成熟女性可直接照穿的搭配。"),
-    jp_fashion_32_recipe("叠穿功能说明", "重ね着で、季節をつなぐ", "detail:4", "用一套叠穿展示季节延展和层次关系。", "日式住宅或安静街道的换季光线。", "自然行走或整理外搭，主商品轮廓不可被完全遮住。", "一张主全身配两到三个小型功能标签和一件辅助单品，不做多套拼贴。", "叠穿功能", "说明如何通过叠穿覆盖更多天气。"),
+    jp_fashion_32_recipe("推荐叠穿搭配一", "おすすめコーデ", "detail:3", "主商品与一件通勤外搭或内搭的完整搭配效果。", "日本办公室会议区或电梯厅，玻璃隔断、浅木饰面和真实工作日光线。", "模特拿文件夹或通勤包自然走向会议区，外搭保持打开以露出主商品。", "主模特办公室全身大图加左侧一件辅助单品小实物，不超过两个搭配标签。", "搭配提案", "展示一套日本成熟女性可直接照穿的办公室通勤搭配。"),
+    jp_fashion_32_recipe("叠穿功能说明", "重ね着で、季節をつなぐ", "detail:4", "用一套旅行叠穿展示季节延展和层次关系。", "日本地方车站月台、车站大厅或旅行酒店入口的换季自然光，行李道具克制真实。", "拉小型旅行箱自然行走或整理外搭，主商品轮廓不可被完全遮住。", "一张主全身旅行场景配两到三个小型功能标签和一件辅助单品，不做多套拼贴。", "叠穿功能", "说明主商品如何通过叠穿适合旅行和温差变化。"),
     jp_fashion_32_recipe("咖啡馆坐姿舒适", "座っても、動いても、ラク", "detail:1", "坐下时腰腹、衣摆或裤管保持自然舒适的真实状态。", "日式咖啡馆木桌、窗光和少量生活道具。", "日本成熟女性自然坐在椅边，双脚落地，服装无遮挡。", "单一大幅坐姿生活摄影，允许一条竖排短标题。", "坐姿舒适", "从真实坐姿证明全天穿着舒适。"),
-    jp_fashion_32_recipe("四格综合体验", "軽やかに、毎日をもっと自由に", "supportDetails", "轻量、宽松、口袋、坐姿四项已确认体验分别可见。", "同一住宅的四个不同区域，光线与色调统一。", "伸展、口袋使用、坐下和自然站立四种克制动作。", "本页是指定四格例外：1个大主格加3个辅助格，每格一个体验，不再添加第五卖点。", "四格体验", "用四格总结日常使用体验和动作变化。"),
-    jp_fashion_32_recipe("城市成熟女性穿搭", "一枚で叶える、大人の抜け感", "detail:4", "成熟女性在城市或住宅边界场景的完整穿搭。", "日本城市安静街角、住宅入口或木质门廊。", "手提编织包自然行走或停步，姿态放松。", "大幅全身街拍配一条克制竖排标题，背景保留真实纵深。", "城市生活方式", "强化日本成熟客群与通勤休闲兼容。"),
-    jp_fashion_32_recipe("两种叠穿对比", "羽織りを変えて、印象チェンジ", "detail:3", "同一主商品搭配两种不同外搭，主体颜色和版型保持一致。", "同一日式住宅背景。", "同模特两种自然站姿，不用夸张转身。", "左右两栏大幅搭配对比，各自仅一个短标签。", "双搭配对比", "证明主商品的百搭性而不改变商品本身。"),
+    jp_fashion_32_recipe("四格综合体验", "軽やかに、毎日をもっと自由に", "supportDetails", "轻量、宽松、口袋、坐姿四项已确认体验分别可见。", "四个明确不同的日本日常区域：办公室工位、办公楼室外步道、周末公园与居家阅读角；色调统一但场景不可互相替换。", "办公室落座、室外行走、休闲取物和居家坐姿四种克制动作，每格动作与场景匹配。", "本页是指定四格例外：1个大主格加3个辅助格，每格一个体验和一种场景，不再添加第五卖点。", "四格体验", "用办公室、户外、休闲与居家四种场景总结日常使用体验。"),
+    jp_fashion_32_recipe("城市成熟女性穿搭", "一枚で叶える、大人の抜け感", "detail:4", "成熟女性在城市约会或文化休闲场景的完整穿搭。", "日本城市约会场景：小型餐厅露台、美术馆入口或安静书店外街角，傍晚前的柔和自然光。", "手提小包自然走向约会地点或在门口停步，姿态放松。", "大幅全身街拍配一条克制竖排标题，背景保留真实城市纵深。", "城市生活方式", "强化日本成熟客群在约会、文化休闲与城市日常中的穿搭完成度。"),
+    jp_fashion_32_recipe("两种叠穿对比", "羽織りを変えて、印象チェンジ", "detail:3", "同一主商品分别搭配办公室外搭与周末约会外搭，主体颜色和版型保持一致；这是场景穿搭对比，不是产品效果Before/After。", "左侧日本办公室大厅，右侧室外餐厅露台或安静约会街区；两种场景色温协调但地点明显不同。", "办公室侧手持文件自然站立，约会侧小步行走或轻扶小包；同一日本模特但动作不能镜像复制。", "左右两栏大幅场景搭配对比，各自仅一个短标签，主商品在两边都完整可见。", "双搭配对比", "用办公与约会两种真实场景证明主商品百搭性。"),
     jp_fashion_32_recipe("色款01商品单品", "カラーバリエーション 01", "variants", "第一种已确认真实色款的单品完整正面，轮廓、缝线和下摆准确。", "象牙白无缝背景，柔和阴影，不使用生硬白色外框。", "无人出镜。", "单件商品居中占画面70%以上，仅显示从来源确认并翻译的准确色名。", "单品色款", "建立可用于选色的干净商品页。"),
     jp_fashion_32_recipe("色款02商品单品", "カラーバリエーション 02", "variants", "第二种已确认真实色款的单品完整正面，暗部仍保留面料与缝线层次。", "暖白无缝背景与柔和侧光。", "无人出镜。", "单件商品居中占画面70%以上，仅显示从来源确认并翻译的准确色名。", "单品色款", "完整展示第二种真实色款与材质。"),
     jp_fashion_32_recipe("完整色系挂装", "全カラーを一覧で", "overview", "所有确认颜色以真实挂装完整并列，不丢色、不重复。", "浅木衣杆、暖白墙、自然窗光。", "无人出镜，所有单品下摆完整且间距一致。", "多色挂装阵列满幅展示，下方只放准确色名；没有来源的颜色不生成。", "完整颜色总览", "在详情中再次清楚确认完整色系。"),
     jp_fashion_32_recipe("色款03商品单品", "カラーバリエーション 03", "variants", "提示词或参考图中的第三个真实色款完整单品。", "象牙白无缝背景和自然落影。", "无人出镜。", "单件商品居中、轮廓完整，仅显示来源确认的准确色名。", "单品色款", "轮换展示第三个真实颜色或规格。"),
-    jp_fashion_32_recipe("黑色完整全身", "ブラックの着こなし", "main:0", "黑色款日本模特完整全身穿着，版型和长度准确。", "明亮日式住宅，黑白对比清晰。", "自然站立，一手轻扶托特包，动作不过度。", "单人大幅全身商品目录摄影。", "深色模特全身", "让黑色款从单品过渡到真实穿着效果。"),
-    jp_fashion_32_recipe("藏蓝完整全身", "ネイビーの着こなし", "main:1", "藏蓝或对应色款完整穿着，展示正面或三分之二轮廓。", "同系列但不同家具区位的浅色住宅。", "自然站立或小步行走，脚部完整。", "单人大幅全身，构图与上一页换机位和人物位置。", "第三色模特全身", "继续轮换颜色并避免重复同角度。"),
+    jp_fashion_32_recipe("黑色完整全身", "ブラックの着こなし", "main:0", "黑色款日本模特完整全身穿着，版型和长度准确。", "日本现代美术馆或设计酒店公共区，浅灰墙面、长椅和清楚黑白对比。", "看展或等候时自然站立，一手轻扶小包，动作不过度。", "单人大幅文化休闲全身摄影，服装完整、背景克制。", "深色模特全身", "让黑色款从单品过渡到看展或约会场景的真实穿着效果。"),
+    jp_fashion_32_recipe("藏蓝完整全身", "ネイビーの着こなし", "main:1", "藏蓝或对应色款完整穿着，展示正面或三分之二轮廓。", "日本地方旅行车站出口或安静酒店大厅，旅行指示与行李只作轻量背景。", "拉小型行李箱自然走出或在大厅停步，脚部完整，动作与上一页明显不同。", "单人大幅旅行全身摄影，构图与上一页更换机位、人物位置和环境类型。", "第三色模特全身", "用旅行场景继续轮换颜色并避免重复同角度。"),
     jp_fashion_32_recipe("色款04商品单品", "カラーバリエーション 04", "variants", "提示词或参考图中的第四个真实色款完整单品。", "暖白无缝背景，边缘与背景有清楚层次。", "无人出镜。", "单件商品居中、轮廓完整、保留自然织物阴影，仅显示来源确认的准确色名。", "单品色款", "展示第四种真实色款的色差和版型。"),
     jp_fashion_32_recipe("尺寸与面料属性表", "サイズガイド", "productInfo", "只呈现用户或商品资料确认的尺码、测量项、材质和弹性等信息。", "暖米色纸张信息背景。", "无人出镜。", "本页是指定规格表例外：清晰日文表格加少量面料属性；缺少数值时保留字段结构并标注需确认，不编造数字。", "尺寸表", "提供下单前真正需要的尺寸和材质信息。"),
     jp_fashion_32_recipe("色款05商品单品", "カラーバリエーション 05", "variants", "提示词或参考图中的第五个真实色款完整单品。", "象牙白无缝背景和温暖侧光。", "无人出镜。", "单件商品居中、比例与前几张单品页一致，仅显示来源确认的准确色名。", "单品色款", "完成真实颜色系列的逐色展示。"),
-    jp_fashion_32_recipe("白色完整全身", "ホワイトの着こなし", "main:2", "白色或浅色款完整穿着，展示透气、垂感和日常搭配。", "明亮住宅的另一处墙面和边柜。", "自然正面站立，双脚轻微错开，人物皮肤与衣物质感真实。", "单人大幅全身目录摄影，少文字、无信息卡墙。", "浅色模特全身", "以浅色模特页完成颜色与穿着效果闭环。"),
+    jp_fashion_32_recipe("白色完整全身", "ホワイトの着こなし", "main:2", "白色或浅色款完整穿着，展示透气、垂感和日常搭配。", "日本海边步道、湖畔旅行小镇或明亮植物园外廊，避免著名地标，使用清爽自然光。", "休闲旅行中自然正面停步或缓慢行走，双脚轻微错开，人物皮肤与衣物质感真实。", "单人大幅室外旅行全身摄影，少文字、无信息卡墙。", "浅色模特全身", "以室外旅行浅色模特页完成颜色、场景与穿着效果闭环。"),
     jp_fashion_32_recipe("领口与面料收尾微距", "細部に宿る、上質さ", "detail:2", "领口、包边、针脚和面料表面真实极近景。", "低干扰深色或暖灰微距背景。", "无人或仅出现轻托面料的手。", "单一满幅收尾微距，标题极短，不添加额外模块。", "收尾工艺微距", "用可信工艺细节结束整套页面。"),
 )
 
 
 AI_IMAGE_JP_FASHION_RECIPE_INDEXES_BY_COUNT = {
-    8: (1, 2, 3, 4, 8, 13, 29, 32),
-    12: (1, 2, 3, 4, 7, 8, 10, 13, 15, 19, 29, 32),
-    16: (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 19, 29, 32),
-    20: (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 29, 32),
-    24: (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 24, 29, 32),
+    8: (1, 2, 3, 4, 8, 17, 20, 32),
+    12: (1, 2, 3, 4, 5, 8, 10, 12, 17, 20, 29, 32),
+    16: (1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 17, 19, 29, 32),
+    20: (1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 29, 32),
+    24: (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 24, 29, 32),
     30: tuple(index for index in range(1, 33) if index not in {23, 25}),
     32: tuple(range(1, 33)),
 }
@@ -7798,10 +7934,17 @@ def build_ai_image_cod_country_plan(
     main_image_count, _detail_image_count = ai_image_cod_country_section_counts(brief, suite_count)
     profile = ai_image_cod_country_profile(country)
     main_points, detail_points = extract_ai_image_cod_kr_points(base_prompt, brief)
+    source_main_points = [item for item in main_points if item.get("sourceProvided") is True]
+    source_detail_points = [item for item in detail_points if item.get("sourceProvided") is True]
+    fallback_points = [
+        *[item for item in main_points if item.get("sourceProvided") is not True],
+        *[item for item in detail_points if item.get("sourceProvided") is not True],
+    ]
+    source_points = [*source_main_points, *source_detail_points]
     product_variants = extract_ai_image_cod_product_variants(base_prompt, brief)
     product_reference_indexes = extract_ai_image_cod_product_reference_indexes(base_prompt)
     overview = {
-        "title": " / ".join(clean_ai_image_suite_text(item.get("title"), 80) for item in main_points),
+        "title": " / ".join(clean_ai_image_suite_text(item.get("title"), 80) for item in (source_main_points or main_points)),
         "description": f"以完整商品、{profile['label']}本土生活场景和五个核心价值建立整套落地页第一印象。",
     }
     product_info = {
@@ -7842,9 +7985,10 @@ def build_ai_image_cod_country_plan(
     storage_detail = detail_for(("收纳", "携带", "便携", "空间", "storage", "portable"), 6)
     local_detail = detail_for(("外观", "设计", "搭配", "场景", "本土", "style", "design"), 8)
     trust_detail = detail_for(("耐用", "寿命", "品质", "售后", "信任", "durable", "trust"), 9)
+    hero_source = source_points[0] if source_points else main_points[0]
     hero_focus = {
-        "title": clean_ai_image_suite_text(main_points[0].get("title"), 220) or "产品核心第一印象",
-        "description": clean_ai_image_suite_text(main_points[0].get("description"), 600)
+        "title": clean_ai_image_suite_text(hero_source.get("title"), 220) or "产品核心第一印象",
+        "description": clean_ai_image_suite_text(hero_source.get("description"), 600)
         or "只突出当前产品最核心、最容易在第一眼理解的一个使用价值。",
     }
     reference_story_focuses = [
@@ -7876,8 +8020,8 @@ def build_ai_image_cod_country_plan(
     # locked focus before adding optional story, usage and product-information pages.
     focuses = [
         hero_focus,
-        *main_points[1:],
-        *detail_points,
+        *source_points[1:],
+        *fallback_points,
         overview,
         *reference_story_focuses[1:],
         usage_guide_focus,
@@ -8687,7 +8831,11 @@ def lock_ai_image_cod_source_point_coverage(
     if resolved_key not in AI_IMAGE_COD_COUNTRY_SUITE_KEYS or not pages:
         return pages
     main_points, detail_points = extract_ai_image_cod_kr_points(base_prompt, brief)
-    source_points = [*main_points, *detail_points]
+    source_points = [
+        point
+        for point in [*main_points, *detail_points]
+        if point.get("sourceProvided") is True
+    ]
     if not source_points:
         return pages
 
@@ -8705,6 +8853,7 @@ def lock_ai_image_cod_source_point_coverage(
         # optional generic scenes come only after the main/secondary points.
         point_page_indexes = list(range(min(len(locked_pages), len(source_points))))
 
+    source_main_count = sum(1 for item in main_points if item.get("sourceProvided") is True)
     for point_index, page_index in enumerate(point_page_indexes[: len(source_points)]):
         point = source_points[point_index]
         title = clean_ai_image_suite_text(point.get("title"), 220)
@@ -8717,7 +8866,7 @@ def lock_ai_image_cod_source_point_coverage(
         page["focus"] = f"{title}。{description}" if description else title
         page["sellingPoint"] = f"{title}：{description}" if description else title
         page["sourcePointIndex"] = point_index + 1
-        page["sourcePointKind"] = "main" if point_index < len(main_points) else "detail"
+        page["sourcePointKind"] = "main" if point_index < source_main_count else "detail"
 
     return locked_pages
 
@@ -8732,7 +8881,11 @@ def ai_image_cod_source_point_coverage(
     if resolved_key not in AI_IMAGE_COD_COUNTRY_SUITE_KEYS:
         return {"total": 0, "assigned": 0, "missing": [], "complete": True}
     main_points, detail_points = extract_ai_image_cod_kr_points(base_prompt, brief)
-    source_points = [*main_points, *detail_points]
+    source_points = [
+        point
+        for point in [*main_points, *detail_points]
+        if point.get("sourceProvided") is True
+    ]
     locked_pages = lock_ai_image_cod_source_point_coverage(pages, base_prompt, brief, resolved_key)
     assigned_titles = {
         text(page.get("focusTitle")).strip().lower()
@@ -8752,7 +8905,7 @@ def ai_image_cod_source_point_coverage(
     }
 
 
-def ai_image_cod_expressive_brief(value: Any, limit: int = 4200) -> str:
+def ai_image_cod_expressive_brief(value: Any, limit: int = AI_IMAGE_SUITE_BRIEF_LIMIT) -> str:
     """Keep COD selling-point semantics intact so visual direction does not lose the user's hook."""
     segments = [
         clean_ai_image_suite_text(segment, 720)
@@ -8796,10 +8949,13 @@ def compact_ai_image_suite_base_prompt(
             product_line = "[Product] Reproduce the actual uploaded product from reference image 1."
         brief_source = brief_transform(brief, 4200)
         identity_source = re.split(
-            r"(?:5\s*大?主卖点|主卖点\s*[（(]?\s*5|【?主卖点\s*1|10\s*个?次(?:要)?卖点)",
+            r"(?:5\s*大?主卖点|主卖点\s*[（(]?\s*5|【?\s*主卖点\s*1|"
+            r"(?:主卖点|核心卖点|卖点)\s*1\s*【|"
+            r"(?:主卖点|核心卖点|卖点|次卖点|次要卖点)\s*[：:]|"
+            r"10\s*个?次(?:要)?卖点)",
             brief_source,
             maxsplit=1,
-            flags=re.IGNORECASE,
+            flags=re.IGNORECASE | re.MULTILINE,
         )[0]
         identity_context = clean_ai_image_suite_text(identity_source, 500)
         requirement_matches = re.findall(
@@ -8851,6 +9007,89 @@ AI_IMAGE_NO_ADDED_MARKS_INSTRUCTION = (
     "Never render SOSOVE, SKU BOARD, Dakin AI, ChatGPT, OpenAI, GPT-image, a model name or a backend/service name anywhere in the layout. "
     "Only retain a wordmark when those exact letters are physically printed, engraved or attached to the product in reference image 1; keep it on that product only and never repeat it as page branding."
 )
+
+
+AI_IMAGE_USER_PROMPT_FIDELITY_LOCK = "[User-prompt fidelity lock — highest content priority]"
+
+
+def ai_image_prompt_global_constraints(value: Any, limit: int = 3600) -> str:
+    """Keep product identity and prompt-wide requirements without leaking other page points."""
+    source = text(value).strip()
+    if not source:
+        return ""
+    first_point = re.search(
+        r"(?:【\s*(?:主卖点|核心卖点|卖点)\s*\d+|"
+        r"(?:主卖点|核心卖点|卖点)\s*\d+\s*【|"
+        r"(?:主卖点|核心卖点|卖点|次卖点|次要卖点)\s*[：:]|"
+        r"\[\s*细节\s*\d+)",
+        source,
+        flags=re.IGNORECASE,
+    )
+    identity_source = source[: first_point.start()] if first_point else source
+    identity = clean_ai_image_suite_text(identity_source, 1600)
+    directive_prefix = re.compile(
+        r"^(?:全局要求|特殊要求|其他要求|需求|要求|目标市场|目标国家|目标地区|国家|地区|"
+        r"语言|可见语言|尺寸|画布|背景|背景色|背景颜色|背景色调|配色|风格|字体|"
+        r"人物|模特|场景|动作|构图|排版|图片顺序|图片数量|数量|主图数量|详情图数量|"
+        r"参考图|参考网站|不出现|不要|不能|禁止|必须|保持|拒绝|确保|每张|一张图片)",
+        flags=re.IGNORECASE,
+    )
+    point_prefix = re.compile(
+        r"^(?:[✨📸🎨📋📊🎯\s]*)(?:【\s*)?(?:主卖点|核心卖点|卖点|次卖点|次要卖点|细节)\s*\d*",
+        flags=re.IGNORECASE,
+    )
+    directives: list[str] = []
+    for raw_line in source.splitlines():
+        line = raw_line.strip(" \t-•*：:")
+        if not line or point_prefix.match(line):
+            continue
+        if directive_prefix.match(line) or re.search(
+            r"(?:不要出现|不能出现|不得出现|必须使用|统一使用|保持不变|尺寸(?:均)?为|"
+            r"使用(?:日语|韩语|德语|法语|西班牙语|匈牙利语|波兰语|捷克语)|"
+            r"卖给.{0,20}(?:国家|地区|市场)|目标(?:国家|地区|市场))",
+            line,
+            flags=re.IGNORECASE,
+        ):
+            cleaned = clean_ai_image_suite_text(line, 700)
+            if cleaned and cleaned not in directives and cleaned != identity:
+                directives.append(cleaned)
+        if len(directives) >= 18:
+            break
+    return limited_text("；".join(part for part in [identity, *directives] if part), "", limit)
+
+
+def ai_image_user_prompt_page_contract(
+    brief: str,
+    page: dict[str, Any],
+    suite_key: str = "",
+    country: str = "",
+) -> str:
+    focus_title = clean_ai_image_suite_text(page.get("focusTitle"), 220)
+    focus_description = clean_ai_image_suite_text(page.get("focusDescription"), 700)
+    page_point = clean_ai_image_suite_text(page.get("sellingPoint") or page.get("focus"), 1200)
+    if not page_point:
+        page_point = "。".join(part for part in (focus_title, focus_description) if part)
+    global_constraints = ai_image_prompt_global_constraints(brief)
+    resolved_key = normalize_ai_image_suite_key(suite_key) or AI_IMAGE_LANDING_SUITE_KEY
+    resolved_country = normalize_ai_image_cod_country(country) if resolved_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS else "JP"
+    lines = [
+        (
+            f"{AI_IMAGE_USER_PROMPT_FIDELITY_LOCK} The current user brief is the binding content contract for this image. "
+            "Preserve the user-specified product, product category, color or variant, person identity or casting, target country, visible language, scene, action, camera intent, composition, style, palette, typography, selling-point meaning, quantity logic and exclusions. "
+            "Template and director text may organize the fixed canvas, evidence and visual hierarchy only; it must not replace, weaken, generalize, reinterpret or contradict an explicit user requirement. "
+            "Use template defaults only for details the user did not specify. Product-reference identity and the fixed platform canvas remain locked."
+        ),
+        f"[Locked current-page source point] {page_point or focus_title or 'Follow this page role using only the current product brief.'}",
+        (
+            "[Page isolation] Render only the locked current-page point above. Do not import another page's selling point, claim, scene assignment or headline, and do not substitute a generic template benefit."
+        ),
+        f"[Prompt-wide source requirements] {global_constraints}" if global_constraints else "",
+        f"[Market binding] Target country code: {resolved_country}. Keep the target market and visible language specified by the current brief and suite.",
+        (
+            "[Fidelity check] Before rendering, compare the image concept against the locked current-page point and every prompt-wide source requirement. Correct any changed product, omitted requested condition, invented feature, wrong country or language, substituted scene, or conflicting default."
+        ),
+    ]
+    return "\n".join(line for line in lines if line)
 
 
 def ai_image_visible_language_lock(
@@ -8917,6 +9156,16 @@ def build_ai_image_suite_prompts(
         else []
     )
     prompts: list[str] = []
+
+    def append_locked_page_prompt(page_prompt: str, page_value: dict[str, Any]) -> None:
+        fidelity_contract = ai_image_user_prompt_page_contract(
+            brief,
+            page_value,
+            resolved_suite_key,
+            text(page_value.get("country")) or country,
+        )
+        prompts.append(f"{fidelity_contract}\n{page_prompt}" if fidelity_contract else page_prompt)
+
     for page in pages:
         index = int(page["page"])
         language_lock_rule = ai_image_visible_language_lock(
@@ -8956,7 +9205,7 @@ def build_ai_image_suite_prompts(
                     "[Internal quality gate] Before final rendering, silently verify: actual product category; exact product identity; one module role only; policy-safe content; readable Japanese headline; Japanese-localized category-appropriate scene and natural use; complete evidence; no Amazon UI, fabricated specification or prohibited claim; no distorted people, product or results. Fix any failed check before returning the image.",
                 ]
             )
-            prompts.append(page_prompt)
+            append_locked_page_prompt(page_prompt, page)
             continue
 
         if resolved_suite_key == AI_IMAGE_RAKUTEN_SUITE_KEY:
@@ -8992,7 +9241,7 @@ def build_ai_image_suite_prompts(
                     "[Internal quality gate] Before final rendering, silently verify: actual product category; exact product identity; one image role only; square composition; readable Japanese headline; Japanese-localized category-appropriate scene and natural use; complete evidence; no Rakuten UI, fabricated specification or prohibited claim; no distorted people, product or results. Fix any failed check before returning the image.",
                 ]
             )
-            prompts.append(page_prompt)
+            append_locked_page_prompt(page_prompt, page)
             continue
 
         if resolved_suite_key == AI_IMAGE_COD_DETAIL_SUITE_KEY:
@@ -9093,7 +9342,7 @@ def build_ai_image_suite_prompts(
                     f"[Internal quality gate] Before final rendering, silently verify: exact product identity; detail image {index} of {suite_count}; locked page archetype; source-provided selling point visibly executed rather than neutralized; one explanation purpose except the overview-poster summary; one dominant dramatic realistic photo except the single 2x2 feedback page; legible {profile['language']} copy; {profile['label']}-localized scene; promotion badge only on the 本地促销页; endorsement icon only on a source-triggered 医师/专家背书页; feedback cards only on the page whose archetype is 好评反馈页; no marketplace UI; no distorted people or product. Fix any failed check before returning the image.",
                 ]
             )
-            prompts.append(page_prompt)
+            append_locked_page_prompt(page_prompt, page)
             continue
 
         if resolved_suite_key == AI_IMAGE_COD_SUITE_KEY:
@@ -9166,7 +9415,7 @@ def build_ai_image_suite_prompts(
                     f"[Internal quality gate] Before final rendering, silently verify: correct main/detail position; actual product category inferred from the reference; exact product identity; exactly one source-provided selling point visibly executed; page archetype and display effect visibly followed; no repeated generic layout; strong COD visual impact at thumbnail size; oversized but accurate product or result emphasis; exact 750x1000 full-bleed canvas; legible {profile['language']} headline; {profile['label']}-localized scene and natural action; complete evidence; no price or animation; no marketplace UI; no distorted people, product or results. Fix any failed check before returning the image.",
                 ]
             )
-            prompts.append(page_prompt)
+            append_locked_page_prompt(page_prompt, page)
             continue
 
         if resolved_suite_key == AI_IMAGE_LANDING_SUITE_KEY and ai_image_suite_product_is_fashion(base_prompt, brief):
@@ -9192,6 +9441,20 @@ def build_ai_image_suite_prompts(
             )
             scene_angle_directive = clean_ai_image_suite_text(page.get("sceneAngleDirective"), 1200)
             microcopy_limit = 8 if page_archetype == "尺寸表" else 4 if page_archetype in {"Staff试穿", "工艺三段图", "四格体验", "体型包容"} else 2
+            if page_archetype in {"显瘦对比", "长度对比", "版型原理对比"}:
+                comparison_rule = (
+                    "[Comparison-baseline lock — highest product-comparison priority] The left/Before side must show an unbranded ordinary garment from the same category with a visibly conventional cut, length, waistband or drape; it must NOT be the supplied product, another supplied colorway, a mirror copy or a recolored duplicate. The right/After side must show the exact supplied product. Keep the same Japanese model, shoes, body proportions, focal length, scale and lighting for a fair read, but use two naturally different yet comparable actions rather than cloning the exact pose. Make the improvement obvious through garment cut and drape only; never slim, lengthen or reshape the person's body. The exact-product identity lock applies to the right/After side only."
+                )
+            elif page_archetype == "面料对比":
+                comparison_rule = (
+                    "[Material-comparison baseline lock — highest comparison priority] The ordinary side must use a genuinely different unbranded conventional fabric from the same apparel category. The product side must use the supplied product's exact fabric, color and construction. Never compare the supplied fabric with a copy, mirror or recolor of itself. Match the handling force, light and crop while varying the hand position enough to avoid duplicated imagery; show the difference through truthful wrinkles, texture, cling or drape, not fabricated laboratory data."
+                )
+            elif page_archetype == "双搭配对比":
+                comparison_rule = (
+                    "[Styling-comparison lock] Keep the exact same supplied garment on both sides, but place it in two clearly different contexts: office/work and leisure/date. Change the outer layer, location and natural action without changing the main garment. This is a versatility comparison, not a Before/After product-effect claim."
+                )
+            else:
+                comparison_rule = ""
             page_prompt = "\n".join(
                 [
                     f"[Japan apparel landing-page director] Page {index} of {suite_count}. Render one finished {page['size']} vertical fashion ecommerce image immediately. Do not output a plan, explanation, storyboard, contact sheet, collage board or webpage mockup.",
@@ -9201,10 +9464,12 @@ def build_ai_image_suite_prompts(
                     f"[Page role] {page['role']}. Objective: {page['objective']}",
                     f"[Single page focus] Communicate only: {page['focus']} Do not introduce another page's selling point.",
                     f"[Locked page archetype — highest layout priority] {page_archetype}. Required visual result: {display_effect}",
+                    comparison_rule,
                     "[Selling-point density lock] Use one primary selling point per page and at most one directly supporting detail. The designated four-experience page may show its four named experiences, and the designated size-guide page may show its verified specification fields. Do not turn any other page into a generic benefit wall or long-copy infographic.",
                     f"[Localized headline instruction] Use the approved Japanese headline exactly as written: 「{page['headline']}」. The Chinese planning text remains invisible internal guidance and must never appear as artwork copy.",
                     f"[Evidence format] {page['evidence']}",
                     f"[Localized scene] {page['scene']}",
+                    "[Assigned Japanese scene lock — non-negotiable] Use the exact setting category assigned above. An office interior must remain an office interior; an office-building exterior must remain outdoors; travel, leisure, cafe/date, culture and home routes must stay visibly different. Do not replace an assigned route with a generic apartment, generic living room or the same indoor studio used on other pages. Match outfit styling and props to that route, and change location type, camera height, crop, action and background depth from adjacent model pages.",
                     f"[Model and garment direction] {page['pose']}",
                     f"[Composition] {page['composition']}",
                     "[Reference-case layout lock] Follow this page's assigned archetype exactly. Full-body pages use one dominant head-to-toe model. Product-only pages use one large complete garment on warm ivory. Comparison pages use fair matched panels. The designated four-grid, three-detail craft page, staff-fit page, color-lineup pages and size-guide page must use those information structures. Do not flatten these different archetypes into the same hero template.",
@@ -9214,17 +9479,18 @@ def build_ai_image_suite_prompts(
                     brand_rhythm_rule,
                     "[Reference-image cleanup] The supplied product reference images are used only for garment identity, cut, color, fabric and styling inspiration. Do not copy their English placeholder text, studio credits, vertical text, unrelated labels, white footer strips or decorative typography. All visible copy must be Japanese and may be omitted when rendering accuracy is uncertain.",
                     "[Japanese typography] Use a restrained Japanese Mincho face for editorial headlines and a clean Japanese Gothic face for labels, with generous spacing and readable hierarchy. Never render a font name as visible copy.",
-                    "[Japanese mature-womenswear art direction] Bright warm white, ivory and pale gray with light wood, quiet black, rust brown, navy and muted green from the real product range. Use natural window light, realistic Japanese homes, cafes, entryways and calm city corners. The intended shopper is an elegant Japanese woman around 35-55; styling is comfortable, understated and locally familiar rather than youthful streetwear or generic East-Asian posing.",
+                    "[Japanese mature-womenswear art direction] Bright warm white, ivory and pale gray with light wood, quiet black, rust brown, navy and muted green from the real product range. Distribute model scenes across real Japanese office interiors, office-building exteriors, commuter routes, travel spaces, parks, cafes, date/culture venues and homes instead of repeatedly using apartments. The intended shopper is an elegant Japanese woman around 35-55; styling is comfortable, understated and locally familiar rather than youthful streetwear or generic East-Asian posing.",
+                    "[Japanese casting lock] If a person-reference image is supplied, preserve that person's identity and use Japanese-localized grooming and wardrobe context. Otherwise cast a locally plausible Japanese adult woman appropriate to the stated target age, with realistic skin texture, understated Japanese catalogue makeup, natural dark hair in a soft bob/lob or simple tied style, relaxed shoulders and a reserved everyday expression. Avoid Korean beauty-editorial signals such as glass-skin airbrushing, K-pop idol hair or makeup, Seoul streetwear styling, aegyo/finger-heart gestures, highly sculpted V-line retouching or glossy studio glamour. Do not reduce nationality to a costume or stereotype; localization must come from credible casting, grooming, posture, outfit coordination and Japanese environment together.",
                     f"[Cross-page consistency] Inspect every main-product reference, not only reference image 1. Identify the exact garment category, every documented color/specification, silhouette, cut, proportions, fabric, seams, pockets, neckline, sleeves and hem. Preserve these facts across all {suite_count} pages, rotate real variants deliberately, and never invent a color or collapse every page to the first reference's color. Product accuracy overrides decorative ideas.",
                     style_anchor_rule,
                     f"[Copy discipline] Visible copy must use Japanese only. Use one short headline and no more than {microcopy_limit} very short Japanese labels, except verified size-table rows. Prefer concise labels and thin guide lines over paragraphs. Omit uncertain text rather than filling the image. Never produce Chinese text, fake logos, fake ratings, prices, discounts, coupons or purchase-button text.",
                     no_added_marks_rule,
                     "[Photography] Use photorealistic Japanese apparel ecommerce photography, realistic skin and hair, believable body proportions, accurate garment fit, natural folds, soft directional daylight and clean commercial color grading. No CGI, waxy skin, illustration, cartoon, animation, fake garment parts, warped anatomy, duplicate limbs, watermark or decorative border.",
                     "[Pose exclusions] No hands-on-hips, crossed legs, tiptoes, extreme hip twist, exaggerated chest-out pose, runway strut, face-framing hands, finger heart, V-sign, thumbs-up, forced open-mouth smile or hands covering the waist, hem, pocket, seam or fabric texture.",
-                    "[Internal quality gate] Before final rendering, silently verify: exact garment and assigned variant; assigned page archetype visibly followed; page is visually different from adjacent pages; one primary selling point; natural Japanese mature-womenswear pose and scene; Japanese-only copy; bright full-bleed 1500x2000 canvas; all documented colors covered across the suite; no invented size, rating, testimonial identity or product feature; no white outer border and no distorted person or garment.",
+                    "[Internal quality gate] Before final rendering, silently verify: exact garment and assigned variant; any effect-comparison uses an ordinary unbranded baseline rather than the product against itself; comparison actions are comparable but not cloned; assigned office/outdoor/travel/leisure/date/home route is visibly obeyed rather than replaced by another interior; locally plausible Japanese casting rather than Korean beauty-editorial styling; assigned page archetype visibly followed; page is visually different from adjacent pages; one primary selling point; Japanese-only copy; bright full-bleed 1500x2000 canvas; all documented colors covered across the suite; no invented size, rating, testimonial identity or product feature; no white outer border and no distorted person or garment.",
                 ]
             )
-            prompts.append(page_prompt)
+            append_locked_page_prompt(page_prompt, page)
             continue
 
         microcopy_limit = 5 if index == 9 else 3
@@ -9259,7 +9525,7 @@ def build_ai_image_suite_prompts(
                 "[Hard constraints] Preserve the product category, color, shape, parts, materials, proportions, controls, connections and visible branding exactly. Do not darken the page, do not use a plain white or empty studio background, do not redesign the product, and do not add watermarks or borders.",
             ]
         )
-        prompts.append(page_prompt)
+        append_locked_page_prompt(page_prompt, page)
     return prompts, pages
 
 
@@ -9721,13 +9987,13 @@ def normalize_ai_director_analysis(
     fallback_main = [item for item in extracted if item.get("kind") == "main"]
     fallback_secondary = [item for item in extracted if item.get("kind") == "detail"]
     expressive_cod = normalize_ai_image_suite_key(suite_key) in AI_IMAGE_COD_COUNTRY_SUITE_KEYS
-    # For COD, source-provided selling points are the coverage contract.  A director
-    # model may add clearer explanations, but its generic replacement list must never
-    # displace a real point from the user's brief before page prompts are built.
+    # Source-provided selling points are the coverage contract for every suite.  A
+    # director model may add evidence ideas, but inferred or generic replacement
+    # points must never displace the user's explicit product brief.
     model_main = payload.get("mainSellingPoints") if isinstance(payload.get("mainSellingPoints"), list) else []
     model_secondary = payload.get("secondarySellingPoints") if isinstance(payload.get("secondarySellingPoints"), list) else []
-    main_candidates = [*fallback_main, *model_main] if expressive_cod else [*model_main, *fallback_main]
-    secondary_candidates = [*fallback_secondary, *model_secondary] if expressive_cod else [*model_secondary, *fallback_secondary]
+    main_candidates = [*fallback_main, *model_main]
+    secondary_candidates = [*fallback_secondary, *model_secondary]
     main_points = normalize_ai_director_selling_points(main_candidates, [], 5)
     secondary_points = normalize_ai_director_selling_points(secondary_candidates, [], 10)
     fact_audit = normalize_ai_director_fact_audit(payload.get("factAudit"), brief, [*main_points, *secondary_points])
@@ -9846,7 +10112,11 @@ def build_ai_director_messages(
     product_context = compact_ai_image_suite_base_prompt(base_prompt, suite_key, brief)
     blocked_claims = detect_ai_director_risk_claims(brief)
     expressive_cod = suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS
-    production_brief = ai_image_cod_expressive_brief(brief, 6000) if expressive_cod else ai_image_external_safe_brief(brief, 6000)
+    production_brief = (
+        ai_image_cod_expressive_brief(brief, AI_IMAGE_DIRECTOR_BRIEF_LIMIT)
+        if expressive_cod
+        else ai_image_external_safe_brief(brief, AI_IMAGE_DIRECTOR_BRIEF_LIMIT)
+    )
     held_back_summary = ai_image_external_claim_summary(blocked_claims)
     claim_analysis_rule = (
         "User text alone is not proof for badges, special grades, exact numbers, social proof, special-use, after-sales or delivery statements. "
@@ -9872,6 +10142,8 @@ def build_ai_director_messages(
             f"[Japanese apparel {suite_count}-page director rule] Preserve every locked page archetype and the exact selected-page order. "
             "Use one primary selling point per page and at most one directly supporting detail, except the locked four-experience page and verified size guide. "
             "Keep full-body, product-only, macro, comparison, lifestyle, staff-fit, layering, color-lineup, craft-detail and size-guide pages visually distinct. "
+            "For slimming, length and silhouette comparisons, the baseline must be a visibly different unbranded ordinary garment from the same category and the result side must be the exact supplied product; never compare the product with itself, a recolor, mirror or duplicated pose. Keep the same model and comparable camera conditions but use naturally different actions and never reshape the body. "
+            "Preserve each assigned scene category and distribute model pages across Japanese office interiors, office-building exteriors, commuting, travel, parks, cafes, dates/culture and home life; never collapse them into repeated apartments or studios. Cast locally plausible Japanese adults with restrained Japanese catalogue grooming and reject Korean beauty-editorial, K-pop, glass-skin or Seoul-streetwear cues. "
             "Do not rewrite the suite into repeated hero posters. Preserve every documented color/specification and rotate real variants across product-only and model pages."
         )
     else:
@@ -9941,41 +10213,17 @@ def refine_ai_image_suite_plan_with_director(
             brief,
             [*(cached_analysis.get("mainSellingPoints") or []), *(cached_analysis.get("secondarySellingPoints") or [])],
         )
-        cached_brief = ai_director_analysis_brief(cached_analysis)
-        if suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS:
-            detail_controls: list[str] = [ai_image_cod_expressive_brief(brief, 6000)]
-            variants = extract_ai_image_cod_product_variants(base_prompt, brief)
-            if variants:
-                detail_controls.append("颜色规格：" + "、".join(variants))
-        if suite_key == AI_IMAGE_COD_DETAIL_SUITE_KEY:
-            detail_controls.extend(
-                [
-                    f"产品品类：{ai_image_cod_detail_category_profile(base_prompt, brief)['label']}",
-                    f"促销{ai_image_cod_detail_promotion_percent(brief)}% OFF",
-                ]
-            )
-            endorsement_cue = ai_image_cod_detail_endorsement_cue(brief)
-            if endorsement_cue:
-                detail_controls.append(endorsement_cue)
-        if suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS and detail_controls:
-            cached_brief = f"{cached_brief}\n" + "\n".join(detail_controls)
-        page_size = text(base_pages[0].get("size")) if base_pages else text(ai_image_suite_config(suite_key).get("size"))
-        cached_pages = build_ai_image_suite_plan(
-            base_prompt,
-            cached_brief,
-            page_size,
-            suite_key=suite_key,
-            country=suite_country,
-            count=len(base_pages),
-        )
-        return cached_pages, {
+        # Cached analysis is product metadata only.  Rebuilding page focus from the
+        # cache can overwrite a newly entered prompt with an older model summary, so
+        # the current request's locally planned pages remain the content contract.
+        return base_pages, {
             **metadata,
             "source": "cache",
             "status": "ok",
             "cacheHit": True,
             "stage": "complete",
             "visionUsed": bool(reference_image),
-            "message": "已复用产品分析缓存并完成平台分镜",
+            "message": "已复用产品分析缓存，当前提示词分镜保持锁定",
             "productSummary": safe_ai_director_text(cached_analysis.get("productSummary"), 500),
             "factAudit": cached_analysis.get("factAudit") or {},
             "analysisCounts": {
@@ -10025,15 +10273,11 @@ def refine_ai_image_suite_plan_with_director(
         refined_pages: list[dict[str, Any]] = []
         for base_page in base_pages:
             item = page_map[int(base_page["page"])]
-            if suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS:
-                # COD source-point assignment is locked by the local coverage planner.
-                # The model enriches evidence and composition only; it does not replace
-                # a supplied selling point with a generic theme or merge several points.
-                focus_title = text(base_page.get("focusTitle")) or safe_ai_director_text(item.get("focusTitle"), 220)
-                focus_description = text(base_page.get("focusDescription")) or safe_ai_director_text(item.get("focusDescription"), 600)
-            else:
-                focus_title = safe_ai_director_text(item.get("focusTitle"), 220) or text(base_page.get("focusTitle"))
-                focus_description = safe_ai_director_text(item.get("focusDescription"), 600) or text(base_page.get("focusDescription"))
+            # The local planner is built from the current user brief and owns content
+            # selection for every suite.  The remote director may enrich evidence and
+            # visual execution only; it never replaces the assigned source point.
+            focus_title = text(base_page.get("focusTitle")) or safe_ai_director_text(item.get("focusTitle"), 220)
+            focus_description = text(base_page.get("focusDescription")) or safe_ai_director_text(item.get("focusDescription"), 600)
             evidence_direction = safe_ai_director_text(item.get("evidenceDirection"), 420)
             refined = dict(base_page)
             refined["focusTitle"] = focus_title
@@ -10238,7 +10482,8 @@ def build_ai_image_suite_review_messages(
     elif suite_key == AI_IMAGE_LANDING_SUITE_KEY:
         cod_review_rule = (
             f"For the Japanese {suite_total}-page brand landing suite, verify that every submitted page visibly follows its locked pageArchetype, displayEffect, composition, variantDirective and sceneAngleDirective. "
-            "Full-body pages require an accurate head-to-toe garment view; product-only pages require one complete exact garment; macro pages require truthful fabric or construction detail; comparison pages require matched conditions; the four-experience page, three-detail craft page, staff-fit page, color-lineup pages and size-guide page must retain their assigned structures. "
+            "Full-body pages require an accurate head-to-toe garment view; product-only pages require one complete exact garment; macro pages require truthful fabric or construction detail. On slimming, length, silhouette and fabric comparison pages, reject any result that places the supplied product, a recolor, mirror or near-duplicate on both sides. Require a visibly different unbranded ordinary baseline and the exact supplied product on the result side, with the same model and comparable conditions but naturally different actions; reject cloned poses and body reshaping. The four-experience page, three-detail craft page, staff-fit page, color-lineup pages and size-guide page must retain their assigned structures. "
+            "Reject Korean beauty-editorial casting, K-pop hair/makeup, glass-skin retouching, Seoul streetwear or aegyo gestures when no such person reference was supplied. Require credible Japanese casting, grooming, posture and environment together. Reject any page that ignores its assigned office-interior, office-building-exterior, commute, travel, leisure, date/culture, cafe or home route, and reject a submitted batch that repeats generic indoor apartments while omitting the planned outdoor and travel scenes. "
             "Reject a page that collapses into a repeated generic hero poster, copies an adjacent page's camera/crop/room/pose/layout, omits a documented color, defaults every page to reference image 1, invents a color or measurement, shows Chinese copy, uses a non-Japanese gesture, or changes the garment cut, length, neckline, sleeve, seam, pocket or fabric appearance."
         )
     else:
@@ -10317,7 +10562,7 @@ def review_ai_image_suite(fields: dict[str, Any], files: dict[str, Any], actor: 
     reference_image = read_ai_image_upload(reference_item, "产品主图")
     generated_images = [read_ai_image_upload(item, "待质检成图") for item in generated_items]
     prompt = limited_text(fields.get("prompt"), "", 3000)
-    brief = limited_text(fields.get("suiteBrief"), "", 6000)
+    brief = limited_text(fields.get("suiteBrief"), "", AI_IMAGE_SUITE_BRIEF_LIMIT)
     suite_plan = normalize_ai_image_suite_plan(fields.get("suitePlan"), suite_count)
     if not suite_plan:
         size = limited_text(fields.get("size"), text(suite_config.get("size")), 40)
@@ -10396,7 +10641,7 @@ def plan_ai_image_suite(
     if not suite_key:
         raise ValueError("不支持的落地页套图类型")
     prompt = limited_text(payload.get("prompt"), "", 3000)
-    brief = limited_text(payload.get("suiteBrief"), "", 6000)
+    brief = limited_text(payload.get("suiteBrief"), "", AI_IMAGE_SUITE_BRIEF_LIMIT)
     if not prompt and not brief:
         raise ValueError("请先填写商品卖点或创作需求")
     suite_config = ai_image_suite_config(suite_key)
@@ -11367,10 +11612,58 @@ def read_ai_image_output(material_id: Any) -> tuple[bytes, str]:
     return target.read_bytes(), mimetypes.guess_type(str(target))[0] or "image/png"
 
 
+def prune_ai_image_output_files(force: bool = False) -> dict[str, int]:
+    global _AI_IMAGE_OUTPUT_LAST_CLEANUP_TS
+    now_ts = time.time()
+    with _AI_IMAGE_OUTPUT_CLEANUP_LOCK:
+        if not force and now_ts - _AI_IMAGE_OUTPUT_LAST_CLEANUP_TS < 3600:
+            return {"removed": 0, "bytes": 0}
+        _AI_IMAGE_OUTPUT_LAST_CLEANUP_TS = now_ts
+    ttl = clamp(int(number(os.environ.get("AI_IMAGE_OUTPUT_TTL_SECONDS"), 86400)), 3600, 30 * 86400)
+    protected: set[Path] = set()
+    try:
+        board = load_board()
+        for launch in board.get("adLaunches", []):
+            material = launch.get("material") if isinstance(launch, dict) and isinstance(launch.get("material"), dict) else {}
+            path = text(material.get("path"))
+            if path:
+                protected.add(Path(path).resolve())
+    except Exception:
+        pass
+    removed = 0
+    removed_bytes = 0
+    if not AD_LAUNCH_UPLOAD_DIR.exists():
+        return {"removed": 0, "bytes": 0}
+    for path in AD_LAUNCH_UPLOAD_DIR.glob("AI-*.*"):
+        try:
+            if not path.is_file() or path.resolve() in protected:
+                continue
+            file_stat = path.stat()
+            if now_ts - file_stat.st_mtime <= ttl:
+                continue
+            removed_bytes += file_stat.st_size
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return {"removed": removed, "bytes": removed_bytes}
+
+
+def ai_image_output_delete_token(material_id: Any, remote_node_id: Any = "", remote_path: Any = "") -> str:
+    message = "|".join((text(material_id).upper(), text(remote_node_id), text(remote_path))).encode("utf-8")
+    return hmac.new(meta_credential_encryption_key(), message, hashlib.sha256).hexdigest()
+
+
+def ai_image_output_delete_token_valid(material: dict[str, Any]) -> bool:
+    provided = text(material.get("deleteToken"))
+    expected = ai_image_output_delete_token(material.get("id"), material.get("remoteNodeId"), material.get("remotePath"))
+    return bool(provided) and secrets.compare_digest(provided, expected)
+
+
 def save_ai_image_outputs(images: list[tuple[bytes, str]], prompt: str, model: str, quality: str, size: str) -> tuple[list[dict[str, Any]], list[str]]:
     if not images:
         raise ValueError("生图接口没有返回图片")
-    AD_LAUNCH_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    prune_ai_image_output_files()
     name_hint = re.sub(r"[^A-Za-z0-9一-龥ぁ-んァ-ン_-]+", "-", prompt[:28]).strip("-") or "ai-image"
     materials: list[dict[str, Any]] = []
     preview_urls: list[str] = []
@@ -11379,28 +11672,45 @@ def save_ai_image_outputs(images: list[tuple[bytes, str]], prompt: str, model: s
         if suffix == ".jpe":
             suffix = ".jpg"
         material_id = f"AI-{uuid.uuid4().hex[:10].upper()}"
-        target = AD_LAUNCH_UPLOAD_DIR / f"{material_id}{suffix}"
-        target.write_bytes(image_bytes)
+        remote_source = ai_image_remote_source(image_bytes) if ai_image_remote_storage_enabled() else None
+        target: Path | None = None
+        if not remote_source:
+            AD_LAUNCH_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            target = AD_LAUNCH_UPLOAD_DIR / f"{material_id}{suffix}"
+            target.write_bytes(image_bytes)
+        preview_url = text(remote_source.get("url")) if remote_source else ai_image_output_preview_url(material_id)
         material = {
             "id": material_id,
             "name": f"{name_hint}-{index}{suffix}" if len(images) > 1 else f"{name_hint}{suffix}",
-            "path": str(target),
+            "path": str(target) if target else "",
             "type": "image",
             "mime": mime,
-            "size": target.stat().st_size,
-            "source": "chatgpt2api",
+            "size": target.stat().st_size if target else len(image_bytes),
+            "source": "chatgpt2api-remote" if remote_source else "chatgpt2api",
+            "storage": "remote" if remote_source else "local-temporary",
             "prompt": prompt,
             "model": model or "gpt-image-2",
             "quality": quality,
             "sizePreset": size,
             "uploadedAt": now_iso(),
-            "previewUrl": ai_image_output_preview_url(material_id),
+            "previewUrl": preview_url,
         }
+        if remote_source:
+            material.update(
+                {
+                    "remoteUrl": preview_url,
+                    "remotePath": text(remote_source.get("remotePath")),
+                    "remoteNodeId": text(remote_source.get("nodeId")),
+                    "remoteNodeName": text(remote_source.get("nodeName")),
+                }
+            )
+        material["deleteToken"] = ai_image_output_delete_token(
+            material_id,
+            material.get("remoteNodeId"),
+            material.get("remotePath"),
+        )
         materials.append(material)
-        # Returning a multi-megabyte base64 copy for every page made 20/32-page suites
-        # spend a noticeable amount of time serializing JSON and duplicated browser RAM.
-        # The file is already persisted, so use the authenticated local preview route.
-        preview_urls.append(material["previewUrl"])
+        preview_urls.append(preview_url)
     return materials, preview_urls
 
 
@@ -11574,7 +11884,7 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         mode = "edit"
         quality = "medium" if generation_profile == "fast" else "high"
         suite_target_indexes = normalize_ai_image_suite_page_indexes(fields.get("suitePageIndexes"), suite_count)
-        suite_brief = limited_text(fields.get("suiteBrief"), "", 6000)
+        suite_brief = limited_text(fields.get("suiteBrief"), "", AI_IMAGE_SUITE_BRIEF_LIMIT)
         suite_plan = normalize_ai_image_suite_plan(fields.get("suitePlan"), suite_count)
         has_style_anchor = text(fields.get("suiteStyleAnchor")).lower() in {"1", "true", "yes", "on"}
         suite_all_page_prompts, suite_pages = build_ai_image_suite_prompts(
@@ -11746,7 +12056,8 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
             suite_page_indexes = (suite_target_indexes or list(range(count)))[:len(images[:count])]
             suite_generation_meta = []
             suite_summary = {"requested": suite_count, "attempted": count, "succeeded": len(images[:count]), "running": 0, "failed": 0, "partial": len(images[:count]) < count, "timedOut": False}
-        images = normalize_ai_image_suite_images(images[:count], size)
+        if not ai_image_remote_outputs_ready(images[:count]):
+            images = normalize_ai_image_suite_images(images[:count], size)
     elif template_key == "codHook" and size in AI_IMAGE_COD_HOOK_STRIP_SIZES:
         images = normalize_ai_image_cod_hook_strip_images(images[:count], size)
     if images:
@@ -11811,33 +12122,262 @@ def ai_image_job_id() -> str:
     return f"AIJ-{uuid.uuid4().hex[:14].upper()}"
 
 
+def normalize_ai_image_job_files(value: Any) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        key = text(item.get("key"))
+        filename = Path(text(item.get("filename"), f"{key}.png")).name
+        stored_name = Path(text(item.get("storedName"))).name
+        if key and stored_name and stored_name == text(item.get("storedName")):
+            normalized.append({"key": key, "filename": filename, "storedName": stored_name})
+    return normalized
+
+
+def load_ai_image_jobs() -> dict[str, dict[str, Any]]:
+    try:
+        payload = json.loads(AI_IMAGE_JOBS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    raw_jobs = payload.get("jobs") if isinstance(payload, dict) else None
+    if not isinstance(raw_jobs, dict):
+        return {}
+    jobs: dict[str, dict[str, Any]] = {}
+    for raw_id, raw_job in raw_jobs.items():
+        job_id = text(raw_id).upper()
+        if not re.fullmatch(r"AIJ-[A-F0-9]{14}", job_id) or not isinstance(raw_job, dict):
+            continue
+        status = text(raw_job.get("status"), "queued").lower()
+        mode = text(raw_job.get("mode"), "text").lower()
+        if status not in {"queued", "running", "success", "error"} or mode not in {"text", "edit"}:
+            continue
+        entry = dict(raw_job)
+        entry.update(
+            {
+                "id": job_id,
+                "owner": limited_text(raw_job.get("owner"), "unknown", 80),
+                "role": text(raw_job.get("role")),
+                "mode": mode,
+                "status": status,
+                "createdTs": float(number(raw_job.get("createdTs"), time.time())),
+                "payload": dict(raw_job.get("payload")) if isinstance(raw_job.get("payload"), dict) else {},
+                "actor": dict(raw_job.get("actor")) if isinstance(raw_job.get("actor"), dict) else {},
+                "files": normalize_ai_image_job_files(raw_job.get("files")),
+                "result": raw_job.get("result") if isinstance(raw_job.get("result"), dict) else None,
+                "error": text(raw_job.get("error")),
+            }
+        )
+        jobs[job_id] = entry
+    return jobs
+
+
+def save_ai_image_jobs_locked() -> None:
+    """Persist the current queue. The caller must hold _AI_IMAGE_JOB_LOCK."""
+    AI_IMAGE_JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = AI_IMAGE_JOBS_FILE.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    payload = {
+        "version": AI_IMAGE_JOB_STORE_VERSION,
+        "updatedAt": now_iso(),
+        "jobs": _AI_IMAGE_JOBS,
+    }
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            temporary.chmod(0o600)
+        except OSError:
+            pass
+        temporary.replace(AI_IMAGE_JOBS_FILE)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def save_ai_image_jobs() -> None:
+    with _AI_IMAGE_JOB_LOCK:
+        save_ai_image_jobs_locked()
+
+
+def delete_ai_image_job_files(job_id: str) -> None:
+    value = text(job_id).upper()
+    if not re.fullmatch(r"AIJ-[A-F0-9]{14}", value):
+        return
+    shutil.rmtree(AI_IMAGE_JOB_FILES_DIR / value, ignore_errors=True)
+
+
+def prune_ai_image_jobs_locked(now_ts: float, ttl: int) -> list[str]:
+    removed = [
+        job_id
+        for job_id, job in _AI_IMAGE_JOBS.items()
+        if now_ts - float(number(job.get("createdTs"), now_ts)) > ttl
+    ]
+    for job_id in removed:
+        _AI_IMAGE_JOBS.pop(job_id, None)
+    overflow = max(len(_AI_IMAGE_JOBS) - 300, 0)
+    if overflow:
+        terminal_jobs = [
+            item
+            for item in sorted(_AI_IMAGE_JOBS.items(), key=lambda item: float(number(item[1].get("createdTs"), 0)))
+            if text(item[1].get("status")) in {"success", "error"}
+        ]
+        for job_id, _job in terminal_jobs[:overflow]:
+            _AI_IMAGE_JOBS.pop(job_id, None)
+            removed.append(job_id)
+    return removed
+
+
 def prune_ai_image_jobs() -> None:
-    """Keep a bounded in-memory result cache for browser polling."""
+    """Keep a bounded persistent result cache for browser polling."""
     now_ts = time.time()
     ttl = clamp(int(number(os.environ.get("AI_IMAGE_JOB_TTL_SECONDS"), 86400)), 900, 7 * 86400)
     with _AI_IMAGE_JOB_LOCK:
-        expired = [
-            job_id
-            for job_id, job in _AI_IMAGE_JOBS.items()
-            if now_ts - float(job.get("createdTs") or now_ts) > ttl
-        ]
-        for job_id in expired:
-            _AI_IMAGE_JOBS.pop(job_id, None)
-        if len(_AI_IMAGE_JOBS) > 300:
-            oldest = sorted(_AI_IMAGE_JOBS.items(), key=lambda item: float(item[1].get("createdTs") or 0))[: len(_AI_IMAGE_JOBS) - 300]
-            for job_id, _job in oldest:
-                _AI_IMAGE_JOBS.pop(job_id, None)
+        removed = prune_ai_image_jobs_locked(now_ts, ttl)
+        if removed:
+            save_ai_image_jobs_locked()
+    for job_id in removed:
+        delete_ai_image_job_files(job_id)
 
 
-def snapshot_ai_image_job_files(files: dict[str, Any]) -> dict[str, Any]:
-    """Copy multipart uploads before the HTTP handler releases FieldStorage."""
-    snapshots: dict[str, Any] = {}
-    for key, item in files.items():
-        filename = Path(str(getattr(item, "filename", "") or f"{key}.png")).name
-        file_handle = getattr(item, "file", None)
-        data = file_handle.read() if file_handle is not None else b""
-        snapshots[text(key)] = SimpleNamespace(filename=filename, file=BytesIO(data))
+def snapshot_ai_image_job_files(job_id: str, files: dict[str, Any]) -> list[dict[str, str]]:
+    """Persist multipart uploads before the HTTP handler releases FieldStorage."""
+    if not files:
+        return []
+    target_dir = AI_IMAGE_JOB_FILES_DIR / job_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    snapshots: list[dict[str, str]] = []
+    try:
+        for index, (raw_key, item) in enumerate(files.items(), start=1):
+            key = text(raw_key)
+            filename = Path(str(getattr(item, "filename", "") or f"{key}.png")).name
+            suffix = Path(filename).suffix.lower() or ".bin"
+            safe_key = re.sub(r"[^A-Za-z0-9_-]+", "-", key).strip("-") or "upload"
+            stored_name = f"{index:03d}-{safe_key}{suffix}"
+            file_handle = getattr(item, "file", None)
+            data = file_handle.read() if file_handle is not None else b""
+            (target_dir / stored_name).write_bytes(data)
+            snapshots.append({"key": key, "filename": filename, "storedName": stored_name})
+    except Exception:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
     return snapshots
+
+
+def open_ai_image_job_files(job: dict[str, Any]) -> dict[str, Any]:
+    job_id = text(job.get("id")).upper()
+    snapshots: dict[str, Any] = {}
+    try:
+        for item in normalize_ai_image_job_files(job.get("files")):
+            path = AI_IMAGE_JOB_FILES_DIR / job_id / item["storedName"]
+            snapshots[item["key"]] = SimpleNamespace(filename=item["filename"], file=path.open("rb"))
+    except Exception:
+        close_ai_image_job_files(snapshots)
+        raise ValueError("生图任务的参考图片已丢失，请重新提交任务")
+    return snapshots
+
+
+def close_ai_image_job_files(files: dict[str, Any]) -> None:
+    for item in files.values():
+        try:
+            item.file.close()
+        except (AttributeError, OSError):
+            pass
+
+
+def update_ai_image_job(job_id: str, values: dict[str, Any]) -> None:
+    with _AI_IMAGE_JOB_LOCK:
+        current = _AI_IMAGE_JOBS.get(job_id)
+        if not current:
+            return
+        current.update(values)
+        current["updatedAt"] = now_iso()
+        save_ai_image_jobs_locked()
+
+
+def run_ai_image_job(job_id: str) -> None:
+    with _AI_IMAGE_JOB_LOCK:
+        job = deepcopy(_AI_IMAGE_JOBS.get(job_id) or {})
+    actor_snapshot = dict(job.get("actor")) if isinstance(job.get("actor"), dict) else {}
+    payload_snapshot = dict(job.get("payload")) if isinstance(job.get("payload"), dict) else {}
+    normalized_mode = text(job.get("mode"), "text")
+    username = limited_text(job.get("owner") or actor_snapshot.get("username"), "unknown", 80)
+    try:
+        if normalized_mode not in {"text", "edit"} or not can_use_ai_image(actor_snapshot):
+            raise ValueError("生图任务的账号或任务类型无效，请重新提交")
+        update_ai_image_job(job_id, {"status": "running", "message": "正在调用远端账号池生成图片", "error": ""})
+        file_snapshots = open_ai_image_job_files(job) if normalized_mode == "edit" else {}
+        try:
+            result = (
+                generate_ad_launch_ai_image(payload_snapshot, actor_snapshot)
+                if normalized_mode == "text"
+                else generate_ad_launch_ai_image_edit(payload_snapshot, file_snapshots, actor_snapshot)
+            )
+        finally:
+            close_ai_image_job_files(file_snapshots)
+        update_ai_image_job(job_id, {"status": "success", "message": "图片已生成", "result": result, "error": ""})
+    except Exception as exc:
+        message = str(exc).strip() or f"生图任务在 {type(exc).__name__} 阶段中断"
+        log_ai_image_error(
+            "background-job-failed",
+            {"jobId": job_id, "username": username, "role": role_of(actor_snapshot), "mode": normalized_mode, "message": limited_text(message, limit=1200)},
+        )
+        try:
+            update_ai_image_job(job_id, {"status": "error", "message": "远端生图任务失败", "error": message})
+        except OSError:
+            pass
+    finally:
+        with _AI_IMAGE_JOB_LOCK:
+            _AI_IMAGE_JOB_THREADS.discard(job_id)
+
+
+def start_ai_image_job_worker(job_id: str) -> bool:
+    with _AI_IMAGE_JOB_LOCK:
+        job = _AI_IMAGE_JOBS.get(job_id)
+        if not job or text(job.get("status")) not in {"queued", "running"} or job_id in _AI_IMAGE_JOB_THREADS:
+            return False
+        _AI_IMAGE_JOB_THREADS.add(job_id)
+    try:
+        threading.Thread(target=run_ai_image_job, args=(job_id,), name=f"ai-image-job-{job_id[-6:].lower()}", daemon=True).start()
+    except Exception:
+        with _AI_IMAGE_JOB_LOCK:
+            _AI_IMAGE_JOB_THREADS.discard(job_id)
+        raise
+    return True
+
+
+def resume_ai_image_jobs() -> dict[str, int]:
+    """Load persisted jobs and resume work interrupted by a process restart."""
+    loaded = load_ai_image_jobs()
+    removed: list[str] = []
+    resumable: list[str] = []
+    with _AI_IMAGE_JOB_LOCK:
+        active = {job_id: _AI_IMAGE_JOBS[job_id] for job_id in _AI_IMAGE_JOB_THREADS if job_id in _AI_IMAGE_JOBS}
+        _AI_IMAGE_JOBS.clear()
+        _AI_IMAGE_JOBS.update(loaded)
+        _AI_IMAGE_JOBS.update(active)
+        removed = prune_ai_image_jobs_locked(
+            time.time(),
+            clamp(int(number(os.environ.get("AI_IMAGE_JOB_TTL_SECONDS"), 86400)), 900, 7 * 86400),
+        )
+        for job_id, job in _AI_IMAGE_JOBS.items():
+            if job_id in _AI_IMAGE_JOB_THREADS or text(job.get("status")) not in {"queued", "running"}:
+                continue
+            job.update(
+                {
+                    "status": "queued",
+                    "updatedAt": now_iso(),
+                    "message": "服务已恢复，正在继续未完成的生图任务",
+                    "resumeCount": int(number(job.get("resumeCount"), 0)) + 1,
+                }
+            )
+            resumable.append(job_id)
+        if _AI_IMAGE_JOBS or AI_IMAGE_JOBS_FILE.exists():
+            save_ai_image_jobs_locked()
+    for job_id in removed:
+        delete_ai_image_job_files(job_id)
+    resumed = sum(1 for job_id in resumable if start_ai_image_job_worker(job_id))
+    return {"loaded": len(_AI_IMAGE_JOBS), "resumed": resumed, "removed": len(removed)}
 
 
 def start_ai_image_job(
@@ -11853,9 +12393,9 @@ def start_ai_image_job(
     if normalized_mode not in {"text", "edit"}:
         raise ValueError("不支持的生图任务类型")
     job_id = ai_image_job_id()
-    actor_snapshot = dict(actor)
+    actor_snapshot = public_user(actor)
     payload_snapshot = dict(payload)
-    file_snapshots = snapshot_ai_image_job_files(files or {}) if normalized_mode == "edit" else {}
+    file_snapshots = snapshot_ai_image_job_files(job_id, files or {}) if normalized_mode == "edit" else []
     username = limited_text(actor_snapshot.get("username"), "unknown", 80)
     entry = {
         "id": job_id,
@@ -11869,39 +12409,22 @@ def start_ai_image_job(
         "message": "任务已提交，正在等待远端生图服务处理",
         "result": None,
         "error": "",
+        "payload": payload_snapshot,
+        "actor": actor_snapshot,
+        "files": file_snapshots,
+        "resumeCount": 0,
     }
     prune_ai_image_jobs()
-    with _AI_IMAGE_JOB_LOCK:
-        _AI_IMAGE_JOBS[job_id] = entry
-
-    def run_job() -> None:
+    try:
         with _AI_IMAGE_JOB_LOCK:
-            current = _AI_IMAGE_JOBS.get(job_id)
-            if current:
-                current.update({"status": "running", "updatedAt": now_iso(), "message": "正在调用远端账号池生成图片"})
-        try:
-            result = (
-                generate_ad_launch_ai_image(payload_snapshot, actor_snapshot)
-                if normalized_mode == "text"
-                else generate_ad_launch_ai_image_edit(payload_snapshot, file_snapshots, actor_snapshot)
-            )
-        except Exception as exc:
-            message = str(exc).strip() or f"生图任务在 {type(exc).__name__} 阶段中断"
-            log_ai_image_error(
-                "background-job-failed",
-                {"jobId": job_id, "username": username, "role": role_of(actor_snapshot), "mode": normalized_mode, "message": limited_text(message, limit=1200)},
-            )
-            with _AI_IMAGE_JOB_LOCK:
-                current = _AI_IMAGE_JOBS.get(job_id)
-                if current:
-                    current.update({"status": "error", "updatedAt": now_iso(), "message": "远端生图任务失败", "error": message})
-            return
+            _AI_IMAGE_JOBS[job_id] = entry
+            save_ai_image_jobs_locked()
+    except Exception:
         with _AI_IMAGE_JOB_LOCK:
-            current = _AI_IMAGE_JOBS.get(job_id)
-            if current:
-                current.update({"status": "success", "updatedAt": now_iso(), "message": "图片已生成", "result": result})
-
-    threading.Thread(target=run_job, name=f"ai-image-job-{job_id[-6:].lower()}", daemon=True).start()
+            _AI_IMAGE_JOBS.pop(job_id, None)
+        delete_ai_image_job_files(job_id)
+        raise
+    start_ai_image_job_worker(job_id)
     return {
         "ok": True,
         "pending": True,
@@ -11947,6 +12470,151 @@ def get_ai_image_job(job_id: Any, actor: dict[str, Any]) -> dict[str, Any]:
         "status": "success",
         "message": text(job.get("message"), "图片已生成"),
         "updatedAt": text(job.get("updatedAt")),
+    }
+
+
+def ai_image_material_job_record_locked(material_id: str) -> tuple[dict[str, Any], str] | None:
+    for job in _AI_IMAGE_JOBS.values():
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        materials = result.get("materials") if isinstance(result.get("materials"), list) else []
+        candidates = [item for item in materials if isinstance(item, dict)]
+        if isinstance(result.get("material"), dict):
+            candidates.append(result["material"])
+        for material in candidates:
+            if text(material.get("id")).upper() == material_id:
+                return deepcopy(material), text(job.get("owner"))
+    return None
+
+
+def remove_ai_image_material_from_jobs_locked(material_id: str) -> bool:
+    changed = False
+    for job in _AI_IMAGE_JOBS.values():
+        result = job.get("result") if isinstance(job.get("result"), dict) else None
+        if not result:
+            continue
+        materials = [item for item in result.get("materials", []) if isinstance(item, dict)] if isinstance(result.get("materials"), list) else []
+        filtered = [item for item in materials if text(item.get("id")).upper() != material_id]
+        primary = result.get("material") if isinstance(result.get("material"), dict) else None
+        if len(filtered) == len(materials) and (not primary or text(primary.get("id")).upper() != material_id):
+            continue
+        result["materials"] = filtered
+        result["material"] = filtered[0] if filtered else None
+        previews = [text(item.get("previewUrl") or item.get("remoteUrl")) for item in filtered if text(item.get("previewUrl") or item.get("remoteUrl"))]
+        result["previewDataUrls"] = previews
+        result["previewDataUrl"] = previews[0] if previews else ""
+        result["returnedCount"] = len(filtered)
+        job["updatedAt"] = now_iso()
+        changed = True
+    return changed
+
+
+def delete_chatgpt2api_remote_image(material: dict[str, Any]) -> int:
+    import requests
+
+    remote_path = text(material.get("remotePath"))
+    remote_url = text(material.get("remoteUrl") or material.get("previewUrl"))
+    if remote_url and ai_image_remote_path(remote_url) != remote_path:
+        raise ValueError("远端图片地址校验失败")
+    node = ai_image_remote_node(remote_url, node_id=text(material.get("remoteNodeId")))
+    if not node or not remote_path:
+        raise ValueError("远端图片节点信息不完整，无法删除")
+    endpoint = f"{text(node.get('rootUrl'))}/api/images/delete"
+    try:
+        response = requests.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {text(node.get('authKey'))}", "Content-Type": "application/json"},
+            json={"paths": [remote_path], "all_matching": False},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise ValueError(f"连接远端图片删除接口失败：{exc}") from exc
+    try:
+        body = response.json() if response.content else {}
+    except ValueError:
+        body = {}
+    if not response.ok:
+        raise ValueError(nested_error_text(body) or f"远端图片删除失败：HTTP {response.status_code}")
+    return int(number(body.get("removed") if isinstance(body, dict) else 0, 0))
+
+
+def delete_ai_image_output(material_id: Any, actor: dict[str, Any], supplied_material: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not can_use_ai_image(actor):
+        raise ValueError("只有管理员、运营、选品或设计可以删除生图")
+    value = text(material_id).upper()
+    if not re.fullmatch(r"AI-[A-F0-9]{10}", value):
+        raise ValueError("无效的生图素材标识")
+    with _AI_IMAGE_JOB_LOCK:
+        record = ai_image_material_job_record_locked(value)
+    material = record[0] if record else dict(supplied_material or {})
+    owner = record[1] if record else ""
+    if owner and owner != text(actor.get("username")) and not is_admin(actor):
+        raise ValueError("无权删除其他账号生成的图片")
+    if text(material.get("id")).upper() != value:
+        raise ValueError("图片删除信息不匹配")
+    legacy_local_files = [
+        path
+        for path in AD_LAUNCH_UPLOAD_DIR.glob(f"{value}.*")
+        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+    ]
+    supplied_preview = text(material.get("previewUrl") or material.get("previewDataUrl"))
+    legacy_local_authorized = bool(
+        legacy_local_files
+        and not text(material.get("remotePath"))
+        and supplied_preview == ai_image_output_preview_url(value)
+    )
+    if not record and not ai_image_output_delete_token_valid(material) and not legacy_local_authorized:
+        raise ValueError("图片删除凭证已失效，请由管理员清理")
+
+    remote_deleted = 0
+    local_deleted = 0
+    if text(material.get("storage")) == "remote" or text(material.get("remotePath")):
+        remote_deleted = delete_chatgpt2api_remote_image(material)
+    for path in legacy_local_files:
+        try:
+            path.unlink()
+            local_deleted += 1
+        except OSError as exc:
+            raise ValueError(f"删除面板临时图片失败：{exc}") from exc
+    with _AI_IMAGE_JOB_LOCK:
+        if remove_ai_image_material_from_jobs_locked(value):
+            save_ai_image_jobs_locked()
+    return {
+        "id": value,
+        "deleted": True,
+        "storage": text(material.get("storage"), "local-temporary"),
+        "localDeleted": local_deleted,
+        "remoteDeleted": remote_deleted,
+    }
+
+
+def delete_ai_image_outputs(payload: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    raw_materials = payload.get("materials") if isinstance(payload.get("materials"), list) else []
+    supplied_by_id = {
+        text(item.get("id")).upper(): item
+        for item in raw_materials
+        if isinstance(item, dict) and re.fullmatch(r"AI-[A-F0-9]{10}", text(item.get("id")).upper())
+    }
+    raw_ids = payload.get("materialIds") if isinstance(payload.get("materialIds"), list) else []
+    material_ids = list(dict.fromkeys([
+        *[text(value).upper() for value in raw_ids if re.fullmatch(r"AI-[A-F0-9]{10}", text(value).upper())],
+        *supplied_by_id.keys(),
+    ]))[:100]
+    if not material_ids:
+        raise ValueError("请选择要删除的生成图片")
+    deleted: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for material_id in material_ids:
+        try:
+            deleted.append(delete_ai_image_output(material_id, actor, supplied_by_id.get(material_id)))
+        except Exception as exc:
+            errors.append({"id": material_id, "message": limited_text(exc, "删除失败", 300)})
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "deletedIds": [item["id"] for item in deleted],
+        "failedIds": [item["id"] for item in errors],
+        "errors": errors,
+        "partial": bool(errors),
     }
 
 
@@ -12217,7 +12885,7 @@ def recover_recent_ai_image_suite(
     materials: list[dict[str, Any]] = []
     preview_urls: list[str] = []
     if raw_images:
-        normalized_images = normalize_ai_image_suite_images(raw_images, recovered_size)
+        normalized_images = raw_images if ai_image_remote_outputs_ready(raw_images) else normalize_ai_image_suite_images(raw_images, recovered_size)
         materials, preview_urls = save_ai_image_outputs(
             normalized_images,
             f"恢复最近远端{suite_config['label']}",

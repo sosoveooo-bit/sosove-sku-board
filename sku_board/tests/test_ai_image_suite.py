@@ -6,7 +6,7 @@ import threading
 import time
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sku_board import backend
 
@@ -467,6 +467,200 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(previews[0].startswith("/api/sku-board/ai-image-output/AI-"))
         self.assertFalse(previews[0].startswith("data:"))
 
+    def test_remote_image_output_keeps_chatgpt2api_url_without_local_copy(self) -> None:
+        image_data = b"remote-image-output"
+        remote_url = "https://image-a.example.com/images/2026/07/22/remote.png"
+        node = {
+            "id": "image-a",
+            "name": "VPS A",
+            "baseUrl": "https://image-a.example.com/v1",
+            "rootUrl": "https://image-a.example.com",
+            "authKey": "secret-a",
+        }
+        with backend._AI_IMAGE_REMOTE_SOURCE_LOCK:
+            original_sources = dict(backend._AI_IMAGE_REMOTE_SOURCES)
+            backend._AI_IMAGE_REMOTE_SOURCES.clear()
+        try:
+            with (
+                tempfile.TemporaryDirectory() as temp_dir,
+                patch.object(backend, "AD_LAUNCH_UPLOAD_DIR", Path(temp_dir)),
+                patch.object(backend, "chatgpt2api_service_nodes", return_value=[node]),
+                patch.dict(os.environ, {"AI_IMAGE_REMOTE_STORAGE": "1"}, clear=False),
+            ):
+                backend.remember_ai_image_remote_source(image_data, remote_url, "secret-a")
+                materials, previews = backend.save_ai_image_outputs(
+                    [(image_data, "image/png")],
+                    "remote transport",
+                    "gpt-image-2",
+                    "high",
+                    "1500x2000",
+                )
+                saved_files = list(Path(temp_dir).glob("AI-*.*"))
+
+            material = materials[0]
+            self.assertEqual(previews, [remote_url])
+            self.assertEqual(material["storage"], "remote")
+            self.assertEqual(material["remotePath"], "2026/07/22/remote.png")
+            self.assertEqual(material["remoteNodeId"], "image-a")
+            self.assertTrue(material["deleteToken"])
+            self.assertEqual(saved_files, [])
+        finally:
+            with backend._AI_IMAGE_REMOTE_SOURCE_LOCK:
+                backend._AI_IMAGE_REMOTE_SOURCES.clear()
+                backend._AI_IMAGE_REMOTE_SOURCES.update(original_sources)
+
+    def test_remote_image_delete_calls_owning_chatgpt2api_node(self) -> None:
+        material = {
+            "id": "AI-ABCDEF9876",
+            "storage": "remote",
+            "remoteUrl": "https://image-b.example.com/images/2026/07/22/result.png",
+            "previewUrl": "https://image-b.example.com/images/2026/07/22/result.png",
+            "remotePath": "2026/07/22/result.png",
+            "remoteNodeId": "image-b",
+        }
+        material["deleteToken"] = backend.ai_image_output_delete_token(
+            material["id"], material["remoteNodeId"], material["remotePath"]
+        )
+        response = Mock(ok=True, content=b'{"removed":1}', status_code=200)
+        response.json.return_value = {"removed": 1}
+        node = {
+            "id": "image-b",
+            "name": "VPS B",
+            "rootUrl": "https://image-b.example.com",
+            "baseUrl": "https://image-b.example.com/v1",
+            "authKey": "secret-b",
+        }
+        with (
+            patch.object(backend, "chatgpt2api_service_nodes", return_value=[node]),
+            patch("requests.post", return_value=response) as post,
+        ):
+            result = backend.delete_ai_image_outputs(
+                {"materials": [material]},
+                {"username": "designer", "role": "designer"},
+            )
+
+        self.assertEqual(result["deletedIds"], [material["id"]])
+        self.assertEqual(result["deleted"][0]["remoteDeleted"], 1)
+        post.assert_called_once_with(
+            "https://image-b.example.com/api/images/delete",
+            headers={"Authorization": "Bearer secret-b", "Content-Type": "application/json"},
+            json={"paths": ["2026/07/22/result.png"], "all_matching": False},
+            timeout=30,
+        )
+
+    def test_image_delete_removes_material_from_persisted_job_result(self) -> None:
+        material = {
+            "id": "AI-123456ABCD",
+            "storage": "local-temporary",
+            "path": "",
+            "previewUrl": "/api/sku-board/ai-image-output/AI-123456ABCD",
+        }
+        job = {
+            "id": "AIJ-1234567890ABCD",
+            "owner": "designer",
+            "status": "success",
+            "result": {
+                "material": dict(material),
+                "materials": [dict(material)],
+                "previewDataUrl": material["previewUrl"],
+                "previewDataUrls": [material["previewUrl"]],
+                "returnedCount": 1,
+            },
+        }
+        with backend._AI_IMAGE_JOB_LOCK:
+            original_jobs = dict(backend._AI_IMAGE_JOBS)
+            backend._AI_IMAGE_JOBS.clear()
+            backend._AI_IMAGE_JOBS[job["id"]] = job
+        try:
+            with patch.object(backend, "save_ai_image_jobs_locked"):
+                result = backend.delete_ai_image_output(
+                    material["id"],
+                    {"username": "designer", "role": "designer"},
+                )
+            self.assertTrue(result["deleted"])
+            with backend._AI_IMAGE_JOB_LOCK:
+                saved_result = backend._AI_IMAGE_JOBS[job["id"]]["result"]
+                self.assertEqual(saved_result["materials"], [])
+                self.assertIsNone(saved_result["material"])
+                self.assertEqual(saved_result["returnedCount"], 0)
+        finally:
+            with backend._AI_IMAGE_JOB_LOCK:
+                backend._AI_IMAGE_JOBS.clear()
+                backend._AI_IMAGE_JOBS.update(original_jobs)
+
+    def test_image_delete_rejects_tampered_expired_browser_metadata(self) -> None:
+        material = {
+            "id": "AI-FEDCBA9876",
+            "storage": "remote",
+            "remoteUrl": "https://image.example.com/images/2026/07/22/result.png",
+            "remotePath": "2026/07/22/other.png",
+            "remoteNodeId": "image",
+            "deleteToken": "invalid",
+        }
+        with self.assertRaisesRegex(ValueError, "凭证已失效"):
+            backend.delete_ai_image_output(
+                material["id"],
+                {"username": "designer", "role": "designer"},
+                material,
+            )
+
+    def test_legacy_local_image_can_be_deleted_from_its_saved_preview(self) -> None:
+        material_id = "AI-2468ACE135"
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(backend, "AD_LAUNCH_UPLOAD_DIR", Path(temp_dir)):
+            target = Path(temp_dir) / f"{material_id}.png"
+            target.write_bytes(b"legacy-image")
+            result = backend.delete_ai_image_output(
+                material_id,
+                {"username": "designer", "role": "designer"},
+                {
+                    "id": material_id,
+                    "storage": "local-temporary",
+                    "previewUrl": backend.ai_image_output_preview_url(material_id),
+                },
+            )
+
+            self.assertEqual(result["localDeleted"], 1)
+            self.assertFalse(target.exists())
+
+    def test_local_ai_output_cleanup_expires_only_unreferenced_files(self) -> None:
+        original_cleanup_ts = backend._AI_IMAGE_OUTPUT_LAST_CLEANUP_TS
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                upload_dir = Path(temp_dir)
+                expired = upload_dir / "AI-AAAAAAAAAA.png"
+                protected = upload_dir / "AI-BBBBBBBBBB.png"
+                recent = upload_dir / "AI-CCCCCCCCCC.png"
+                for path in (expired, protected, recent):
+                    path.write_bytes(b"image-bytes")
+                old = time.time() - 7200
+                os.utime(expired, (old, old))
+                os.utime(protected, (old, old))
+                with (
+                    patch.object(backend, "AD_LAUNCH_UPLOAD_DIR", upload_dir),
+                    patch.object(backend, "load_board", return_value={"adLaunches": [{"material": {"path": str(protected)}}]}),
+                    patch.dict(os.environ, {"AI_IMAGE_OUTPUT_TTL_SECONDS": "3600"}, clear=False),
+                ):
+                    result = backend.prune_ai_image_output_files(force=True)
+
+                self.assertEqual(result["removed"], 1)
+                self.assertFalse(expired.exists())
+                self.assertTrue(protected.exists())
+                self.assertTrue(recent.exists())
+        finally:
+            backend._AI_IMAGE_OUTPUT_LAST_CLEANUP_TS = original_cleanup_ts
+
+    def test_frontend_remote_image_storage_delete_and_launch_flow_are_wired(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        server_source = (backend.ROOT_DIR / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn('material.storage === "remote"', app_source)
+        self.assertIn('data-ai-delete-index', app_source)
+        self.assertIn('async function deleteAiImageConversation', app_source)
+        self.assertIn('/api/sku-board/ai-image-outputs', app_source)
+        self.assertIn('/api/sku-board/ad-launch-materials', app_source)
+        self.assertIn('if (!material.path)', app_source)
+        self.assertIn('if parsed.path == "/api/sku-board/ai-image-outputs"', server_source)
+
     def test_design_role_can_use_ai_image_but_not_meta_launch(self) -> None:
         designer = {"role": "designer", "username": "designer", "name": "设计"}
         self.assertTrue(backend.can_use_ai_image(designer))
@@ -579,23 +773,217 @@ class AiImageSuiteTests(unittest.TestCase):
             release.wait(timeout=2)
             return generated
 
-        with patch.object(backend, "generate_ad_launch_ai_image", side_effect=fake_generate):
-            submitted = backend.start_ai_image_job("text", {"prompt": "product photo"}, actor)
-            self.assertTrue(submitted["pending"])
-            self.assertTrue(entered.wait(timeout=1))
-            pending = backend.get_ai_image_job(submitted["jobId"], actor)
-            self.assertTrue(pending["pending"])
-            release.set()
-            completed = pending
-            for _ in range(20):
-                completed = backend.get_ai_image_job(submitted["jobId"], actor)
-                if not completed.get("pending"):
-                    break
-                time.sleep(0.01)
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            data_dir = Path(temporary_dir)
+            with (
+                patch.object(backend, "AI_IMAGE_JOBS_FILE", data_dir / "ai_image_jobs.json"),
+                patch.object(backend, "AI_IMAGE_JOB_FILES_DIR", data_dir / "ai_image_job_files"),
+                patch.object(backend, "generate_ad_launch_ai_image", side_effect=fake_generate),
+            ):
+                with backend._AI_IMAGE_JOB_LOCK:
+                    backend._AI_IMAGE_JOBS.clear()
+                    backend._AI_IMAGE_JOB_THREADS.clear()
+                submitted = backend.start_ai_image_job("text", {"prompt": "product photo"}, actor)
+                self.assertTrue(submitted["pending"])
+                self.assertTrue(entered.wait(timeout=1))
+                pending = backend.get_ai_image_job(submitted["jobId"], actor)
+                self.assertTrue(pending["pending"])
+                release.set()
+                completed = pending
+                for _ in range(40):
+                    completed = backend.get_ai_image_job(submitted["jobId"], actor)
+                    if not completed.get("pending"):
+                        break
+                    time.sleep(0.01)
 
         self.assertTrue(completed["ok"])
         self.assertFalse(completed["pending"])
         self.assertEqual(completed["material"]["id"], "AI-JOBTEST")
+
+    def test_ai_image_job_metadata_survives_memory_reset(self) -> None:
+        job_id = "AIJ-1234567890ABCD"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            data_dir = Path(temporary_dir)
+            with (
+                patch.object(backend, "AI_IMAGE_JOBS_FILE", data_dir / "ai_image_jobs.json"),
+                patch.object(backend, "AI_IMAGE_JOB_FILES_DIR", data_dir / "ai_image_job_files"),
+            ):
+                with backend._AI_IMAGE_JOB_LOCK:
+                    backend._AI_IMAGE_JOBS.clear()
+                    backend._AI_IMAGE_JOB_THREADS.clear()
+                    backend._AI_IMAGE_JOBS[job_id] = {
+                        "id": job_id,
+                        "owner": "designer-persist",
+                        "role": "designer",
+                        "mode": "text",
+                        "status": "queued",
+                        "createdAt": backend.now_iso(),
+                        "updatedAt": backend.now_iso(),
+                        "createdTs": time.time(),
+                        "message": "queued",
+                        "result": None,
+                        "error": "",
+                        "payload": {"prompt": "persistent product photo"},
+                        "actor": {"username": "designer-persist", "role": "designer"},
+                        "files": [],
+                    }
+                    backend.save_ai_image_jobs_locked()
+                    backend._AI_IMAGE_JOBS.clear()
+
+                loaded = backend.load_ai_image_jobs()
+
+        self.assertIn(job_id, loaded)
+        self.assertEqual(loaded[job_id]["payload"]["prompt"], "persistent product photo")
+        self.assertEqual(loaded[job_id]["actor"]["username"], "designer-persist")
+
+    def test_ai_image_job_reference_upload_survives_and_reopens(self) -> None:
+        job_id = "AIJ-ABCDEF12345678"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            data_dir = Path(temporary_dir)
+            with patch.object(backend, "AI_IMAGE_JOB_FILES_DIR", data_dir / "ai_image_job_files"):
+                stored = backend.snapshot_ai_image_job_files(job_id, {"reference0": Upload()})
+                reopened = backend.open_ai_image_job_files({"id": job_id, "files": stored})
+                try:
+                    self.assertEqual(reopened["reference0"].filename, "product.jpg")
+                    self.assertEqual(reopened["reference0"].file.read(), b"mock-image-bytes")
+                finally:
+                    backend.close_ai_image_job_files(reopened)
+
+    def test_resume_ai_image_job_restarts_a_running_job_only_once(self) -> None:
+        job_id = "AIJ-FEDCBA09876543"
+        actor = {"username": "designer-resume", "role": "designer"}
+        entered = threading.Event()
+        release = threading.Event()
+
+        def fake_generate(_payload, _actor):
+            entered.set()
+            release.wait(timeout=2)
+            return {"ok": True, "material": {"id": "AI-RESUMED"}, "materials": [{"id": "AI-RESUMED"}]}
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            data_dir = Path(temporary_dir)
+            with (
+                patch.object(backend, "AI_IMAGE_JOBS_FILE", data_dir / "ai_image_jobs.json"),
+                patch.object(backend, "AI_IMAGE_JOB_FILES_DIR", data_dir / "ai_image_job_files"),
+                patch.object(backend, "generate_ad_launch_ai_image", side_effect=fake_generate) as generate,
+            ):
+                with backend._AI_IMAGE_JOB_LOCK:
+                    backend._AI_IMAGE_JOBS.clear()
+                    backend._AI_IMAGE_JOB_THREADS.clear()
+                    backend._AI_IMAGE_JOBS[job_id] = {
+                        "id": job_id,
+                        "owner": actor["username"],
+                        "role": actor["role"],
+                        "mode": "text",
+                        "status": "running",
+                        "createdAt": backend.now_iso(),
+                        "updatedAt": backend.now_iso(),
+                        "createdTs": time.time(),
+                        "message": "running",
+                        "result": None,
+                        "error": "",
+                        "payload": {"prompt": "resume this"},
+                        "actor": actor,
+                        "files": [],
+                    }
+                    backend.save_ai_image_jobs_locked()
+                    backend._AI_IMAGE_JOBS.clear()
+
+                first = backend.resume_ai_image_jobs()
+                self.assertTrue(entered.wait(timeout=1))
+                second = backend.resume_ai_image_jobs()
+                self.assertEqual(first["resumed"], 1)
+                self.assertEqual(second["resumed"], 0)
+                self.assertEqual(generate.call_count, 1)
+                release.set()
+                for _ in range(50):
+                    completed = backend.get_ai_image_job(job_id, actor)
+                    if not completed.get("pending"):
+                        break
+                    time.sleep(0.01)
+
+        self.assertEqual(completed["material"]["id"], "AI-RESUMED")
+        self.assertEqual(generate.call_count, 1)
+
+    def test_successful_ai_image_job_remains_pollable_after_reload_with_permissions(self) -> None:
+        job_id = "AIJ-00112233445566"
+        owner = {"username": "designer-owner", "role": "designer"}
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            data_dir = Path(temporary_dir)
+            with (
+                patch.object(backend, "AI_IMAGE_JOBS_FILE", data_dir / "ai_image_jobs.json"),
+                patch.object(backend, "AI_IMAGE_JOB_FILES_DIR", data_dir / "ai_image_job_files"),
+            ):
+                with backend._AI_IMAGE_JOB_LOCK:
+                    backend._AI_IMAGE_JOBS.clear()
+                    backend._AI_IMAGE_JOB_THREADS.clear()
+                    backend._AI_IMAGE_JOBS[job_id] = {
+                        "id": job_id,
+                        "owner": owner["username"],
+                        "role": owner["role"],
+                        "mode": "text",
+                        "status": "success",
+                        "createdAt": backend.now_iso(),
+                        "updatedAt": backend.now_iso(),
+                        "createdTs": time.time(),
+                        "message": "done",
+                        "result": {"material": {"id": "AI-PERSISTED"}, "materials": [{"id": "AI-PERSISTED"}]},
+                        "error": "",
+                        "payload": {"prompt": "done"},
+                        "actor": owner,
+                        "files": [],
+                    }
+                    backend.save_ai_image_jobs_locked()
+                    backend._AI_IMAGE_JOBS.clear()
+
+                recovery = backend.resume_ai_image_jobs()
+                result = backend.get_ai_image_job(job_id, owner)
+                admin_result = backend.get_ai_image_job(job_id, {"username": "admin", "role": "admin"})
+                with self.assertRaisesRegex(ValueError, "无权查看"):
+                    backend.get_ai_image_job(job_id, {"username": "other-designer", "role": "designer"})
+
+        self.assertEqual(recovery["resumed"], 0)
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["material"]["id"], "AI-PERSISTED")
+        self.assertEqual(admin_result["material"]["id"], "AI-PERSISTED")
+
+    def test_prune_ai_image_job_removes_expired_reference_files(self) -> None:
+        job_id = "AIJ-778899AABBCCDD"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            data_dir = Path(temporary_dir)
+            jobs_file = data_dir / "ai_image_jobs.json"
+            files_dir = data_dir / "ai_image_job_files"
+            with (
+                patch.object(backend, "AI_IMAGE_JOBS_FILE", jobs_file),
+                patch.object(backend, "AI_IMAGE_JOB_FILES_DIR", files_dir),
+                patch.dict(os.environ, {"AI_IMAGE_JOB_TTL_SECONDS": "900"}, clear=False),
+            ):
+                backend.snapshot_ai_image_job_files(job_id, {"reference0": Upload()})
+                with backend._AI_IMAGE_JOB_LOCK:
+                    backend._AI_IMAGE_JOBS.clear()
+                    backend._AI_IMAGE_JOB_THREADS.clear()
+                    backend._AI_IMAGE_JOBS[job_id] = {
+                        "id": job_id,
+                        "owner": "designer-expired",
+                        "role": "designer",
+                        "mode": "edit",
+                        "status": "error",
+                        "createdAt": backend.now_iso(),
+                        "updatedAt": backend.now_iso(),
+                        "createdTs": time.time() - 901,
+                        "message": "expired",
+                        "result": None,
+                        "error": "expired",
+                        "payload": {},
+                        "actor": {"username": "designer-expired", "role": "designer"},
+                        "files": [{"key": "reference0", "filename": "product.jpg", "storedName": "001-reference0.jpg"}],
+                    }
+                    backend.save_ai_image_jobs_locked()
+
+                backend.prune_ai_image_jobs()
+
+                self.assertFalse((files_dir / job_id).exists())
+                self.assertNotIn(job_id, backend.load_ai_image_jobs())
 
     def test_retryable_provider_message_is_rerouted_once(self) -> None:
         with (
@@ -699,7 +1087,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual([page["page"] for page in pages], list(range(1, 9)))
         self.assertEqual(
             [page["pageArchetype"] for page in pages],
-            ["颜色阵列", "面料微距", "模特全身", "结构微距", "显瘦对比", "咖啡馆生活方式", "尺寸表", "收尾工艺微距"],
+            ["颜色阵列", "面料微距", "模特全身", "结构微距", "显瘦对比", "叠穿功能", "城市生活方式", "收尾工艺微距"],
         )
         self.assertEqual(len(prompt_pages), 8)
         self.assertEqual([page["pageArchetype"] for page in prompt_pages], [page["pageArchetype"] for page in pages])
@@ -853,10 +1241,13 @@ class AiImageSuiteTests(unittest.TestCase):
         html_source = (backend.ROOT_DIR / "static" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn('id="ai-director-fallback-note"', html_source)
+        self.assertIn('<select id="ai-director-model">', html_source)
+        self.assertNotIn('list="ai-director-model-options"', html_source)
         self.assertIn('fallbackModels.join(" → ")', app_source)
         self.assertIn("自动切换已启用", app_source)
         self.assertIn("gpt-5.6-terra", html_source)
         self.assertIn("gpt-5.6-sol", html_source)
+        self.assertIn('const AI_DIRECTOR_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"]', app_source)
 
     def test_ai_director_refines_locked_pages_without_changing_platform_structure(self) -> None:
         base_pages = backend.build_ai_image_suite_plan(
@@ -911,7 +1302,8 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(metadata["latencyMs"], 321)
         self.assertEqual([page["role"] for page in refined], [page["role"] for page in base_pages])
         self.assertEqual([page["size"] for page in refined], [page["size"] for page in base_pages])
-        self.assertEqual(refined[0]["focusTitle"], "模型卖点1")
+        self.assertEqual(refined[0]["focusTitle"], base_pages[0]["focusTitle"])
+        self.assertNotEqual(refined[0]["focusTitle"], "模型卖点1")
         self.assertIn("AI导演补充", refined[0]["evidence"])
 
     def test_ai_director_failure_falls_back_to_rules(self) -> None:
@@ -1028,6 +1420,10 @@ class AiImageSuiteTests(unittest.TestCase):
             self.assertEqual(first_metadata["source"], "model")
             self.assertEqual(cached_metadata["source"], "cache")
             self.assertTrue(cached_metadata["cacheHit"])
+            self.assertEqual(
+                [page["focusTitle"] for page in cached_pages],
+                [page["focusTitle"] for page in landing_pages],
+            )
             self.assertEqual(invoke.call_count, 1)
             cache_text = cache_file.read_text(encoding="utf-8")
             self.assertNotIn("secret-director-key", cache_text)
@@ -1699,12 +2095,85 @@ LED电量显示
 
         self.assertEqual(template["suiteKey"], "jp-landing-page-32")
         self.assertEqual(template["count"], 32)
-        self.assertEqual(template["planVersion"], "director-v6-ja-brand-32")
+        self.assertEqual(template["planVersion"], "director-v8-prompt-fidelity")
         self.assertIn('"jp-landing-page-32"', app_text)
         self.assertIn('label: "日本落地页（可选数量）"', app_text)
         self.assertIn("AI_IMAGE_JP_LANDING_COUNT_OPTIONS = [8, 12, 16, 20, 24, 30, 32]", app_text)
         self.assertIn("countConfigurable: true", app_text)
         self.assertIn('"jp-landing-page-10": "jp-landing-page-32"', app_text)
+
+    def test_japanese_fashion_plan_uses_real_baselines_japanese_casting_and_varied_scenes(self) -> None:
+        base_prompt = "[Product] Japanese womens wide-leg trousers."
+        brief = """
+        产品：日本女士高腰阔腿裤
+        主卖点：显瘦、修饰腿型、垂坠面料。
+        次卖点：适合通勤、旅行、休闲与约会。
+        """
+
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            suite_count=32,
+        )
+        by_archetype = {page["pageArchetype"]: page for page in pages}
+
+        for archetype in ("显瘦对比", "长度对比", "版型原理对比", "面料对比"):
+            comparison_page = by_archetype[archetype]
+            self.assertIn("普通", comparison_page["evidence"])
+            self.assertIn("本品", comparison_page["evidence"])
+
+        slimming_prompt = prompts[by_archetype["显瘦对比"]["page"] - 1]
+        self.assertIn("[Comparison-baseline lock", slimming_prompt)
+        self.assertIn("must NOT be the supplied product", slimming_prompt)
+        self.assertIn("rather than cloning the exact pose", slimming_prompt)
+        self.assertIn("[Japanese casting lock]", slimming_prompt)
+        self.assertIn("Avoid Korean beauty-editorial signals", slimming_prompt)
+        self.assertIn("[Assigned Japanese scene lock", slimming_prompt)
+        self.assertIn("Do not replace an assigned route with a generic apartment", slimming_prompt)
+
+        scene_text = "\n".join(page["scene"] for page in pages)
+        for required_scene in ("办公室", "办公楼", "旅行", "公园", "咖啡", "约会"):
+            self.assertIn(required_scene, scene_text)
+
+        compact_pages = backend.build_ai_image_suite_plan(base_prompt, brief, count=8)
+        compact_scenes = "\n".join(page["scene"] for page in compact_pages)
+        self.assertIn("办公室", compact_scenes)
+        self.assertIn("旅行", compact_scenes)
+        self.assertIn("约会", compact_scenes)
+
+    def test_japanese_fashion_director_and_review_reject_self_comparison_and_indoor_repetition(self) -> None:
+        base_prompt = "[Product] Japanese womens wide-leg trousers."
+        brief = "产品：日本女士高腰阔腿裤。主卖点：显瘦、修饰腿型、垂坠面料。"
+        pages = backend.build_ai_image_suite_plan(base_prompt, brief, count=8)
+
+        director_messages = backend.build_ai_director_messages(
+            pages,
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+            None,
+            False,
+        )
+        director_text = director_messages[1]["content"]
+        self.assertIn("never compare the product with itself", director_text)
+        self.assertIn("office-building exteriors", director_text)
+        self.assertIn("Korean beauty-editorial", director_text)
+
+        review_messages = backend.build_ai_image_suite_review_messages(
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+            78,
+            pages[:2],
+            ("reference.jpg", b"reference", "image/jpeg"),
+            [("generated.jpg", b"generated", "image/jpeg")],
+            suite_count=8,
+        )
+        review_text = review_messages[1]["content"][0]["text"]
+        self.assertIn("reject any result that places the supplied product", review_text)
+        self.assertIn("Reject Korean beauty-editorial casting", review_text)
+        self.assertIn("repeats generic indoor apartments", review_text)
 
     def test_amazon_aplus_plan_has_nine_policy_safe_modules(self) -> None:
         brief = """
@@ -1830,7 +2299,7 @@ Type-C充电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "amazonAplus")
 
-        self.assertEqual(skill["version"], "2.2.0")
+        self.assertEqual(skill["version"], "2.3.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_AMAZON_APLUS_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -1927,7 +2396,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "rakutenSuite")
 
-        self.assertEqual(skill["version"], "2.2.0")
+        self.assertEqual(skill["version"], "2.3.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_RAKUTEN_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_RAKUTEN_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -2127,7 +2596,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "codKorea")
 
-        self.assertEqual(skill["version"], "2.2.0")
+        self.assertEqual(skill["version"], "2.3.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_COD_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_COD_KR_PLAN_VERSION)
         self.assertEqual(template["count"], 30)
@@ -2495,6 +2964,88 @@ USB供电
         self.assertIn("品牌与来源背书", evidence_titles)
         self.assertIn("工艺与品质背书", evidence_titles)
 
+    def test_cod_plain_selling_point_heading_keeps_real_points_ahead_of_fallbacks(self) -> None:
+        brief = """产品：户外便携照明灯
+卖点：
+1. 广角照明：覆盖更大的夜间活动区域
+2. 长续航：适合露营和停电备用
+3. 轻量手提：外出携带方便
+4. 多档亮度：按场景调整光线
+5. 稳固底座：桌面放置不易倾倒
+6. 防泼溅结构：适合普通户外环境"""
+
+        main_points, detail_points = backend.extract_ai_image_cod_kr_points("[Product] Portable light.", brief)
+        pages = backend.build_ai_image_suite_plan(
+            "[Product] Portable light.",
+            brief,
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            country="JP",
+            count=30,
+        )
+        coverage = backend.ai_image_cod_source_point_coverage(
+            pages,
+            "[Product] Portable light.",
+            brief,
+            backend.AI_IMAGE_COD_SUITE_KEY,
+        )
+
+        self.assertEqual([point["title"] for point in main_points], ["广角照明", "长续航", "轻量手提", "多档亮度", "稳固底座"])
+        self.assertEqual(detail_points[0]["title"], "防泼溅结构")
+        self.assertTrue(all(point["sourceProvided"] for point in [*main_points, detail_points[0]]))
+        self.assertFalse(detail_points[1]["sourceProvided"])
+        self.assertEqual([page["focusTitle"] for page in pages[:6]], ["广角照明", "长续航", "轻量手提", "多档亮度", "稳固底座", "防泼溅结构"])
+        self.assertEqual(coverage["total"], 6)
+        self.assertTrue(coverage["complete"])
+
+    def test_cod_long_brief_preserves_late_selling_points_through_plan_and_generation_prompts(self) -> None:
+        late_title = "最后的可折叠收纳卖点"
+        filler = "页面保持明亮，并根据目标国家调整人物、环境和本地语言。\n" * 320
+        brief = f"产品：便携式户外工具。\n{filler}卖点：\n1. {late_title}：收起后可放入随身包中。"
+        self.assertGreater(len(brief), 6000)
+
+        payload = backend.plan_ai_image_suite(
+            {
+                "prompt": "[Product] Portable outdoor tool.",
+                "suiteBrief": brief,
+                "size": "750x1000",
+                "suiteKey": backend.AI_IMAGE_COD_SUITE_KEY,
+                "suiteCountry": "JP",
+                "useDirector": False,
+            },
+            {"role": "admin"},
+        )
+        prompts, _pages = backend.build_ai_image_suite_prompts(
+            "[Product] Portable outdoor tool.",
+            brief,
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            plan=payload["suitePages"],
+            country="JP",
+            suite_count=30,
+        )
+        director_messages = backend.build_ai_director_messages(
+            payload["suitePages"],
+            "[Product] Portable outdoor tool.",
+            brief,
+            backend.AI_IMAGE_COD_SUITE_KEY,
+            "JP",
+            None,
+            False,
+        )
+
+        self.assertEqual(payload["suitePages"][0]["focusTitle"], late_title)
+        self.assertEqual(payload["director"]["sellingPointCoverage"]["total"], 1)
+        self.assertTrue(any(late_title in prompt for prompt in prompts))
+        self.assertIn(late_title, director_messages[1]["content"])
+
+    def test_frontend_manual_professional_prompt_can_override_stale_creation_brief(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("const manualPromptWins = Boolean(", app_source)
+        self.assertIn("conversation.promptManuallyEdited = true;", app_source)
+        self.assertIn("const effectiveIntent = manualPromptWins", app_source)
+
     def test_cod_suites_rotate_every_main_product_reference_instead_of_only_image_one(self) -> None:
         base_prompt = (
             "[Product] Multi-variant product.\n"
@@ -2825,6 +3376,110 @@ USB供电
         self.assertEqual([backend.ai_image_primary_reference_index(prompt) for prompt in prompts], [1, 2, 3, 4, 1])
         self.assertEqual(payload["productReferenceIndexes"], [1, 2, 3, 4])
         self.assertEqual([item["variantReferenceIndex"] for item in payload["materials"]], [1, 2, 3, 4, 1])
+
+    def test_every_suite_page_prompt_has_user_prompt_fidelity_lock(self) -> None:
+        base_prompt = "[Product] Exact blue portable fan from reference image 1."
+        brief = (
+            "这是一款卖给日本地区的蓝色便携风扇，页面使用日语。\n"
+            "卖点 1【静音送风】\n保持安静环境中的自然送风体验。\n"
+            "卖点 2【快速拆洗】\n展示可拆结构和清洁步骤。\n"
+            "要求：保持蓝色机身；背景使用浅灰色；不要出现中文。"
+        )
+        cases = [
+            (backend.AI_IMAGE_LANDING_SUITE_KEY, "", 8),
+            (backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY, "", None),
+            (backend.AI_IMAGE_RAKUTEN_SUITE_KEY, "", None),
+            (backend.AI_IMAGE_COD_SUITE_KEY, "JP", 8),
+            (backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, "JP", 12),
+        ]
+
+        for suite_key, country, suite_count in cases:
+            with self.subTest(suite_key=suite_key):
+                prompts, _pages = backend.build_ai_image_suite_prompts(
+                    base_prompt,
+                    brief,
+                    backend.ai_image_suite_config(suite_key)["size"],
+                    suite_key=suite_key,
+                    country=country,
+                    suite_count=suite_count,
+                )
+                self.assertTrue(prompts)
+                self.assertTrue(
+                    all(backend.AI_IMAGE_USER_PROMPT_FIDELITY_LOCK in prompt for prompt in prompts)
+                )
+
+    def test_suite_prompt_lock_is_page_scoped_and_keeps_global_requirements(self) -> None:
+        brief = (
+            "这是一款卖给日本地区的蓝色便携风扇，页面使用日语。\n"
+            "卖点 1【静音送风】\n保持安静环境中的自然送风体验。\n"
+            "卖点 2【快速拆洗】\n展示可拆结构和清洁步骤。\n"
+            "要求：保持蓝色机身；背景使用浅灰色；不要出现中文。"
+        )
+        plan = backend.build_ai_image_suite_plan(
+            "[Product] Exact blue portable fan from reference image 1.",
+            brief,
+            backend.AI_IMAGE_AMAZON_APLUS_SIZE,
+            suite_key=backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY,
+        )
+        plan[0]["focusTitle"] = "静音送风"
+        plan[0]["focusDescription"] = "保持安静环境中的自然送风体验"
+        plan[0]["focus"] = "静音送风。保持安静环境中的自然送风体验"
+        prompts, _pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact blue portable fan from reference image 1.",
+            brief,
+            backend.AI_IMAGE_AMAZON_APLUS_SIZE,
+            suite_key=backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY,
+            plan=plan,
+        )
+
+        self.assertIn("[Locked current-page source point] 静音送风", prompts[0])
+        self.assertIn("保持蓝色机身", prompts[0])
+        self.assertIn("背景使用浅灰色", prompts[0])
+        self.assertNotIn("快速拆洗", prompts[0])
+
+    def test_director_analysis_and_refinement_keep_source_prompt_points_first(self) -> None:
+        brief = "卖点 1【静音送风】\n低噪自然风。\n卖点 2【快速拆洗】\n拆装清洁方便。"
+        analysis = backend.normalize_ai_director_analysis(
+            {
+                "mainSellingPoints": [
+                    {"title": "通用智能科技", "description": "模型自行推断的通用卖点"}
+                ]
+            },
+            "[Product] Exact portable fan.",
+            brief,
+            backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY,
+        )
+
+        self.assertEqual(analysis["mainSellingPoints"][0]["title"], "静音送风")
+
+    def test_single_image_templates_compile_verbatim_user_prompt_with_fidelity_lock(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("[User-prompt fidelity lock — highest content priority]", app_source)
+        self.assertIn("[Current user prompt — verbatim]", app_source)
+        self.assertIn("Use template defaults only where the user prompt is silent", app_source)
+        self.assertIn('|| !prompt.includes("[User-prompt fidelity lock — highest content priority]")', app_source)
+
+    def test_prompt_fidelity_plan_versions_match_backend_frontend_and_skill(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        skill = backend.ai_image_skill_config()
+        skill_versions = {
+            item.get("suiteKey"): item.get("planVersion")
+            for item in skill.get("templates", [])
+            if item.get("suiteKey")
+        }
+        expected = {
+            backend.AI_IMAGE_LANDING_SUITE_KEY: backend.AI_IMAGE_SUITE_PLAN_VERSION,
+            backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY: backend.AI_IMAGE_AMAZON_APLUS_PLAN_VERSION,
+            backend.AI_IMAGE_RAKUTEN_SUITE_KEY: backend.AI_IMAGE_RAKUTEN_PLAN_VERSION,
+            backend.AI_IMAGE_COD_SUITE_KEY: backend.AI_IMAGE_COD_KR_PLAN_VERSION,
+            backend.AI_IMAGE_COD_DETAIL_SUITE_KEY: backend.AI_IMAGE_COD_DETAIL_PLAN_VERSION,
+        }
+
+        for suite_key, version in expected.items():
+            with self.subTest(suite_key=suite_key):
+                self.assertEqual(skill_versions[suite_key], version)
+                self.assertIn(f'planVersion: "{version}"', app_source)
 
     def test_account_pool_refresh_reports_ready_accounts(self) -> None:
         refresh_response = FakeResponse({"errors": []})

@@ -35,6 +35,7 @@ from sku_board.backend import (
     create_system_credential_from_wizard,
     create_design_task,
     delete_ad_launch,
+    delete_ai_image_outputs,
     delete_auth_user,
     delete_meta_credential,
     delete_all_items,
@@ -58,12 +59,14 @@ from sku_board.backend import (
     log_ai_image_error,
     plan_ai_image_suite,
     plan_ai_image_suite_upload,
+    prune_ai_image_output_files,
     regenerate_selling,
     review_ai_image_suite,
     recover_recent_ai_image_suite,
     refresh_ai_image_account_pool,
     read_ai_image_output,
     reset_user_password,
+    resume_ai_image_jobs,
     save_ai_director_settings,
     start_ai_image_job,
     set_meta_credential_active,
@@ -337,6 +340,9 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/sku-board/ai-image-outputs":
+            self.handle_auth_mutation(lambda payload, user: delete_ai_image_outputs(payload, user))
+            return
         if parsed.path == "/api/sku-board/items":
             self.handle_auth_mutation(lambda payload, user: delete_all_items(payload))
             return
@@ -757,7 +763,19 @@ def parse_ad_launch_route(path: str) -> tuple[str, str] | None:
 def run(host: str, port: int) -> None:
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((host, port), SkuBoardHandler)
+    cleanup = prune_ai_image_output_files(force=True)
+    recovery = resume_ai_image_jobs()
     print(f"SKU Board running at http://{host}:{port}/")
+    if cleanup["removed"]:
+        print(
+            "Expired local AI image outputs removed: "
+            f"files={cleanup['removed']}, bytes={cleanup['bytes']}"
+        )
+    if recovery["loaded"] or recovery["removed"]:
+        print(
+            "AI image jobs restored: "
+            f"loaded={recovery['loaded']}, resumed={recovery['resumed']}, removed={recovery['removed']}"
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

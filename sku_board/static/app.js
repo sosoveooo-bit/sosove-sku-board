@@ -204,6 +204,7 @@ const AI_IMAGE_DIRECTOR_MODES = [
   { key: "fast", label: "极速生成", hint: "分析后直接出图" },
   { key: "review", label: "审核方案", hint: "确认分镜后出图" },
 ];
+const AI_DIRECTOR_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"];
 const AI_IMAGE_GENERATION_PROFILES = [
   { key: "fast", label: "极速", hint: "最多8路智能并发 · 中质 · 跳过质检", workers: 8, perNode: 3, quality: "medium", review: "off", maxRetries: 1, autoRetryCycles: 1 },
   { key: "standard", label: "标准", hint: "最多6路智能并发 · 高质 · 重点页质检", workers: 6, perNode: 2, quality: "high", review: "key", maxRetries: 2, autoRetryCycles: 1 },
@@ -221,7 +222,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "日本产品落地页 32图品牌导演脚本",
     planHint: "按品牌案例固定节奏生成颜色、面料、模特、对比、场景、搭配、单品与尺寸信息",
     templateKey: "landing",
-    planVersion: "director-v6-ja-brand-32",
+    planVersion: "director-v8-prompt-fidelity",
     promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点和特殊要求；系统会结合全部主商品参考图生成 32 张日本品牌落地页",
     resultClass: "landing",
     anchorPrefix: "landing-page",
@@ -245,7 +246,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "Amazon A+ 9图导演脚本",
     planHint: "根据当前产品动态生成横版卖点、结构、场景、规格与维护模块",
     templateKey: "amazonAplus",
-    planVersion: "amazon-aplus-v3",
+    planVersion: "amazon-aplus-v4-prompt-fidelity",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点、规格和特殊要求；系统会动态生成 9 张 Amazon日本站 A+ 模块图",
     resultClass: "amazon",
     anchorPrefix: "amazon-aplus",
@@ -269,7 +270,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "乐天日本站 9图导演脚本",
     planHint: "根据当前产品动态生成方图卖点、结构、场景、规格与维护内容",
     templateKey: "rakutenSuite",
-    planVersion: "rakuten-director-v2",
+    planVersion: "rakuten-director-v3-prompt-fidelity",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点、规格和特殊要求；系统会动态生成 9 张乐天日本站商品图",
     resultClass: "rakuten",
     anchorPrefix: "rakuten-product",
@@ -293,7 +294,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "COD国家落地页 30图导演脚本",
     planHint: "按参考落地页逻辑生成一图一卖点、一图一效果的 8 张主图与 22 张详情图",
     templateKey: "codKorea",
-    planVersion: "cod-country-v13-product-agnostic-point-coverage",
+    planVersion: "cod-country-v15-prompt-fidelity",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点和特殊要求；系统会结合产品图按所选国家生成8张主图与22张详情图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-landing",
@@ -320,7 +321,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "COD详情图 22张导演脚本",
     planHint: "促销→背书→痛点→全面海报→主卖点→次卖点→多角度/场景→好评→收尾",
     templateKey: "codDetail",
-    planVersion: "cod-detail-v8-product-agnostic-point-coverage",
+    planVersion: "cod-detail-v10-prompt-fidelity",
     promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点、使用效果和背书；系统会按品类与国家生成动态COD详情图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-detail",
@@ -2054,6 +2055,14 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
   const lock = aiImageLockConfig(lockLevel);
   const targetCountry = (isCountryCod || isCodHook) ? aiImageCodCountryConfig(options.country || "KR") : null;
   const globalRules = aiImageSkillConfig().global || {};
+  const userIntent = String(options.userIntent || "").trim();
+  const userPromptFidelityRule = [
+    "[User-prompt fidelity lock — highest content priority] The current user prompt is the binding content contract for this image.",
+    "Preserve every explicit product, category, color or specification, target country, visible language, person identity or casting, scene, action, camera intent, composition, visual style, palette, typography, selling point, requested text, quantity rule and exclusion from that prompt.",
+    "The selected template may organize the fixed canvas, reference roles, product consistency and visual hierarchy only. It must not replace, weaken, generalize, reinterpret or contradict an explicit user requirement. Use template defaults only where the user prompt is silent.",
+    "Product-reference identity and the selected canvas remain locked. Before rendering, correct any changed product, omitted requirement, invented feature, wrong language, substituted scene or conflicting template default.",
+    userIntent ? `[Current user prompt — verbatim]\n${userIntent}` : "[Current user prompt] No separate production brief was entered; follow the selected template and uploaded references without inventing product facts.",
+  ].join("\n");
   const sellingPoints = [context.headline, ...context.points, context.proof].filter(Boolean).slice(0, 6);
   const styleTags = context.tags.filter(Boolean).slice(0, 6);
   const productDescription = [productName, context.subtitle, styleTags.length ? `style tags: ${styleTags.join(", ")}` : ""].filter(Boolean).join("; ");
@@ -2109,6 +2118,7 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
     ? "Use every reference assigned as 主商品 only as the exact garment source and the reference assigned as 人物参考 as the exact target photograph. This is clothing replacement, not ordinary multi-image blending. Preserve the target model photograph and edit only the clothing area covered by the supplied garment."
     : aiImageReferenceInstruction(mode, hasReferences, { genericProduct: isGenericProductSuite });
   const sections = [
+    userPromptFidelityRule,
     `[Canvas] ${aiImageCanvasInstruction(options.size || "1024x1536")}.`,
     targetCountry ? `[Target market] ${targetCountry.label}; visible language: ${targetCountry.language}. Localize people, scenes, layout, color and copy for this market.` : "",
     `[Product] ${productRule}`,
@@ -2118,7 +2128,6 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
     virtualTryOnRule,
     multiProductVariantRule,
     hasExternalStyleSet ? "[External style-set lock] References assigned as 系列风格参考 control only the suite visual system: palette, visual hierarchy, headline scale, information density, module shapes, callout rhythm, image-to-text ratio, macro or result presentation and cross-page pacing. Reference image 1 remains the exact product source. Never import another product, person, text, logo, badge, certification or claim from style-set references. Generated suite page 1 must adapt this visual DNA as the shared style anchor; later pages inherit that anchor while using clearly different compositions." : "",
-    options.userIntent ? `[User intent] ${options.userIntent}` : "",
     `[Scene and model] ${aiImageTemplateDirection(templateKey, productName, options.size || "")}.`,
     codHookRule,
     sellingPointRule,
@@ -2716,10 +2725,12 @@ async function loadAiDirectorSettings(silent = false) {
 }
 
 function aiDirectorSettingsFormPayload() {
+  const model = $("#ai-director-model")?.value.trim() || "";
   return {
     enabled: Boolean($("#ai-director-enabled")?.checked),
     baseUrl: $("#ai-director-base-url")?.value.trim() || "",
-    model: $("#ai-director-model")?.value.trim() || "",
+    model,
+    fallbackModels: AI_DIRECTOR_MODELS.filter((candidate) => candidate !== model),
     apiKey: $("#ai-director-api-key")?.value.trim() || "",
     timeout: Number($("#ai-director-timeout")?.value || 60),
     visionEnabled: Boolean($("#ai-director-vision")?.checked),
@@ -3372,6 +3383,7 @@ function createAiImageConversation(seed = {}) {
     codHookType: seed.codHookType || "hook",
     userIntent: seed.userIntent || "",
     compiledIntent: seed.compiledIntent || "",
+    promptManuallyEdited: Boolean(seed.promptManuallyEdited),
     skillId: skill.id || "gpt-image2-sosove",
     skillVersion: skill.version || "内置",
     materials: [],
@@ -3790,6 +3802,7 @@ function rebuildAiImagePromptFromSkill(conversation, { force = false } = {}) {
     referenceRoles: conversation.referenceImages || [],
   });
   conversation.compiledIntent = userIntent;
+  conversation.promptManuallyEdited = false;
   conversation.skillId = skill.id || "gpt-image2-sosove";
   conversation.skillVersion = skill.version || "内置";
   return true;
@@ -3866,6 +3879,7 @@ function applyAiImageTemplate(templateKey) {
   conversation.prompt = prompt;
   conversation.userIntent = userIntent;
   conversation.compiledIntent = userIntent;
+  conversation.promptManuallyEdited = false;
   conversation.skillId = skill.id || "gpt-image2-sosove";
   conversation.skillVersion = skill.version || "内置";
   conversation.templateKey = template.key;
@@ -4213,6 +4227,7 @@ function removeAiImageMask() {
 function aiImageStoredPreviewUrl(material = {}) {
   const previewUrl = String(material.previewUrl || material.previewDataUrl || "");
   if (previewUrl.startsWith("/api/sku-board/ai-image-output/")) return previewUrl;
+  if (/^https?:\/\//i.test(previewUrl) && (material.storage === "remote" || material.remotePath)) return previewUrl;
   const materialId = String(material.id || "").toUpperCase();
   return /^AI-[A-F0-9]{10}$/.test(materialId) ? `/api/sku-board/ai-image-output/${materialId}` : "";
 }
@@ -4912,6 +4927,7 @@ function renderAiImageResultCard(material, index, conversation) {
   const meta = [
     material.model || conversation.model || "gpt-image-2",
     material.sizePreset || conversation.size || "auto",
+    material.storage === "remote" ? `远端存储${material.remoteNodeName ? ` · ${material.remoteNodeName}` : ""}` : material.storage === "local-temporary" ? "服务器临时文件 · 24小时清理" : "",
     material.skillVersion ? `Skill v${material.skillVersion}` : "",
     material.lockLevel ? aiImageLockDisplay(material.lockLevel) : "",
     activeTag ? aiImageResultTagLabel(activeTag) : "",
@@ -4964,6 +4980,7 @@ function renderAiImageResultCard(material, index, conversation) {
         ${suiteActive ? `<button class="ghost-btn" type="button" data-ai-retry-index="${index}" title="只重新生成当前页" ${canRedoWithoutMark ? "" : "disabled"}>重做本页</button>` : ""}
         <button class="ghost-btn" type="button" data-ai-poster-index="${index}" ${preview ? "" : "disabled"}>套海报</button>
         <button class="primary-btn" type="button" data-ai-send-index="${index}">加入素材投放</button>
+        ${/^AI-[A-F0-9]{10}$/.test(String(material.id || "").toUpperCase()) ? `<button class="ghost-btn danger" type="button" data-ai-delete-index="${index}">删除图片</button>` : ""}
       </div>
     </article>
   `;
@@ -4988,6 +5005,7 @@ function setAiImageResultTag(index = 0, tagKey = "") {
 function loadImageElement(src) {
   return new Promise((resolve, reject) => {
     const image = new Image();
+    image.crossOrigin = "anonymous";
     image.onload = () => resolve(image);
     image.onerror = () => reject(new Error("图片加载失败，无法套海报版式"));
     image.src = src;
@@ -6231,7 +6249,16 @@ async function generateAiImage(event) {
   conversation.productSku = $("#ai-image-product").value || "";
   conversation.mode = conversation.mode || state.aiImages.mode || "text";
   conversation.lockLevel = conversation.lockLevel || state.aiImages.lockLevel || skill.defaults?.lockLevel || "strict";
-  const effectiveIntent = intent || (!aiImagePromptIsStructured(prompt) ? prompt : conversation.userIntent || "");
+  const intentChangedNow = intent !== String(conversation.userIntent || "").trim();
+  const promptChangedNow = prompt !== String(conversation.prompt || "").trim();
+  const manualPromptWins = Boolean(
+    prompt
+    && !aiImagePromptIsStructured(prompt)
+    && (promptChangedNow || (conversation.promptManuallyEdited && !intentChangedNow)),
+  );
+  const effectiveIntent = manualPromptWins
+    ? prompt
+    : intent || (!aiImagePromptIsStructured(prompt) ? prompt : conversation.userIntent || "");
   conversation.userIntent = effectiveIntent;
   const inferredSuiteKey = aiImageSuiteKeyFromIntent(effectiveIntent);
   if (!aiImageSuiteActive(conversation) && inferredSuiteKey) {
@@ -6266,6 +6293,7 @@ async function generateAiImage(event) {
   if (suiteConfig) conversation.suiteCount = suiteConfig.count;
   conversation.count = suiteConfig?.count || Number(state.aiImages.count || conversation.count || 1);
   const needsCompile = !aiImagePromptIsStructured(prompt)
+    || !prompt.includes("[User-prompt fidelity lock — highest content priority]")
     || conversation.compiledIntent !== effectiveIntent
     || conversation.skillVersion !== (skill.version || "内置")
     || conversation.templateKey === "codHook"
@@ -6284,6 +6312,7 @@ async function generateAiImage(event) {
   }
   conversation.prompt = prompt;
   conversation.compiledIntent = effectiveIntent;
+  conversation.promptManuallyEdited = false;
   conversation.skillId = skill.id || "gpt-image2-sosove";
   conversation.skillVersion = skill.version || "内置";
   try {
@@ -6568,7 +6597,25 @@ async function sendAiImageToAdLaunch(index = 0) {
     showToast("请先生成一张图片");
     return;
   }
-  state.adLaunches.material = { ...material, previewDataUrl };
+  let launchMaterial = material;
+  if (!material.path) {
+    if (!previewDataUrl) throw new Error("这张图片缺少可读取的远程地址");
+    const response = await fetch(previewDataUrl);
+    if (!response.ok) throw new Error(`读取远程图片失败（HTTP ${response.status}）`);
+    const blob = await response.blob();
+    const mime = blob.type || material.mime || "image/png";
+    if (!mime.startsWith("image/")) throw new Error("远程地址没有返回有效图片");
+    const extension = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
+    const filename = material.name || `ai-image-${Number(index) + 1}.${extension}`;
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    const payload = await api("/api/sku-board/ad-launch-materials", {
+      method: "POST",
+      body: formData,
+    });
+    launchMaterial = payload.material;
+  }
+  state.adLaunches.material = { ...launchMaterial, previewDataUrl };
   state.adLaunches.materialMode = "single_image";
   state.adLaunches.step = 2;
   setActiveView("adLaunches");
@@ -6594,7 +6641,7 @@ function previewAiImage(index = 0) {
   openImagePreview(preview, material?.name || `AI 图片 ${Number(index) + 1}`);
 }
 
-function downloadAiImage(index = 0) {
+async function downloadAiImage(index = 0) {
   const conversation = aiImageActiveConversation();
   const material = conversation?.materials?.[Number(index)];
   const preview = conversation?.previewDataUrls?.[Number(index)] || material?.previewDataUrl || material?.previewUrl || "";
@@ -6602,14 +6649,22 @@ function downloadAiImage(index = 0) {
     showToast("这张图片没有可下载的预览数据");
     return;
   }
-  const anchor = document.createElement("a");
-  anchor.href = preview;
-  anchor.download = material?.name || `ai-image-${Number(index) + 1}.png`;
-  anchor.rel = "noopener";
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  showToast("图片已开始下载");
+  const response = await fetch(preview);
+  if (!response.ok) throw new Error(`下载图片失败（HTTP ${response.status}）`);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = material?.name || `ai-image-${Number(index) + 1}.png`;
+    anchor.rel = "noopener";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    showToast("图片已开始下载");
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
 }
 
 function setAiImageConversation(id) {
@@ -6621,10 +6676,71 @@ function setAiImageConversation(id) {
   renderAiImageResults();
 }
 
-function deleteAiImageConversation(id) {
+function aiImageDeleteDescriptor(material = {}) {
+  return {
+    id: material.id || "",
+    storage: material.storage || "",
+    remoteUrl: material.remoteUrl || material.previewUrl || "",
+    remotePath: material.remotePath || "",
+    remoteNodeId: material.remoteNodeId || "",
+    deleteToken: material.deleteToken || "",
+  };
+}
+
+async function deleteAiImageMaterials(materials = []) {
+  const deletable = materials.filter((material) => /^AI-[A-F0-9]{10}$/.test(String(material?.id || "").toUpperCase()));
+  if (!deletable.length) return { deletedIds: [], failedIds: [], errors: [] };
+  const combined = { deletedIds: [], failedIds: [], errors: [] };
+  for (let offset = 0; offset < deletable.length; offset += 100) {
+    const payload = await api("/api/sku-board/ai-image-outputs", {
+      method: "DELETE",
+      body: JSON.stringify({ materials: deletable.slice(offset, offset + 100).map(aiImageDeleteDescriptor) }),
+    });
+    combined.deletedIds.push(...(payload.deletedIds || []));
+    combined.failedIds.push(...(payload.failedIds || []));
+    combined.errors.push(...(payload.errors || []));
+  }
+  return combined;
+}
+
+function removeAiImageMaterialsFromConversation(conversation, deletedIds = []) {
+  const ids = new Set(deletedIds.map((value) => String(value || "").toUpperCase()));
+  conversation.materials = (conversation.materials || []).filter((material) => !ids.has(String(material.id || "").toUpperCase()));
+  conversation.previewDataUrls = conversation.materials.map((material) => material.previewDataUrl || material.previewUrl || "");
+  conversation.updatedAt = new Date().toISOString();
+}
+
+async function deleteAiImageMaterial(index = 0) {
+  const conversation = aiImageActiveConversation();
+  const material = conversation?.materials?.[Number(index)];
+  if (!conversation || !material) return;
+  if (!window.confirm(`确定删除这张图片吗？\n${material.suiteTitle || material.name || material.id}\n远端 chatgpt2api 中的原图也会删除。`)) return;
+  const result = await deleteAiImageMaterials([material]);
+  if (!result.deletedIds.length) throw new Error(result.errors[0]?.message || "图片删除失败");
+  removeAiImageMaterialsFromConversation(conversation, result.deletedIds);
+  syncAiImageStateFromConversation(conversation);
+  renderAiImageSidebar();
+  renderAiImageResults();
+  showToast("图片及远端文件已删除");
+}
+
+async function deleteAiImageConversation(id) {
   const index = state.aiImages.conversations.findIndex((item) => item.id === id);
   if (index < 0) return;
-  revokeAiImageReferenceUrls(state.aiImages.conversations[index]);
+  const conversation = state.aiImages.conversations[index];
+  const materialCount = (conversation.materials || []).filter((material) => /^AI-[A-F0-9]{10}$/.test(String(material?.id || "").toUpperCase())).length;
+  if (!window.confirm(`确定删除这个生图任务吗？${materialCount ? `\n将同时删除 ${materialCount} 张远端生成图片。` : ""}`)) return;
+  if (materialCount) {
+    const result = await deleteAiImageMaterials(conversation.materials || []);
+    if (result.failedIds.length) {
+      removeAiImageMaterialsFromConversation(conversation, result.deletedIds);
+      syncAiImageStateFromConversation(conversation);
+      renderAiImageSidebar();
+      renderAiImageResults();
+      throw new Error(`已删除 ${result.deletedIds.length} 张，仍有 ${result.failedIds.length} 张删除失败：${result.errors[0]?.message || "远端服务异常"}`);
+    }
+  }
+  revokeAiImageReferenceUrls(conversation);
   state.aiImages.conversations.splice(index, 1);
   if (state.aiImages.activeId === id) {
     state.aiImages.activeId = state.aiImages.conversations[0]?.id || "";
@@ -6634,6 +6750,24 @@ function deleteAiImageConversation(id) {
   renderAiImageSidebar();
   renderAiImageForm();
   renderAiImageResults();
+}
+
+async function clearAiImageConversations() {
+  if (!window.confirm("确定清空 AI 生图记录吗？所有任务对应的远端生成图片也会删除。")) return;
+  const materials = state.aiImages.conversations.flatMap((conversation) => conversation.materials || []);
+  const result = await deleteAiImageMaterials(materials);
+  if (result.failedIds.length) {
+    state.aiImages.conversations.forEach((conversation) => removeAiImageMaterialsFromConversation(conversation, result.deletedIds));
+    syncAiImageStateFromConversation(aiImageActiveConversation());
+    renderAiImagePanel();
+    throw new Error(`已删除 ${result.deletedIds.length} 张，仍有 ${result.failedIds.length} 张删除失败：${result.errors[0]?.message || "远端服务异常"}`);
+  }
+  state.aiImages.conversations.forEach(revokeAiImageReferenceUrls);
+  state.aiImages.conversations = [];
+  state.aiImages.activeId = "";
+  ensureAiImageConversation({ prompt: "", userIntent: "", mode: "text", count: 1, suiteKey: "", suiteCountry: "KR", suitePages: [], referenceImages: [], maskImage: null });
+  renderAiImagePanel();
+  showToast("生图记录和远端图片已清空");
 }
 
 function updateAiImageConversation(updates = {}) {
@@ -8852,12 +8986,7 @@ function bindEvents() {
     $("#ai-image-intent").focus();
   });
   $("#ai-image-clear-btn").addEventListener("click", () => {
-    if (!window.confirm("确定清空 AI 生图记录吗？已生成的素材文件不会删除。")) return;
-    state.aiImages.conversations.forEach(revokeAiImageReferenceUrls);
-    state.aiImages.conversations = [];
-    state.aiImages.activeId = "";
-    ensureAiImageConversation({ prompt: "", userIntent: "", mode: "text", count: 1, suiteKey: "", suiteCountry: "KR", suitePages: [], referenceImages: [], maskImage: null });
-    renderAiImagePanel();
+    clearAiImageConversations().catch((error) => showToast(error.message));
   });
   $("#ai-image-upload-btn").addEventListener("click", () => $("#ai-image-reference-file").click());
   $("#ai-image-reference-file").addEventListener("change", (event) => {
@@ -8925,16 +9054,21 @@ function bindEvents() {
   $("#ai-director-test-btn").addEventListener("click", () => testAiDirectorConnection());
   ["#ai-director-base-url", "#ai-director-model", "#ai-director-timeout", "#ai-director-api-key", "#ai-director-enabled", "#ai-director-vision", "#ai-director-review-enabled", "#ai-director-review-threshold"].forEach((selector) => {
     const field = $(selector);
-    const eventName = field?.type === "checkbox" ? "change" : "input";
+    const eventName = field?.type === "checkbox" || field?.tagName === "SELECT" ? "change" : "input";
     field?.addEventListener(eventName, () => {
-      state.aiImages.director = { ...(state.aiImages.director || {}), formDirty: true, message: "配置尚未保存", status: "unknown" };
+      const director = { ...(state.aiImages.director || {}), formDirty: true, message: "配置尚未保存", status: "unknown" };
+      if (selector === "#ai-director-model") {
+        director.model = field.value;
+        director.fallbackModels = AI_DIRECTOR_MODELS.filter((candidate) => candidate !== field.value);
+      }
+      state.aiImages.director = director;
       renderAiDirectorSettings();
     });
   });
   $("#ai-image-task-list").addEventListener("click", (event) => {
     const deleteButton = event.target.closest("[data-ai-conversation-delete]");
     if (deleteButton) {
-      deleteAiImageConversation(deleteButton.dataset.aiConversationDelete);
+      deleteAiImageConversation(deleteButton.dataset.aiConversationDelete).catch((error) => showToast(error.message));
       return;
     }
     const taskButton = event.target.closest("[data-ai-conversation]");
@@ -8994,7 +9128,12 @@ function bindEvents() {
     }
     const downloadButton = event.target.closest("[data-ai-download-index]");
     if (downloadButton) {
-      downloadAiImage(downloadButton.dataset.aiDownloadIndex);
+      downloadAiImage(downloadButton.dataset.aiDownloadIndex).catch((error) => showToast(error.message));
+      return;
+    }
+    const deleteImageButton = event.target.closest("[data-ai-delete-index]");
+    if (deleteImageButton) {
+      deleteAiImageMaterial(deleteImageButton.dataset.aiDeleteIndex).catch((error) => showToast(error.message));
       return;
     }
     const posterButton = event.target.closest("[data-ai-poster-index]");
@@ -9073,6 +9212,7 @@ function bindEvents() {
   $("#ai-image-intent").addEventListener("input", debounce((event) => {
     const conversation = ensureAiImageConversation();
     conversation.userIntent = event.target.value.trim();
+    conversation.promptManuallyEdited = false;
     conversation.title = aiImageConversationTitle(conversation);
     conversation.updatedAt = new Date().toISOString();
     syncAiImageStateFromConversation(conversation);
@@ -9083,6 +9223,7 @@ function bindEvents() {
   $("#ai-image-prompt").addEventListener("input", debounce((event) => {
     const conversation = ensureAiImageConversation();
     conversation.prompt = event.target.value;
+    conversation.promptManuallyEdited = true;
     conversation.title = aiImageConversationTitle(conversation);
     conversation.updatedAt = new Date().toISOString();
     syncAiImageStateFromConversation(conversation);

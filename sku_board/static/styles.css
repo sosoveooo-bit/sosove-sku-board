@@ -6096,7 +6096,8 @@ input {
   line-height: 1.35;
 }
 
-.ai-director-settings-grid input {
+.ai-director-settings-grid input,
+.ai-director-settings-grid select {
   width: 100%;
   min-width: 0;
   height: 38px;
@@ -6108,7 +6109,8 @@ input {
   outline: none;
 }
 
-.ai-director-settings-grid input:focus {
+.ai-director-settings-grid input:focus,
+.ai-director-settings-grid select:focus {
   border-color: #b77745;
   box-shadow: 0 0 0 3px rgba(183, 119, 69, 0.12);
 }

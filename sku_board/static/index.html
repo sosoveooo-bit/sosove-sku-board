@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SOSOVE 主推品作战看板</title>
     <link rel="icon" href="/static/assets/sosove-logo.jpeg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260722-image-capacity-54" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260723-jp-scenes-v7" />
   </head>
   <body>
     <main class="app-shell">
@@ -828,11 +828,10 @@
                       <input id="ai-director-base-url" type="url" placeholder="https://example.com/v1" spellcheck="false" />
                     </label>
                     <label>模型
-                      <input id="ai-director-model" list="ai-director-model-options" placeholder="gpt-5.6-terra" spellcheck="false" />
-                      <datalist id="ai-director-model-options">
-                        <option value="gpt-5.6-terra"></option>
-                        <option value="gpt-5.6-sol"></option>
-                      </datalist>
+                      <select id="ai-director-model">
+                        <option value="gpt-5.6-terra">gpt-5.6-terra</option>
+                        <option value="gpt-5.6-sol">gpt-5.6-sol</option>
+                      </select>
                     </label>
                     <label class="ai-director-fallback-field">自动备援
                       <output id="ai-director-fallback-note">主模型异常后自动切换备用模型</output>
@@ -1336,6 +1335,6 @@
     </dialog>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js?v=20260722-image-capacity-54"></script>
+    <script src="/static/app.js?v=20260723-prompt-fidelity-v15"></script>
   </body>
 </html>
