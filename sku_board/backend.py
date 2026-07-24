@@ -45,12 +45,7 @@ AI_DIRECTOR_CACHE_FILE = DATA_DIR / "ai_director_analysis_cache.json"
 AI_IMAGE_JOBS_FILE = DATA_DIR / "ai_image_jobs.json"
 AI_IMAGE_JOB_FILES_DIR = DATA_DIR / "ai_image_job_files"
 AI_DIRECTOR_KNOWN_MODELS = ("gpt-5.6-terra", "gpt-5.6-sol")
-META_AD_ANALYSIS_SCRIPT = Path(
-    os.environ.get(
-        "SKU_BOARD_META_AD_ANALYSIS_SCRIPT",
-        r"C:\Users\Administrator\.codex\skills\tiktok-ads-analysis\scripts\analyze_tiktok_ads.py",
-    )
-)
+META_AD_ANALYSIS_SCRIPT = ROOT_DIR / "skills" / "tiktok-ads-analysis" / "scripts" / "analyze_tiktok_ads.py"
 SESSION_FILE = DATA_DIR / "auth_sessions.json"
 META_CREDENTIAL_FILE = DATA_DIR / "meta_credentials.json"
 META_CREDENTIAL_KEY_FILE = DATA_DIR / "meta_credentials.key"
@@ -3086,11 +3081,16 @@ def meta_credential_insight_rows(actor: dict[str, Any], range_name: str) -> tupl
     }
 
 
+def meta_ad_analysis_script_path() -> Path:
+    configured = text(os.environ.get("SKU_BOARD_META_AD_ANALYSIS_SCRIPT")).strip()
+    return Path(configured).expanduser() if configured else META_AD_ANALYSIS_SCRIPT
+
+
 def load_meta_ad_analysis_module() -> Any:
     global _META_AD_ANALYSIS_MODULE
     if _META_AD_ANALYSIS_MODULE is not None:
         return _META_AD_ANALYSIS_MODULE
-    script_path = Path(os.environ.get("SKU_BOARD_META_AD_ANALYSIS_SCRIPT", str(META_AD_ANALYSIS_SCRIPT))).expanduser()
+    script_path = meta_ad_analysis_script_path()
     if not script_path.exists() or not script_path.is_file():
         raise ValueError(f"广告分析脚本不存在：{script_path}")
     spec = importlib.util.spec_from_file_location("sku_board_meta_ad_analysis_skill", script_path)
@@ -3324,7 +3324,7 @@ def analyze_meta_ads(payload: dict[str, Any], actor: dict[str, Any]) -> dict[str
             **source,
             "platform": "Meta",
             "analysisEngine": "tiktok-ads-analysis/build_report",
-            "skillPath": str(META_AD_ANALYSIS_SCRIPT),
+            "skillPath": str(meta_ad_analysis_script_path()),
             "usePlatformPurchase": use_platform_purchase,
             "rows": len(rows),
         },

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -83,6 +84,14 @@ class MetaAdAnalysisTests(unittest.TestCase):
                 "credential_name": "System",
             },
         ]
+
+    def test_blank_environment_path_uses_bundled_analysis_skill(self) -> None:
+        with patch.dict(os.environ, {"SKU_BOARD_META_AD_ANALYSIS_SCRIPT": ""}):
+            script_path = backend.meta_ad_analysis_script_path()
+
+        self.assertEqual(script_path, backend.META_AD_ANALYSIS_SCRIPT)
+        self.assertTrue(script_path.is_file())
+        self.assertTrue(callable(backend.load_meta_ad_analysis_module().build_report))
 
     def test_meta_rows_are_analyzed_with_skill_decisions(self) -> None:
         with patch.object(
