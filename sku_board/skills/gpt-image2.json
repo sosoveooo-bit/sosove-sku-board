@@ -1,7 +1,7 @@
 {
   "id": "gpt-image2-sosove",
   "name": "GPT-Image2 SOSOVE Director",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "updatedAt": "2026-07-24",
   "defaults": {
     "lockLevel": "strict",
@@ -78,7 +78,7 @@
       "size": "1024x1536",
       "count": 1,
       "mode": "compose",
-      "direction": "Create one coherent photorealistic full-body styling scene from the assigned references. Preserve the exact identity, face, hair, age impression, skin tone and body proportions from the person reference. Use every main-product image as an exact garment or wearable-product source; use bag, hat, shoes, jewelry, styling-accessory and explicitly named package/accessory references as exact item sources; use the scene reference as the requested environment. Follow filename-specific replacement and recolor instructions. A cropped model may be completed naturally from head to toe when requested. Integrate garments and accessories with accurate fit, material, scale, perspective, occlusion and shadows. Preserve every unspecified attribute. Produce exactly one continuous photograph with one complete model, no advertising text, split screen, grid, collage, card, inset, logo or watermark."
+      "direction": "Create one coherent photorealistic full-body styling scene from the assigned references. Preserve the exact identity, face, hair, age impression, skin tone and body proportions from the person reference. Use every main-product image as an exact garment or wearable-product source; use bag, hat, shoes, jewelry, styling-accessory and explicitly named package/accessory references as exact item sources; use the scene reference as the requested environment. Follow filename-specific replacement and recolor instructions. Every input image is source-only: extract the assigned person or item, discard its original frame and non-selected background, and never show a reference as a separate tile, thumbnail, cutout card, inset or side-by-side panel. A cropped model may be completed naturally from head to toe when requested. Integrate garments and accessories with accurate fit, material, scale, perspective, occlusion and shadows. Preserve every unspecified attribute. Produce exactly one continuous single-camera photograph with one complete model, no advertising text, split screen, grid, collage, card, inset, logo or watermark."
     },
     {
       "key": "poster",

@@ -2299,7 +2299,7 @@ Type-C充电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "amazonAplus")
 
-        self.assertEqual(skill["version"], "2.4.0")
+        self.assertEqual(skill["version"], "2.4.1")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_AMAZON_APLUS_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -2396,7 +2396,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "rakutenSuite")
 
-        self.assertEqual(skill["version"], "2.4.0")
+        self.assertEqual(skill["version"], "2.4.1")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_RAKUTEN_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_RAKUTEN_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -2596,7 +2596,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "codKorea")
 
-        self.assertEqual(skill["version"], "2.4.0")
+        self.assertEqual(skill["version"], "2.4.1")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_COD_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_COD_KR_PLAN_VERSION)
         self.assertEqual(template["count"], 30)
@@ -3181,6 +3181,7 @@ USB供电
         self.assertIn('{ key: "virtualTryOn", label: "模特换装/搭配"', app_source)
         self.assertIn('templateKey === "virtualTryOn"', app_source)
         self.assertIn("[Virtual styling binding — highest priority]", app_source)
+        self.assertIn("Every input image is source-only", app_source)
         self.assertIn('{ key: "bag", label: "包袋参考"', app_source)
         self.assertIn('{ key: "hat", label: "帽子参考"', app_source)
         self.assertIn('{ key: "shoes", label: "鞋履参考"', app_source)
@@ -3220,6 +3221,7 @@ USB供电
         self.assertEqual(payload["templateKey"], "virtualTryOn")
         self.assertEqual(payload["mode"], "compose")
         self.assertIn("[Server-enforced virtual try-on lock", generate.call_args.kwargs["prompt"])
+        self.assertIn("Every uploaded image is source-only", generate.call_args.kwargs["prompt"])
         self.assertEqual(len(generate.call_args.kwargs["reference_images"]), 2)
 
         missing_person_fields = {**fields, "prompt": "[Reference role map] Image 1=主商品; Image 2=产品细节."}
