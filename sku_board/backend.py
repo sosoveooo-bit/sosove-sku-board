@@ -11602,6 +11602,82 @@ def normalize_ai_image_request_fields(payload: dict[str, Any]) -> tuple[str, str
     return prompt, model, size, quality, count, max_count, batch_size
 
 
+def ai_image_structured_prompt_section(value: Any, heading: str) -> str:
+    """Read one bracketed section from the browser-compiled prompt."""
+    source = text(value)
+    match = re.search(
+        rf"^\[{re.escape(heading)}[^\]]*\]\s*(.*?)(?=\n\[[^\]]+\]|\Z)",
+        source,
+        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    return text(match.group(1)).strip() if match else ""
+
+
+def compact_ai_image_prompt_excerpt(value: Any, limit: int = 1800) -> str:
+    """Keep the beginning and final constraints of a long single-image brief."""
+    source = re.sub(r"\r\n?", "\n", text(value)).strip()
+    if len(source) <= limit:
+        return source
+    tail_size = min(520, max(260, limit // 3))
+    head_size = max(1, limit - tail_size - 24)
+    return f"{source[:head_size].rstrip()}\n……\n{source[-tail_size:].lstrip()}"
+
+
+def compile_ai_image_cod_hook_text_prompt(payload: dict[str, Any], original_prompt: str, size: str) -> str:
+    """Turn the verbose browser contract into a direct render prompt.
+
+    chatgpt2api may answer a long planning-style COD contract with text instead
+    of invoking image generation.  Its task then waits for a file until the
+    remote 120-second timeout.  Text-only COD hook requests do not have a
+    reference image to force the image path, so send a short natural-language
+    render command while retaining the user's actual brief and selected market.
+    """
+    user_brief = text(payload.get("suiteBrief")).strip()
+    if not user_brief:
+        user_brief = ai_image_structured_prompt_section(original_prompt, "Current user prompt")
+    if not user_brief:
+        user_brief = original_prompt
+    user_brief = compact_ai_image_prompt_excerpt(user_brief, 1800)
+
+    country = normalize_ai_image_cod_country(payload.get("suiteCountry"), "KR")
+    profile = ai_image_cod_country_profile(country)
+    hook_type = limited_text(payload.get("codHookType"), "hook", 32)
+    hook_directions = {
+        "hook": "单独噱头图：只突出一个核心钩子，产品或使用效果是最大主体；只有用户明确要求文案时才添加一条短标题，不添加价格条或折扣徽章。",
+        "promotion": "促销图：产品仍是最大主体，只使用用户明确提供的活动文案和促销信息，不补写折扣、价格或期限。",
+        "priceBar": "价格条：制作横向满幅价格条，完整显示用户提供的币种、原价、活动价、折扣和数量；不补写缺失数字，所有字符保持在安全区内。",
+        "discount": "折扣徽章图：只使用用户提供的折扣数字或OFF文案，只出现一个徽章，并让产品或效果画面大于徽章。",
+        "comparison": "痛点对比图：只比较用户指定的一项差异，保持同一主体、镜头、比例和条件，不加入第三个卖点。",
+        "effect": "效果卖点图：只突出用户指定的一项效果，用真实结果、当地使用场景或产品微距作为主要证据。",
+    }
+    direction = hook_directions.get(hook_type, hook_directions["hook"])
+    product_context = ai_image_structured_prompt_section(original_prompt, "Product")
+    if product_context and product_context.lower().startswith(("the current product", "the product described")):
+        product_context = ""
+    product_context = limited_text(product_context, "", 320)
+    width, height = ai_image_size_dimensions(size)
+    if width and height:
+        canvas = f"画布为 {width}×{height} 像素"
+    else:
+        canvas = f"画布采用 {size}"
+    if size in AI_IMAGE_COD_HOOK_STRIP_SIZES:
+        canvas += "横向满幅价格/促销条，背景铺满四边，前景文字、价格、币种和产品不得裁切"
+    else:
+        canvas += "，满幅成图，不留白色外边"
+
+    lines = [
+        "请直接生成最终图片，不要回复方案、分析、解释、确认问题或纯文字答案。",
+        f"用户原始提示词（最高优先级）：{user_brief}",
+        f"{canvas}。",
+        f"目标市场：{profile['label']}。画面人物、场景、审美和电商视觉符合当地；所有可见文案只能使用{profile['visibleLanguage']}。用户未要求文案时不要自行添加文字。",
+        f"创意类型：{direction}",
+        f"产品信息：{product_context}" if product_context else "严格按用户原始提示词识别并呈现真实主体，不要替换成模板里的其他品类。",
+        "输出一张完整独立的成图，只保留一个主视觉和一个连续场景；主体完整清晰，材质写实，结构、颜色、比例、使用方式与用户描述一致，光影和构图达到商业成片质量。",
+        "不要拼图、宫格、分屏、卡片墙、平台界面、白色外边、随机文字、虚构功能、Logo、水印、签名、二维码或服务名称。现在直接生成图片。",
+    ]
+    return limited_text("\n".join(lines), "", 3600)
+
+
 def normalize_ai_image_mode(value: Any, default: str = "text") -> str:
     mode = limited_text(value, default, 24).lower()
     return mode if mode in {"text", "edit", "inpaint", "compose"} else default
@@ -11831,6 +11907,8 @@ def generate_ad_launch_ai_image(payload: dict[str, Any], actor: dict[str, Any]) 
     mode = normalize_ai_image_mode(payload.get("mode"), "text")
     skill_meta = normalize_ai_image_skill_meta(payload)
     template_key = limited_text(payload.get("templateKey"), "", 40)
+    if template_key == "codHook" and mode == "text":
+        prompt = compile_ai_image_cod_hook_text_prompt(payload, text(payload.get("prompt")), size)
     if template_key == AI_IMAGE_VIRTUAL_TRY_ON_TEMPLATE_KEY:
         raise ValueError("模特换装/搭配需要上传商品图和人物参考图")
     if normalize_ai_image_suite_key(payload.get("suiteKey")):

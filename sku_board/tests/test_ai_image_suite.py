@@ -699,6 +699,67 @@ class AiImageSuiteTests(unittest.TestCase):
 
         self.assertEqual(generate.call_count, 4)
 
+    def test_cod_hook_text_prompt_is_compiled_as_direct_render_request(self) -> None:
+        original = (
+            "[User-prompt fidelity lock — highest content priority]\n"
+            "[Current user prompt — verbatim]\n生成一个小猫的图片\n"
+            "[Canvas] exact 750 by 1000 pixel vertical image.\n"
+            "[Product] the current product. Treat the current user prompt as the only product source.\n"
+            "[COD hook mode] Create a pure hook image.\n"
+            "[Negative constraints] No collage or watermark."
+        )
+        compiled = backend.compile_ai_image_cod_hook_text_prompt(
+            {
+                "suiteBrief": "生成一个小猫的图片",
+                "suiteCountry": "JP",
+                "codHookType": "hook",
+            },
+            original,
+            "750x1000",
+        )
+
+        self.assertTrue(compiled.startswith("请直接生成最终图片"))
+        self.assertIn("生成一个小猫的图片", compiled)
+        self.assertIn("750×1000", compiled)
+        self.assertIn("目标市场：日本", compiled)
+        self.assertIn("所有可见文案只能使用日文", compiled)
+        self.assertIn("现在直接生成图片", compiled)
+        self.assertNotIn("User-prompt fidelity lock", compiled)
+        self.assertLess(len(compiled), 3000)
+
+    def test_cod_hook_text_generation_sends_compact_prompt_to_remote_pool(self) -> None:
+        generated = [(b"generated-image", "image/png")]
+        payload = {
+            "prompt": (
+                "[User-prompt fidelity lock — highest content priority]\n"
+                "[Current user prompt — verbatim]\n生成一个小猫的图片\n"
+                "[Canvas] exact 750 by 1000 pixel vertical image.\n"
+                "[Product] the current product.\n"
+                "[Negative constraints] No collage or watermark."
+            ),
+            "suiteBrief": "生成一个小猫的图片",
+            "suiteCountry": "KR",
+            "templateKey": "codHook",
+            "codHookType": "hook",
+            "mode": "text",
+            "model": "gpt-image-2",
+            "size": "750x1000",
+            "quality": "high",
+            "count": 1,
+        }
+        with (
+            patch.object(backend, "chatgpt2api_image_tasks_enabled", return_value=True),
+            patch.object(backend, "generate_images_via_chatgpt2api_tasks", return_value=generated) as generate,
+            patch.object(backend, "save_ai_image_outputs", return_value=([{"id": "AI-COD-HOOK"}], ["preview"])),
+        ):
+            result = backend.generate_ad_launch_ai_image(payload, {"username": "designer", "role": "designer"})
+
+        sent_prompt = generate.call_args.kwargs["prompt"]
+        self.assertTrue(result["ok"])
+        self.assertIn("用户原始提示词（最高优先级）：生成一个小猫的图片", sent_prompt)
+        self.assertIn("目标市场：韩国", sent_prompt)
+        self.assertNotIn("[User-prompt fidelity lock", sent_prompt)
+
     def test_image_request_queue_serves_waiting_users_in_fifo_order(self) -> None:
         backend.reset_ai_image_request_queue()
         order: list[str] = []

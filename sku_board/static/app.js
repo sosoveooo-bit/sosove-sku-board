@@ -6485,6 +6485,7 @@ async function generateAiImage(event) {
       formData.append("lockLevel", conversation.lockLevel);
       formData.append("templateKey", conversation.templateKey || "");
       formData.append("codHookType", conversation.codHookType || "hook");
+      formData.append("suiteCountry", conversation.suiteCountry || "KR");
       formData.append("productReferenceIndexes", JSON.stringify(productReferenceIndexes));
       formData.append("referenceBindings", JSON.stringify(aiImageReferenceBindings(references)));
       formData.append("suiteKey", conversation.suiteKey || "");
@@ -6517,6 +6518,7 @@ async function generateAiImage(event) {
           lockLevel: conversation.lockLevel,
           templateKey: conversation.templateKey || "",
           codHookType: conversation.codHookType || "hook",
+          suiteCountry: conversation.suiteCountry || "KR",
           suiteKey: conversation.suiteKey || "",
           suiteBrief: effectiveIntent,
         }),
