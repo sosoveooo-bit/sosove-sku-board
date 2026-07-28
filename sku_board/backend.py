@@ -11350,18 +11350,15 @@ def _dispatch_images_via_chatgpt2api_tasks(
     )
     if total == 1 and hedge_node_count > 1:
         page_index = resolved_page_indexes[0]
-        hedge_assignments, _reserved_nodes = reserve_ai_image_generation_nodes(
-            nodes,
-            [page_index] * hedge_node_count,
-        )
-        hedge_node_indexes = list(dict.fromkeys(hedge_assignments))
+        primary_assignments, _reserved_nodes = reserve_ai_image_generation_nodes(nodes, [page_index])
+        primary_node_index = primary_assignments[0]
+        hedge_node_indexes = [primary_node_index]
         hedge_results: list[tuple[dict[str, Any], Any, int, bool]] = []
         hedge_failures: list[tuple[dict[str, Any], Exception]] = []
         executor = ThreadPoolExecutor(
-            max_workers=len(hedge_node_indexes),
+            max_workers=hedge_node_count,
             thread_name_prefix="ai-image-hedge",
         )
-        primary_node_index = hedge_node_indexes[0]
         primary_future = executor.submit(run_group, primary_node_index, [0])
         futures = {primary_future: primary_node_index}
         processed_futures: set[Any] = set()
@@ -11381,7 +11378,21 @@ def _dispatch_images_via_chatgpt2api_tasks(
                 hedge_failures.append((nodes[primary_node_index], exc))
 
             if winner is None:
-                for node_index in hedge_node_indexes[1:]:
+                secondary_candidates = [
+                    (index, node)
+                    for index, node in enumerate(nodes)
+                    if index != primary_node_index
+                ]
+                secondary_count = min(hedge_node_count - 1, len(secondary_candidates))
+                secondary_assignments, _secondary_reserved = reserve_ai_image_generation_nodes(
+                    [node for _index, node in secondary_candidates],
+                    [page_index] * secondary_count,
+                )
+                secondary_node_indexes = list(
+                    dict.fromkeys(secondary_candidates[index][0] for index in secondary_assignments)
+                )
+                hedge_node_indexes.extend(secondary_node_indexes)
+                for node_index in secondary_node_indexes:
                     future = executor.submit(run_group, node_index, [0])
                     futures[future] = node_index
             for future in as_completed(futures):

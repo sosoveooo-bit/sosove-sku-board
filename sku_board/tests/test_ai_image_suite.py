@@ -295,6 +295,63 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(result["outputs"][0]["nodeId"], "primary")
         self.assertEqual(result["winningNodeId"], "primary")
         self.assertEqual(result["hedgedNodeCount"], 1)
+        self.assertEqual(backend.ai_image_node_runtime_stats("primary")["inFlight"], 0)
+        self.assertEqual(backend.ai_image_node_runtime_stats("backup")["inFlight"], 0)
+
+    def test_fast_single_page_requests_rotate_across_every_configured_node(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        nodes = [
+            {
+                "id": key,
+                "name": f"VPS {key.upper()}",
+                "baseUrl": f"https://{key}.example.com/v1",
+                "rootUrl": f"https://{key}.example.com",
+                "authKey": key,
+                "weight": 1,
+            }
+            for key in ("a", "b", "c", "d")
+        ]
+        called_nodes: list[str] = []
+
+        def fake_single(**kwargs):
+            node_id = kwargs["service_node"]["id"]
+            page_index = kwargs["page_indexes"][0]
+            called_nodes.append(node_id)
+            return {
+                "outputs": [{"index": page_index, "taskId": f"task-{page_index}", "image": (b"image", "image/png")}],
+                "errors": [],
+                "pending": [],
+                "taskIds": [f"task-{page_index}"],
+                "timedOut": False,
+            }
+
+        with patch.dict(
+            os.environ,
+            {"CHATGPT2API_HEDGE_NODE_COUNT": "2", "CHATGPT2API_HEDGE_DELAY_SECS": "0.2"},
+            clear=False,
+        ), patch.object(
+            backend,
+            "chatgpt2api_service_nodes",
+            return_value=nodes,
+        ), patch.object(
+            backend,
+            "_generate_images_via_chatgpt2api_tasks_single",
+            side_effect=fake_single,
+        ):
+            for page_index in range(8):
+                backend.generate_images_via_chatgpt2api_tasks(
+                    prompt=f"page {page_index + 1}",
+                    model="gpt-image-2",
+                    size="1500x2000",
+                    count=1,
+                    prompts=[f"page {page_index + 1}"],
+                    page_indexes=[page_index],
+                    allow_partial=True,
+                    suite_run_id="a1b2c3d4e5f6",
+                )
+
+        self.assertEqual({node_id: called_nodes.count(node_id) for node_id in "abcd"}, {"a": 2, "b": 2, "c": 2, "d": 2})
+        self.assertTrue(all(backend.ai_image_node_runtime_stats(node_id)["inFlight"] == 0 for node_id in "abcd"))
 
     def test_ten_page_suite_balances_three_three_two_two_across_four_nodes(self) -> None:
         backend.reset_ai_image_node_runtime_stats()
