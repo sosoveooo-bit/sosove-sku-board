@@ -45,6 +45,7 @@ from sku_board.backend import (
     generate_ad_launch_ai_image,
     generate_ad_launch_ai_image_edit,
     complete_meta_oauth,
+    get_ai_image_config,
     get_ai_director_settings,
     get_ai_image_job,
     import_shopline_products,
@@ -60,6 +61,7 @@ from sku_board.backend import (
     plan_ai_image_suite,
     plan_ai_image_suite_upload,
     prune_ai_image_output_files,
+    record_ai_image_quality_telemetry,
     regenerate_selling,
     review_ai_image_suite,
     recover_recent_ai_image_suite,
@@ -117,7 +119,8 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/sku-board/ai-image-output/"):
             material_id = unquote(parsed.path.removeprefix("/api/sku-board/ai-image-output/")).strip("/")
-            self.handle_auth_ai_image_output(material_id)
+            query = {key: values[0] for key, values in parse_qs(parsed.query).items() if values}
+            self.handle_auth_ai_image_output(material_id, query.get("remote", ""))
             return
         if parsed.path.startswith("/api/sku-board/ai-image-jobs/"):
             job_id = unquote(parsed.path.removeprefix("/api/sku-board/ai-image-jobs/")).strip("/")
@@ -142,6 +145,9 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/sku-board/ai-image-health":
             query = {key: values[0] for key, values in parse_qs(parsed.query).items() if values}
             self.handle_auth_read(lambda user: check_ai_image_service(user, query.get("nodeId", "")))
+            return
+        if parsed.path == "/api/sku-board/ai-image-config":
+            self.handle_auth_read(lambda user: get_ai_image_config(user))
             return
         if parsed.path == "/api/sku-board/ai-director-settings":
             self.handle_auth_read(lambda user: get_ai_director_settings(user))
@@ -245,6 +251,9 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/sku-board/ai-image-accounts-refresh":
             self.handle_auth_mutation(lambda payload, user: refresh_ai_image_account_pool(user))
+            return
+        if parsed.path == "/api/sku-board/ai-image-quality-telemetry":
+            self.handle_auth_mutation(lambda payload, user: record_ai_image_quality_telemetry(payload, user))
             return
         if parsed.path == "/api/sku-board/items":
             self.handle_auth_mutation(lambda payload, user: add_item(payload), HTTPStatus.CREATED)
@@ -406,12 +415,12 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def handle_auth_ai_image_output(self, material_id: str) -> None:
+    def handle_auth_ai_image_output(self, material_id: str, remote_url: str = "") -> None:
         if not auth_state(self.session_token()).get("user"):
             self.send_json({"ok": False, "error": "请先登录"}, status=HTTPStatus.UNAUTHORIZED)
             return
         try:
-            content, content_type = read_ai_image_output(material_id)
+            content, content_type = read_ai_image_output(material_id, remote_url)
             self.send_bytes(content, content_type)
         except ValueError as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.NOT_FOUND)

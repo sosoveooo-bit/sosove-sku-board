@@ -1,9 +1,10 @@
-﻿import unittest
+import unittest
 import json
 import os
 import tempfile
 import threading
 import time
+from collections import Counter
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -53,6 +54,121 @@ class FakeTaskSession:
 
 
 class AiImageSuiteTests(unittest.TestCase):
+    def test_acore_config_exposes_qualified_models_and_redacts_key(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ACORE_IMAGE_ENABLED": "true",
+                "ACORE_IMAGE_BASE_URL": "https://api.example.com/acore/model/v1",
+                "ACORE_IMAGE_AUTH_KEY": "personal-secret",
+            },
+            clear=False,
+        ):
+            node = backend.acore_image_service_node()
+            public_node = backend.public_acore_image_service_node()
+            config = backend.ad_launch_ai_image_config()
+
+        self.assertEqual(node["authKey"], "personal-secret")
+        self.assertNotIn("authKey", public_node)
+        self.assertEqual(public_node["provider"], "acore")
+        self.assertEqual(
+            config["models"][-3:],
+            ["acore/gpt-image-2", "acore/nano-banana-2", "acore/nano-banana-pro"],
+        )
+        self.assertEqual(config["dispatchMode"], "model_routed")
+
+    def test_acore_model_routing_and_aspect_ratio_mapping(self) -> None:
+        self.assertTrue(backend.is_acore_image_model("acore/gpt-image-2"))
+        self.assertTrue(backend.is_acore_image_model("acore/nano-banana-pro"))
+        self.assertFalse(backend.is_acore_image_model("gpt-image-2"))
+        self.assertEqual(backend.acore_image_model_name("acore/nano-banana-2"), "nano-banana-2")
+        self.assertEqual(backend.acore_image_aspect_ratio("1024x1024"), "1:1")
+        self.assertEqual(backend.acore_image_aspect_ratio("1024x1792"), "9:16")
+        self.assertEqual(backend.acore_image_aspect_ratio("1792x1024"), "16:9")
+        self.assertEqual(backend.acore_image_aspect_ratio("1500x2000"), "3:4")
+
+    def test_acore_health_probe_uses_task_detail_without_creating_an_image(self) -> None:
+        node = {
+            "id": "giikin-acore",
+            "name": "Acore",
+            "provider": "acore",
+            "baseUrl": "https://api.example.com/acore/model/v1",
+            "rootUrl": "https://api.example.com",
+            "authKey": "personal-secret",
+        }
+        response = Mock(ok=True, status_code=200, reason="OK")
+        response.json.return_value = {"code": 400, "bizCode": 3006025, "data": None, "msg": "task not found"}
+        with patch("requests.get", return_value=response) as get:
+            result = backend.check_acore_image_node(node, 5)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["models"], list(backend.ACORE_IMAGE_MODELS))
+        self.assertIn("/task/image/sku-board-health-", get.call_args.args[0])
+        self.assertEqual(get.call_args.kwargs["headers"], {"Authorization": "personal-secret"})
+        self.assertNotIn("personal-secret", json.dumps(result))
+
+    def test_acore_async_generation_polls_and_downloads_the_image(self) -> None:
+        node = {
+            "id": "giikin-acore",
+            "name": "Acore",
+            "provider": "acore",
+            "baseUrl": "https://api.example.com/acore/model/v1",
+            "rootUrl": "https://api.example.com",
+            "authKey": "personal-secret",
+        }
+        create_response = Mock(ok=True, status_code=200, reason="OK")
+        create_response.json.return_value = {"code": 200, "data": {"taskId": "task-123"}, "msg": "ok"}
+        poll_response = Mock(ok=True, status_code=200, reason="OK")
+        poll_response.json.return_value = {
+            "code": 200,
+            "data": {
+                "taskId": "task-123",
+                "status": "completed",
+                "result": {"images": [{"url": "https://resource.example.com/result.png"}]},
+            },
+            "msg": "ok",
+        }
+        image_response = Mock(ok=True, status_code=200, content=b"png-bytes", headers={"Content-Type": "image/png"})
+        image_response.raise_for_status.return_value = None
+        session = Mock()
+        session.post.return_value = create_response
+        session.get.side_effect = [poll_response, image_response]
+
+        with patch.object(backend, "acore_image_service_node", return_value=node), patch(
+            "requests.Session", return_value=session
+        ), patch("time.sleep", return_value=None):
+            image, task_id = backend.generate_single_acore_image(
+                model="acore/nano-banana-pro",
+                prompt="make a product image",
+                size="1024x1792",
+                reference_urls=["data:image/png;base64,AAAA"],
+            )
+
+        self.assertEqual(task_id, "task-123")
+        self.assertEqual(image, (b"png-bytes", "image/png"))
+        submitted = session.post.call_args.kwargs
+        self.assertEqual(submitted["headers"]["Authorization"], "personal-secret")
+        self.assertEqual(submitted["json"]["model"], "nano-banana-pro")
+        self.assertEqual(submitted["json"]["aspectRatio"], "9:16")
+        self.assertEqual(submitted["json"]["inputImages"], ["data:image/png;base64,AAAA"])
+
+    def test_acore_model_dispatch_does_not_enter_chatgpt2api_pool(self) -> None:
+        material = {"id": "AI-1234567890", "source": "chatgpt2api"}
+        with patch.object(backend, "generate_images_via_acore", return_value=[(b"image", "image/png")]) as acore, patch.object(
+            backend, "generate_ai_image_tasks_with_transient_retry"
+        ) as legacy, patch.object(
+            backend, "save_ai_image_outputs", return_value=([material], ["/preview.png"])
+        ):
+            result = backend.generate_ad_launch_ai_image(
+                {"model": "acore/gpt-image-2", "prompt": "normal image generation", "size": "1024x1024"},
+                {"username": "designer", "role": "designer"},
+            )
+
+        acore.assert_called_once()
+        legacy.assert_not_called()
+        self.assertEqual(result["material"]["provider"], "acore")
+        self.assertEqual(result["material"]["providerModel"], "gpt-image-2")
+
     def test_chatgpt2api_multi_node_config_normalizes_urls_and_redacts_keys(self) -> None:
         raw_nodes = json.dumps(
             [
@@ -108,7 +224,9 @@ class AiImageSuiteTests(unittest.TestCase):
                 "accountPoolReady": ready,
             }
 
-        with patch.object(backend, "chatgpt2api_service_nodes", return_value=nodes), patch.object(
+        with patch.object(backend, "acore_image_service_node", return_value=None), patch.object(
+            backend, "chatgpt2api_service_nodes", return_value=nodes
+        ), patch.object(
             backend,
             "check_chatgpt2api_node",
             side_effect=fake_check,
@@ -434,6 +552,26 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(backend.ai_image_node_runtime_stats("slow")["healthStatus"], "timeout")
         self.assertTrue(backend.ai_image_node_runtime_stats("slow")["healthBlockedUntil"])
 
+    def test_scheduler_uses_live_account_pool_capacity_without_overloading_small_nodes(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        nodes = [
+            {"id": "large", "name": "Large", "weight": 1},
+            {"id": "medium", "name": "Medium", "weight": 1},
+            {"id": "small", "name": "Small", "weight": 1},
+        ]
+        backend.record_ai_image_node_health({"id": "large", "status": "ok", "accountPoolReady": 220})
+        backend.record_ai_image_node_health({"id": "medium", "status": "ok", "accountPoolReady": 70})
+        backend.record_ai_image_node_health({"id": "small", "status": "ok", "accountPoolReady": 3})
+
+        assignments, _reserved = backend.reserve_ai_image_generation_nodes(nodes, list(range(16)))
+        counts = Counter(assignments)
+
+        self.assertEqual(backend.ai_image_node_capacity_weight(nodes[0], {"accountPoolReady": 220}), 4)
+        self.assertEqual(backend.ai_image_node_capacity_weight(nodes[1], {"accountPoolReady": 70}), 3)
+        self.assertEqual(backend.ai_image_node_capacity_weight(nodes[2], {"accountPoolReady": 3}), 1)
+        self.assertGreater(counts[0], counts[2])
+        self.assertGreater(counts[1], counts[2])
+
     def test_pending_timeout_marks_node_as_failed_for_future_scheduling(self) -> None:
         backend.reset_ai_image_node_runtime_stats()
         node = {"id": "slow", "name": "Slow", "baseUrl": "https://slow.example/v1", "rootUrl": "https://slow.example", "authKey": "x"}
@@ -524,7 +662,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(previews[0].startswith("/api/sku-board/ai-image-output/AI-"))
         self.assertFalse(previews[0].startswith("data:"))
 
-    def test_remote_image_output_keeps_chatgpt2api_url_without_local_copy(self) -> None:
+    def test_remote_image_output_uses_same_origin_preview_without_local_copy(self) -> None:
         image_data = b"remote-image-output"
         remote_url = "https://image-a.example.com/images/2026/07/22/remote.png"
         node = {
@@ -537,6 +675,11 @@ class AiImageSuiteTests(unittest.TestCase):
         with backend._AI_IMAGE_REMOTE_SOURCE_LOCK:
             original_sources = dict(backend._AI_IMAGE_REMOTE_SOURCES)
             backend._AI_IMAGE_REMOTE_SOURCES.clear()
+        with backend._AI_IMAGE_PREVIEW_CACHE_LOCK:
+            original_preview_cache = dict(backend._AI_IMAGE_PREVIEW_CACHE)
+            original_preview_cache_bytes = backend._AI_IMAGE_PREVIEW_CACHE_BYTES
+            backend._AI_IMAGE_PREVIEW_CACHE.clear()
+            backend._AI_IMAGE_PREVIEW_CACHE_BYTES = 0
         try:
             with (
                 tempfile.TemporaryDirectory() as temp_dir,
@@ -555,7 +698,9 @@ class AiImageSuiteTests(unittest.TestCase):
                 saved_files = list(Path(temp_dir).glob("AI-*.*"))
 
             material = materials[0]
-            self.assertEqual(previews, [remote_url])
+            self.assertEqual(previews, [backend.ai_image_output_preview_url(material["id"], remote_url)])
+            self.assertEqual(material["previewUrl"], previews[0])
+            self.assertEqual(material["remoteUrl"], remote_url)
             self.assertEqual(material["storage"], "remote")
             self.assertEqual(material["remotePath"], "2026/07/22/remote.png")
             self.assertEqual(material["remoteNodeId"], "image-a")
@@ -565,6 +710,33 @@ class AiImageSuiteTests(unittest.TestCase):
             with backend._AI_IMAGE_REMOTE_SOURCE_LOCK:
                 backend._AI_IMAGE_REMOTE_SOURCES.clear()
                 backend._AI_IMAGE_REMOTE_SOURCES.update(original_sources)
+            with backend._AI_IMAGE_PREVIEW_CACHE_LOCK:
+                backend._AI_IMAGE_PREVIEW_CACHE.clear()
+                backend._AI_IMAGE_PREVIEW_CACHE.update(original_preview_cache)
+                backend._AI_IMAGE_PREVIEW_CACHE_BYTES = original_preview_cache_bytes
+
+    def test_remote_image_preview_reads_memory_cache_without_remote_request(self) -> None:
+        material_id = "AI-ABCDEF4567"
+        with backend._AI_IMAGE_PREVIEW_CACHE_LOCK:
+            original_preview_cache = dict(backend._AI_IMAGE_PREVIEW_CACHE)
+            original_preview_cache_bytes = backend._AI_IMAGE_PREVIEW_CACHE_BYTES
+            backend._AI_IMAGE_PREVIEW_CACHE.clear()
+            backend._AI_IMAGE_PREVIEW_CACHE_BYTES = 0
+        try:
+            backend.cache_ai_image_preview(material_id, b"cached-image", "image/png")
+            with patch("requests.get") as remote_get:
+                content, content_type = backend.read_ai_image_output(
+                    material_id,
+                    "https://image-a.example.com/images/2026/07/22/remote.png",
+                )
+            self.assertEqual(content, b"cached-image")
+            self.assertEqual(content_type, "image/png")
+            remote_get.assert_not_called()
+        finally:
+            with backend._AI_IMAGE_PREVIEW_CACHE_LOCK:
+                backend._AI_IMAGE_PREVIEW_CACHE.clear()
+                backend._AI_IMAGE_PREVIEW_CACHE.update(original_preview_cache)
+                backend._AI_IMAGE_PREVIEW_CACHE_BYTES = original_preview_cache_bytes
 
     def test_remote_image_delete_calls_owning_chatgpt2api_node(self) -> None:
         material = {
@@ -732,7 +904,7 @@ class AiImageSuiteTests(unittest.TestCase):
             designer,
         )
         self.assertTrue(result["ok"])
-        self.assertEqual(result["suiteCount"], 32)
+        self.assertEqual(result["suiteCount"], 25)
 
     def test_all_image_roles_can_execute_text_generation(self) -> None:
         generated = [(b"generated-image", "image/png")]
@@ -749,12 +921,58 @@ class AiImageSuiteTests(unittest.TestCase):
             patch.object(backend, "generate_images_via_chatgpt2api_tasks", return_value=generated) as generate,
             patch.object(backend, "save_ai_image_outputs", return_value=([saved_material], [saved_material["previewUrl"]])),
         ):
-            for role in ("admin", "ops", "selection", "designer"):
+            for role in ("admin", "ops", "selection", "designer", "customer"):
                 result = backend.generate_ad_launch_ai_image(payload, {"username": f"{role}-user", "role": role})
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["returnedCount"], 1)
 
-        self.assertEqual(generate.call_count, 4)
+        self.assertEqual(generate.call_count, 5)
+
+    def test_all_accounts_receive_admin_shared_director_runtime_without_endpoint_or_secret(self) -> None:
+        settings = {
+            "enabled": True,
+            "baseUrl": "https://director.example.test/v1",
+            "apiKey": "shared-secret",
+            "model": "gpt-5.6-sol",
+            "fallbackModels": ["gpt-5.6-terra"],
+            "timeout": 90,
+            "visionEnabled": True,
+            "openImagePromptsEnabled": True,
+            "reviewEnabled": True,
+            "reviewThreshold": 78,
+            "updatedAt": "2026-07-31T17:00:00+08:00",
+        }
+        with patch.object(backend, "load_ai_director_settings", return_value=settings), patch.object(
+            backend,
+            "load_board",
+            return_value={"items": []},
+        ), patch.object(
+            backend,
+            "public_chatgpt2api_service_nodes",
+            return_value=[],
+        ), patch.object(
+            backend,
+            "public_acore_image_service_node",
+            return_value=None,
+        ), patch.object(
+            backend,
+            "ai_image_skill_config",
+            return_value={"version": "test"},
+        ), patch.object(
+            backend,
+            "open_image_prompts_status",
+            return_value={"ready": True},
+        ):
+            for role in ("admin", "ops", "selection", "designer", "customer"):
+                payload = backend.get_ai_image_config({"username": f"{role}-user", "role": role})
+                director = payload["aiImage"]["director"]
+                self.assertTrue(director["shared"])
+                self.assertTrue(director["enabled"])
+                self.assertTrue(director["configured"])
+                self.assertEqual(director["model"], "gpt-5.6-sol")
+                self.assertEqual(director["modelChain"], ["gpt-5.6-sol", "gpt-5.6-terra"])
+                self.assertNotIn("apiKey", director)
+                self.assertNotIn("baseUrl", director)
 
     def test_cod_hook_text_prompt_is_compiled_as_direct_render_request(self) -> None:
         original = (
@@ -954,6 +1172,40 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(loaded[job_id]["payload"]["prompt"], "persistent product photo")
         self.assertEqual(loaded[job_id]["actor"]["username"], "designer-persist")
 
+    def test_completed_ai_image_job_storage_drops_duplicate_submission_and_suite_plan(self) -> None:
+        job = {
+            "id": "AIJ-ABCDEF12345678",
+            "owner": "designer-persist",
+            "role": "designer",
+            "mode": "edit",
+            "status": "success",
+            "payload": {
+                "prompt": "very long prompt" * 500,
+                "suiteBrief": "duplicated source brief",
+                "suiteKey": backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
+                "suiteRunId": "a1b2c3d4e5f6",
+                "suiteCount": 22,
+                "model": "gpt-image-2",
+            },
+            "actor": {"username": "designer-persist", "role": "designer", "name": "Designer"},
+            "files": [{"key": "reference0", "filename": "product.jpg", "storedName": "001-reference0.jpg"}],
+            "result": {
+                "suitePages": [{"page": index, "focus": "duplicated plan"} for index in range(1, 23)],
+                "materials": [{"id": "AI-123456ABCD", "prompt": "actual prompt retained"}],
+            },
+        }
+
+        compacted = backend.compact_ai_image_job_for_storage(job)
+
+        self.assertTrue(compacted["storageCompacted"])
+        self.assertNotIn("prompt", compacted["payload"])
+        self.assertEqual(compacted["payload"]["promptChars"], len(job["payload"]["prompt"]))
+        self.assertEqual(compacted["files"], [])
+        self.assertEqual(compacted["result"]["suitePages"], [])
+        self.assertEqual(compacted["result"]["materials"][0]["prompt"], "actual prompt retained")
+        self.assertIn("prompt", job["payload"])
+        self.assertEqual(len(job["result"]["suitePages"]), 22)
+
     def test_ai_image_job_reference_upload_survives_and_reopens(self) -> None:
         job_id = "AIJ-ABCDEF12345678"
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -1128,7 +1380,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(backend.ai_image_retryable_error("抱歉，图像生成过程中出现了错误"))
         self.assertFalse(backend.ai_image_retryable_error("content policy blocked"))
 
-    def test_japan_fashion_landing_uses_the_locked_32_page_brand_case_rhythm(self) -> None:
+    def test_japan_fashion_landing_uses_the_locked_25_page_main_detail_rhythm(self) -> None:
         brief = """
         产品：日本女装高腰直筒牛仔裤
         5 大主卖点
@@ -1147,41 +1399,581 @@ class AiImageSuiteTests(unittest.TestCase):
             "1500x2000",
             suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
         )
-        prompts, _ = backend.build_ai_image_suite_prompts(
+        prompts, prompt_pages = backend.build_ai_image_suite_prompts(
             "[Product] Japanese denim wide-leg pants.",
             brief,
             "1500x2000",
             suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
         )
 
-        self.assertEqual(len(pages), 32)
-        self.assertEqual([page["page"] for page in pages], list(range(1, 33)))
-        self.assertEqual(pages[0]["pageArchetype"], "颜色阵列")
-        self.assertEqual(pages[1]["pageArchetype"], "面料微距")
-        self.assertEqual(pages[7]["pageArchetype"], "显瘦对比")
-        self.assertEqual(pages[18]["pageArchetype"], "四格体验")
-        self.assertEqual(pages[21]["pageArchetype"], "单品色款")
-        self.assertEqual(pages[23]["pageArchetype"], "完整颜色总览")
-        self.assertEqual(pages[28]["pageArchetype"], "尺寸表")
-        self.assertEqual(pages[31]["pageArchetype"], "收尾工艺微距")
-        self.assertIn("[Selling-point density lock]", prompts[0])
-        self.assertIn("[Reference-case layout lock]", prompts[0])
-        self.assertIn("[Thirty-two-page brand rhythm]", prompts[0])
+        self.assertEqual(len(pages), 25)
+        self.assertEqual([page["page"] for page in pages], list(range(1, 26)))
+        self.assertEqual([page["section"] for page in pages[:10]], ["main"] * 10)
+        self.assertEqual([page["section"] for page in pages[10:]], ["detail"] * 15)
+        self.assertEqual([page["sectionIndex"] for page in pages[:10]], list(range(1, 11)))
+        self.assertEqual([page["sectionIndex"] for page in pages[10:]], list(range(1, 16)))
+        self.assertEqual(pages[0]["pageArchetype"], "品牌首屏")
+        self.assertEqual([page["pageArchetype"] for page in pages[1:4]], ["核心卖点", "核心卖点", "核心卖点"])
+        self.assertEqual([page["pageArchetype"] for page in pages[4:9]], ["子卖点", "子卖点", "子卖点", "子卖点", "子卖点"])
+        self.assertEqual(pages[9]["pageArchetype"], "痛点对比")
+        self.assertEqual(pages[10]["pageArchetype"], "品牌理念")
+        self.assertEqual(pages[11]["pageArchetype"], "用户痛点")
+        self.assertEqual(pages[12]["pageArchetype"], "解决方案")
+        self.assertEqual([page["pageArchetype"] for page in pages[13:21]], ["卖点深度证明"] * 8)
+        self.assertEqual(pages[21]["pageArchetype"], "综合对比")
+        self.assertEqual(pages[22]["pageArchetype"], "材质工艺")
+        self.assertEqual(pages[23]["pageArchetype"], "尺寸颜色")
+        self.assertEqual(pages[24]["pageArchetype"], "品质保证")
+        self.assertIn("[Company module construction contract", prompts[0])
+        self.assertIn("[Module hierarchy]", prompts[0])
+        self.assertIn("[COMPANY JAPAN ECOMMERCE EXECUTION]", prompts[0])
+        self.assertIn("Page 1 of 25", prompts[0])
         self.assertIn("Japanese apparel ecommerce photography", prompts[0])
-        self.assertIn("four-experience page", prompts[18])
-        self.assertIn("verified size-table rows", prompts[28])
+        self.assertEqual(prompt_pages[0]["textPolicy"], "requested")
+        self.assertEqual(prompt_pages[23]["textPolicy"], "essential")
+        self.assertIn("[Essential-structure text lock — highest text priority]", prompts[23])
+        self.assertNotIn("[Localized headline instruction]", prompts[23])
         self.assertNotIn("one or two large visual elements only", prompts[1])
-        self.assertIn("English placeholder text", prompts[0])
+        self.assertIn("Do not copy source-image words", prompts[0])
 
-    def test_japan_landing_legacy_key_migrates_to_32_page_suite(self) -> None:
+    def test_japan_fashion_pages_ship_with_complete_local_creative_previsualization(self) -> None:
+        base_prompt = "[Product] Exact black linen suspender maxi dress from all product references."
+        brief = """
+        产品：日系宽松大摆棉麻吊带长裙
+        核心卖点：遮肉显瘦、高密度棉麻抗皱、一裙穿四季
+        次卖点：可调肩带、隐藏口袋、宽松活动、通勤叠穿、旅行百搭
+        日本市场；40代日本女性；主色黑色；背景#f6f0eb；强调色#bd8555。
+        """
+
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            "1500x2000",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        required_fields = {
+            "emotionAnchor",
+            "shotConcept",
+            "camera",
+            "lighting",
+            "spatialPlan",
+            "modulePlan",
+            "materialRendering",
+            "artDirection",
+            "riskControls",
+        }
+        self.assertEqual(len(pages), 25)
+        for page in pages:
+            enhancement = page.get("visualEnhancement") or {}
+            self.assertTrue(required_fields.issubset(enhancement), page["page"])
+            self.assertRegex(enhancement["camera"], r"\b(?:35|50|70|85|90|100|105)mm\b")
+            self.assertIn("%", enhancement["spatialPlan"])
+            self.assertIsInstance(enhancement["riskControls"], list)
+            self.assertGreaterEqual(len(enhancement["riskControls"]), 4)
+
+        self.assertIn(
+            "[Company compact shooting brief — visualize first]",
+            prompts[0],
+        )
+        self.assertIn("complete finished", prompts[0])
+        self.assertIn("Keep exactly matching every supplied product reference", prompts[0])
+        self.assertLess(
+            prompts[0].index("[Company compact shooting brief — visualize first]"),
+            prompts[0].index("[CURRENT PAGE — ONE SELLING POINT]"),
+        )
+        self.assertIn("2x2", pages[11]["visualEnhancement"]["modulePlan"])
+        self.assertIn("Exactly three page modules", pages[13]["visualEnhancement"]["modulePlan"])
+        self.assertNotIn("5-7", pages[13]["visualEnhancement"]["modulePlan"])
+
+    def test_japan_director_schema_reads_reference_product_layout_and_information_architecture(self) -> None:
+        base_prompt = "[Product] Exact black linen suspender maxi dress from all product references."
+        brief = "日本市场；40代日本女性；背景#f6f0eb；强调色#bd8555；核心卖点：显瘦、棉麻、四季叠穿。"
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            "1500x2000",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        first_pass = backend.build_ai_director_messages(
+            pages,
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+            ("all-reference-contact-sheet.jpg", b"fixture", "image/jpeg"),
+            False,
+        )[1]["content"]
+        second_pass = backend.build_ai_director_page_refinement_messages(
+            pages,
+            {"productSummary": "黑色棉麻吊带长裙"},
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+        )[1]["content"]
+
+        for field in ("referenceAnalysis", "product", "layout", "informationArchitecture"):
+            self.assertIn(field, first_pass)
+        for field in (
+            "camera",
+            "lighting",
+            "composition",
+            "artDirection",
+            "riskControls",
+        ):
+            self.assertIn(field, first_pass)
+        for field in (
+            "shotConcept",
+            "camera",
+            "lighting",
+            "spatialPlan",
+            "modulePlan",
+            "composition",
+            "riskControls",
+        ):
+            self.assertIn(field, second_pass)
+        self.assertIn("separate batched creative pass", first_pass)
+        self.assertIn("focal length", second_pass)
+        self.assertIn("percentage-based spatialPlan", second_pass)
+
+    def test_large_japanese_director_request_is_compact_and_visual_pass_is_batched(self) -> None:
+        base_prompt = "[Product] Exact beige Japanese womens jacket from the supplied references."
+        brief = "日本成熟女性外套。主卖点：显瘦、舒适、面料质感。次卖点：袖口、口袋、叠穿、旅行、百搭。"
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            count=25,
+        )
+        messages = backend.build_ai_director_messages(
+            pages,
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+            None,
+            False,
+            None,
+        )
+
+        self.assertLess(len(json.dumps(messages, ensure_ascii=False)), 45000)
+        responses = []
+        for start in range(0, 25, 5):
+            responses.append(
+                (
+                    json.dumps(
+                        {
+                            "pages": [
+                                {
+                                    "page": page,
+                                    "visualEnhancement": {
+                                        "camera": f"page-{page} 50mm eye-level",
+                                        "lighting": "soft side daylight",
+                                        "composition": "one dominant garment frame",
+                                    },
+                                }
+                                for page in range(start + 1, min(start + 6, 26))
+                            ]
+                        }
+                    ),
+                    100,
+                )
+            )
+        with patch.dict(os.environ, {"AI_DIRECTOR_REFINEMENT_BATCH_SIZE": "5"}, clear=False), patch.object(
+            backend,
+            "invoke_ai_director_chat",
+            side_effect=responses,
+        ) as invoke:
+            refined, latency_ms = backend.refine_ai_director_page_visuals(
+                {"timeout": 90},
+                pages,
+                {"productSummary": "米色日本女装外套"},
+                backend.AI_IMAGE_LANDING_SUITE_KEY,
+                "JP",
+                None,
+            )
+
+        self.assertEqual(invoke.call_count, 5)
+        self.assertEqual(latency_ms, 500)
+        self.assertEqual(len(refined["pageVisualEnhancements"]), 25)
+
+    def test_large_cod_director_first_pass_is_compact_and_accepts_analysis_only(self) -> None:
+        base_prompt = "[Product] Exact eyewear product from every supplied reference."
+        brief = "日本COD详情图。核心卖点：轻量、贴合、清晰视野。全部参考图保持产品结构和颜色。"
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            suite_key=backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
+            country="JP",
+            count=12,
+        )
+        messages = backend.build_ai_director_messages(
+            pages,
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
+            "JP",
+            None,
+            False,
+            None,
+        )
+        serialized = json.dumps(messages, ensure_ascii=False)
+        self.assertLess(len(serialized), 45000)
+        self.assertIn("first pass performs product/reference analysis only", serialized)
+        self.assertIn("Do not return a pages array in this first pass", serialized)
+
+        model_payload = {
+            "productSummary": "Japanese-market lightweight eyewear",
+            "referenceAnalysis": {
+                "product": "Visible frame shape and color remain locked",
+                "layout": "Mobile COD hierarchy with one dominant product image",
+                "informationArchitecture": "One selling point per page",
+            },
+            "mainSellingPoints": [{"title": "軽量", "description": "自然な装着感"}],
+            "secondarySellingPoints": [{"title": "フィット", "description": "日常使用"}],
+            "globalRequirements": ["Keep exact product identity"],
+            "factAudit": {"provided": [], "visible": [], "inferred": [], "blocked": []},
+            "inspirationBlueprint": {"camera": "50mm eye-level", "lighting": "soft side daylight"},
+        }
+        settings = {
+            "enabled": True,
+            "baseUrl": "https://director.example.test/v1",
+            "apiKey": "secret",
+            "model": "gpt-5.6-sol",
+            "fallbackModels": ["gpt-5.6-terra"],
+            "timeout": 90,
+            "visionEnabled": True,
+            "openImagePromptsEnabled": False,
+            "reviewEnabled": True,
+            "reviewThreshold": 78,
+        }
+        with patch.dict(os.environ, {"AI_DIRECTOR_TWO_PASS_ENABLED": "false"}, clear=False), patch.object(
+            backend,
+            "load_ai_director_settings",
+            return_value=settings,
+        ), patch.object(
+            backend,
+            "get_ai_director_cached_analysis",
+            return_value=None,
+        ), patch.object(
+            backend,
+            "put_ai_director_cached_analysis",
+        ), patch.object(
+            backend,
+            "invoke_ai_director_chat",
+            return_value=(json.dumps(model_payload, ensure_ascii=False), 22000),
+        ):
+            refined, metadata = backend.refine_ai_image_suite_plan_with_director(
+                pages,
+                base_prompt,
+                brief,
+                backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
+                "JP",
+                None,
+                0,
+            )
+
+        self.assertEqual(len(refined), 12)
+        self.assertEqual(metadata["source"], "model")
+        self.assertEqual(metadata["model"], "gpt-5.6-sol")
+        self.assertEqual(metadata["referenceAnalysis"]["product"], "Visible frame shape and color remain locked")
+
+    def test_director_reference_payload_uses_configurable_compact_image(self) -> None:
+        import base64
+        from PIL import Image
+
+        source = BytesIO()
+        Image.new("RGB", (2000, 1000), "#bd8555").save(source, format="PNG")
+        with patch.dict(
+            os.environ,
+            {"AI_DIRECTOR_REFERENCE_MAX_EDGE": "800", "AI_DIRECTOR_REFERENCE_JPEG_QUALITY": "70"},
+            clear=False,
+        ):
+            data_url = backend.ai_director_reference_data_url(("reference.png", source.getvalue(), "image/png"))
+        encoded = data_url.split(",", 1)[1]
+        with Image.open(BytesIO(base64.b64decode(encoded))) as image:
+            self.assertEqual(image.size, (800, 400))
+            self.assertEqual(image.format, "JPEG")
+
+    def test_large_japanese_first_pass_accepts_product_analysis_without_pages_array(self) -> None:
+        base_prompt = "[Product] Exact beige Japanese womens jacket from the supplied references."
+        brief = "日本成熟女性外套。主卖点：显瘦、舒适、面料质感。次卖点：袖口、口袋、叠穿、旅行、百搭。"
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            count=25,
+        )
+        model_payload = {
+            "productSummary": "米色日本成熟女性外套",
+            "referenceAnalysis": {
+                "product": "翻领、门襟、贴袋和面料保持参考一致",
+                "layout": "日本电商留白与清晰层级",
+                "informationArchitecture": "一页一卖点",
+            },
+            "mainSellingPoints": [{"title": "修饰身形", "description": "保持真实版型"}],
+            "secondarySellingPoints": [{"title": "口袋", "description": "只展示参考可见结构"}],
+            "globalRequirements": ["保持米色"],
+            "factAudit": {"provided": [], "visible": [], "inferred": [], "blocked": []},
+            "inspirationBlueprint": {"camera": "50mm eye-level", "lighting": "soft side daylight"},
+        }
+        settings = {
+            "enabled": True,
+            "baseUrl": "https://director.example.test/v1",
+            "apiKey": "secret",
+            "model": "gpt-5.6-sol",
+            "fallbackModels": ["gpt-5.6-terra"],
+            "timeout": 90,
+            "visionEnabled": True,
+            "openImagePromptsEnabled": False,
+            "reviewEnabled": True,
+            "reviewThreshold": 78,
+        }
+        with patch.dict(os.environ, {"AI_DIRECTOR_TWO_PASS_ENABLED": "false"}, clear=False), patch.object(
+            backend,
+            "load_ai_director_settings",
+            return_value=settings,
+        ), patch.object(
+            backend,
+            "get_ai_director_cached_analysis",
+            return_value=None,
+        ), patch.object(
+            backend,
+            "put_ai_director_cached_analysis",
+        ), patch.object(
+            backend,
+            "invoke_ai_director_chat",
+            return_value=(json.dumps(model_payload, ensure_ascii=False), 28000),
+        ):
+            refined, metadata = backend.refine_ai_image_suite_plan_with_director(
+                pages,
+                base_prompt,
+                brief,
+                backend.AI_IMAGE_LANDING_SUITE_KEY,
+                "JP",
+                None,
+                0,
+            )
+
+        self.assertEqual(len(refined), 25)
+        self.assertEqual(metadata["source"], "model")
+        self.assertEqual(metadata["model"], "gpt-5.6-sol")
+
+        normalized = backend.normalize_ai_director_analysis(
+            {
+                "referenceAnalysis": {
+                    "product": "#111111 linen texture, straight neckline, adjustable straps",
+                    "layout": "one dominant photograph, restrained Mincho headline, warm negative space",
+                    "informationArchitecture": "five modules proving one benefit with a clear hierarchy",
+                }
+            },
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+        self.assertIn("#111111", normalized["referenceAnalysis"]["product"])
+        self.assertIn("five modules", normalized["referenceAnalysis"]["informationArchitecture"])
+
+    def test_japan_market_research_profile_reaches_director_pages_prompts_and_review(self) -> None:
+        base_prompt = "[Product] Exact black linen suspender maxi dress from all product references."
+        brief = "日本市场；40代日本女性；核心卖点：显瘦、棉麻、四季叠穿。"
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            "1500x2000",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+        profile = backend.ai_image_jp_market_research_profile()
+
+        self.assertEqual(profile["market"], "JP")
+        self.assertGreaterEqual(len(profile["sources"]), 3)
+        self.assertTrue(any("rakuten.co.jp" in item["url"] for item in profile["sources"]))
+        self.assertTrue(any("w3.org" in item["url"] for item in profile["sources"]))
+        self.assertIn("standard, medium-telephoto and macro lenses", profile["photographyGuidance"])
+        self.assertIn("[Japan market research pack — local verified profile]", prompts[0])
+        self.assertIn("Rakuten", prompts[0])
+        self.assertIn("JIS X 4051", prompts[0])
+        self.assertEqual(pages[0]["marketResearchVersion"], profile["version"])
+
+        director_text = backend.build_ai_director_messages(
+            pages,
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+            None,
+            False,
+        )[1]["content"]
+        self.assertIn('"marketResearch"', director_text)
+        self.assertIn(profile["version"], director_text)
+
+        review_text = backend.build_ai_image_suite_review_messages(
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+            78,
+            pages[:1],
+            ("reference.jpg", b"reference", "image/jpeg"),
+            [("generated.jpg", b"generated", "image/jpeg")],
+        )[1]["content"][0]["text"]
+        self.assertIn("local market-research profile", review_text)
+        self.assertIn(profile["version"], review_text)
+
+    def test_japan_human_pages_declare_tool_flag_and_keep_full_prompt_for_provider(self) -> None:
+        base_prompt = "[Product] Exact black linen suspender maxi dress from all product references."
+        brief = "日本市场；40代日本女性；核心卖点：显瘦、棉麻、四季叠穿。"
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            "1500x2000",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertEqual(sum(bool(page["hasHuman"]) for page in pages), 24)
+        self.assertTrue(pages[0]["hasHuman"])
+        self.assertFalse(pages[23]["hasHuman"])
+        self.assertIn("[Tool human-presence declaration] has_human=true", prompts[0])
+        self.assertIn("one Japanese woman maximum", prompts[0])
+        self.assertIn("natural skin texture", prompts[0])
+        self.assertIn("[Tool human-presence declaration] has_human=false", prompts[23])
+        self.assertEqual(backend.normalize_ai_image_suite_plan(pages, 25)[0]["hasHuman"], True)
+        self.assertEqual(backend.normalize_ai_image_suite_plan(pages, 25)[23]["hasHuman"], False)
+
+        session = FakeTaskSession()
+        long_human_prompt = prompts[0] + "\n[TAIL_FIDELITY_SENTINEL] preserve the exact hem and pocket."
+        with (
+            patch("requests.Session", return_value=session),
+            patch.object(
+                backend,
+                "chatgpt2api_service_nodes",
+                return_value=[{
+                    "id": "test",
+                    "name": "Test node",
+                    "baseUrl": "http://image.test/v1",
+                    "rootUrl": "http://image.test/v1",
+                    "authKey": "test-key",
+                }],
+            ),
+            patch.object(backend, "parse_chatgpt2api_json_response", side_effect=lambda response, **_kwargs: response.body),
+            patch.object(backend, "log_ai_image_error"),
+        ):
+            backend.generate_images_via_chatgpt2api_tasks(
+                prompt=long_human_prompt,
+                model="gpt-image-2",
+                size="1500x2000",
+                quality="high",
+                count=1,
+                reference_images=[("product.jpg", b"mock", "image/jpeg")],
+                prompts=[long_human_prompt],
+                allow_partial=True,
+                page_indexes=[0],
+                suite_run_id="d1e2f3a4b5c6",
+            )
+
+        self.assertEqual(session.submitted_data["has_human"], "true")
+        self.assertIn("[TAIL_FIDELITY_SENTINEL]", session.submitted_data["prompt"])
+
+    def test_japan_landing_legacy_keys_migrate_to_25_page_suite(self) -> None:
         self.assertEqual(
             backend.normalize_ai_image_suite_key("jp-landing-page-10"),
             backend.AI_IMAGE_LANDING_SUITE_KEY,
         )
-        self.assertEqual(backend.AI_IMAGE_LANDING_SUITE_KEY, "jp-landing-page-32")
-        self.assertEqual(backend.ai_image_suite_config("jp-landing-page-10")["count"], 32)
+        self.assertEqual(
+            backend.normalize_ai_image_suite_key("jp-landing-page-32"),
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+        self.assertEqual(backend.AI_IMAGE_LANDING_SUITE_KEY, "jp-landing-page-25")
+        self.assertEqual(backend.ai_image_suite_config("jp-landing-page-10")["count"], 25)
 
-    def test_japan_landing_supports_selected_counts_with_a_coherent_brand_subset(self) -> None:
+    def test_ai_content_budget_distills_long_prompt_into_one_page_message(self) -> None:
+        brief = """
+        产品：便携式手持工具
+        文字不要太多，产品为主，不要多宫格。
+        【主卖点1：轻量握持】大白话解析：长时间使用更轻松。第二个无关子卖点不要塞入本页。
+        【主卖点2：快速操作】大白话解析：减少重复步骤。
+        """
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            "[Product] Portable hand tool.",
+            brief,
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            country="JP",
+        )
+
+        self.assertEqual(pages[0]["focusTitle"], "轻量握持")
+        self.assertEqual(pages[0]["contentDensity"], "minimal")
+        self.assertEqual(pages[0]["supportingDetail"], "长时间使用更轻松")
+        self.assertIn("[AI-selected content budget — highest layout priority] Density: MINIMAL", prompts[0])
+        self.assertIn("[Primary message — visible priority] 轻量握持", prompts[0])
+        self.assertNotIn("第二个无关子卖点不要塞入本页", prompts[0])
+        self.assertNotIn("two to four compact supporting callouts", "\n".join(prompts))
+
+    def test_ai_content_budget_keeps_only_locked_structured_page_exceptions(self) -> None:
+        structured_page = {
+            "pageArchetype": "好评反馈页",
+            "role": "好评",
+            "composition": "2x2 grid",
+            "evidence": "exactly four short feedback cards",
+            "focusTitle": "日常使用感受",
+            "focusDescription": "四条简短体验",
+        }
+        ordinary_page = {
+            "pageArchetype": "人物体验页",
+            "role": "使用场景",
+            "composition": "one dominant lifestyle photograph",
+            "evidence": "one realistic result",
+            "focusTitle": "轻松使用",
+            "focusDescription": "自然动作证明操作简单",
+        }
+
+        self.assertEqual(backend.ai_image_page_content_density(structured_page), "structured")
+        self.assertEqual(backend.ai_image_page_content_density(ordinary_page), "minimal")
+        self.assertIn("Each required panel gets one short label at most", backend.ai_image_page_content_budget_instruction(structured_page))
+        self.assertIn("one short headline and at most one tiny proof label", backend.ai_image_page_content_budget_instruction(ordinary_page))
+
+    def test_ai_director_and_review_receive_content_budget_contract(self) -> None:
+        brief = "产品：便携工具。主卖点：轻量、快速、好收纳。文字不要太多。"
+        pages = backend.build_ai_image_suite_plan(
+            "[Product] Portable tool.",
+            brief,
+            "1200x1200",
+            suite_key=backend.AI_IMAGE_RAKUTEN_SUITE_KEY,
+        )
+        director_messages = backend.build_ai_director_messages(
+            pages,
+            "[Product] Portable tool.",
+            brief,
+            backend.AI_IMAGE_RAKUTEN_SUITE_KEY,
+            "",
+            None,
+            False,
+        )
+        director_text = director_messages[-1]["content"]
+        self.assertIn('"supportingDetail":"..."', director_text)
+        self.assertIn('"contentDensity":"minimal|focused|structured"', director_text)
+
+        review_messages = backend.build_ai_image_suite_review_messages(
+            backend.AI_IMAGE_RAKUTEN_SUITE_KEY,
+            "",
+            78,
+            [pages[0]],
+            ("product.jpg", b"product", "image/jpeg"),
+            [("page.jpg", b"generated", "image/jpeg")],
+            [],
+            suite_count=len(pages),
+        )
+        review_text = review_messages[-1]["content"][0]["text"]
+        self.assertIn("Enforce the page contentDensity budget", review_text)
+        self.assertIn("generic multi-benefit wall", review_text)
+
+    def test_single_image_frontend_uses_ai_content_ranking_instead_of_all_points(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("[AI single-image content budget — highest layout priority]", app_source)
+        self.assertIn("[Candidate selling points for AI ranking — source only]", app_source)
+        self.assertNotIn("[Selling points] Express visually:", app_source)
+        self.assertIn('const densityLabel = { minimal: "简洁", focused: "聚焦", structured: "结构化" }', app_source)
+
+    def test_japan_landing_ignores_selected_counts_and_keeps_fixed_25_pages(self) -> None:
         brief = "产品：日本女装高腰直筒牛仔裤\n主卖点：高腰、直筒、垂感面料\n颜色：浅蓝、深蓝、黑色"
         pages = backend.build_ai_image_suite_plan(
             "[Product] Japanese denim wide-leg pants.",
@@ -1198,22 +1990,40 @@ class AiImageSuiteTests(unittest.TestCase):
             suite_count=8,
         )
 
-        self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_LANDING_SUITE_KEY, 8), 8)
-        self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_LANDING_SUITE_KEY, 30), 30)
-        self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_LANDING_SUITE_KEY, 18), 32)
-        self.assertEqual(len(pages), 8)
-        self.assertEqual([page["page"] for page in pages], list(range(1, 9)))
-        self.assertEqual(
-            [page["pageArchetype"] for page in pages],
-            ["颜色阵列", "面料微距", "模特全身", "结构微距", "显瘦对比", "叠穿功能", "城市生活方式", "收尾工艺微距"],
-        )
-        self.assertEqual(len(prompt_pages), 8)
+        self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_LANDING_SUITE_KEY, 8), 25)
+        self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_LANDING_SUITE_KEY, 30), 25)
+        self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_LANDING_SUITE_KEY, 18), 25)
+        self.assertEqual(len(pages), 25)
+        self.assertEqual([page["page"] for page in pages], list(range(1, 26)))
+        self.assertEqual(len(prompt_pages), 25)
         self.assertEqual([page["pageArchetype"] for page in prompt_pages], [page["pageArchetype"] for page in pages])
-        self.assertEqual(len(prompts), 8)
-        self.assertIn("[Selected 8-page brand rhythm]", prompts[0])
-        self.assertIn("Page 8 of 8", prompts[-1])
+        self.assertEqual(len(prompts), 25)
+        self.assertIn("Page 1 of 25", prompts[0])
+        self.assertIn("Page 25 of 25", prompts[-1])
 
-    def test_japan_landing_plan_endpoint_uses_the_selected_count(self) -> None:
+    def test_japan_landing_maps_inline_core_and_secondary_points_without_rewriting_them(self) -> None:
+        brief = (
+            "产品：日系宽松大摆吊带连衣裙\n"
+            "核心卖点：宽松遮肉、A字大摆、棉麻垂感\n"
+            "次卖点：可调肩带、隐藏口袋、四季叠穿、久坐舒适、四色可选\n"
+            "颜色：黑色、藏青色、米白色、棕色"
+        )
+        pages = backend.build_ai_image_suite_plan(
+            "[Product] Japanese cotton-linen suspender maxi dress.",
+            brief,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertEqual([page["focusTitle"] for page in pages[1:4]], ["宽松遮肉", "A字大摆", "棉麻垂感"])
+        self.assertEqual(
+            [page["focusTitle"] for page in pages[4:9]],
+            ["可调肩带", "隐藏口袋", "四季叠穿", "久坐舒适", "四色可选"],
+        )
+        self.assertEqual([page["focusTitle"] for page in pages[13:21]], [
+            "宽松遮肉", "A字大摆", "棉麻垂感", "可调肩带", "隐藏口袋", "四季叠穿", "久坐舒适", "四色可选",
+        ])
+
+    def test_japan_landing_plan_endpoint_uses_the_fixed_count(self) -> None:
         payload = backend.plan_ai_image_suite(
             {
                 "prompt": "[Product] Japanese denim trousers.",
@@ -1227,11 +2037,11 @@ class AiImageSuiteTests(unittest.TestCase):
         )
 
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["suiteCount"], 12)
-        self.assertEqual(payload["suiteLabel"], "日本产品落地页 12图")
-        self.assertEqual(len(payload["suitePages"]), 12)
+        self.assertEqual(payload["suiteCount"], 25)
+        self.assertEqual(payload["suiteLabel"], "日本产品落地页 25图")
+        self.assertEqual(len(payload["suitePages"]), 25)
 
-    def test_japan_fashion_landing_rotates_main_product_references_and_has_p32_only(self) -> None:
+    def test_japan_fashion_landing_rotates_main_product_references_and_has_p25_only(self) -> None:
         base_prompt = "\n".join(
             [
                 "[Product] Japanese sleeveless mature-womenswear dress.",
@@ -1254,8 +2064,8 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertIn("complete real garment", pages[23]["variantDirective"])
         selected = [backend.ai_image_primary_reference_index(prompt) for prompt in prompts[:5]]
         self.assertEqual(selected, [1, 2, 3, 4, 5])
-        self.assertIsNotNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p32-rabcdef-a1"))
-        self.assertIsNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p33-rabcdef-a1"))
+        self.assertIsNotNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p25-rabcdef-a1"))
+        self.assertIsNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p31-rabcdef-a1"))
 
     def test_ai_director_settings_are_admin_only_and_never_return_the_secret(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1269,6 +2079,7 @@ class AiImageSuiteTests(unittest.TestCase):
                         "model": "director-model",
                         "timeout": 45,
                         "visionEnabled": True,
+                        "openImagePromptsEnabled": True,
                         "reviewEnabled": True,
                         "reviewThreshold": 82,
                     },
@@ -1281,6 +2092,7 @@ class AiImageSuiteTests(unittest.TestCase):
                 stored = json.loads(settings_file.read_text(encoding="utf-8"))
                 self.assertEqual(stored["apiKey"], "secret-director-key")
                 self.assertTrue(stored["reviewEnabled"])
+                self.assertTrue(stored["openImagePromptsEnabled"])
                 self.assertEqual(stored["reviewThreshold"], 82)
                 public = backend.get_ai_director_settings({"role": "admin"})
                 self.assertNotIn("apiKey", public["director"])
@@ -1311,6 +2123,33 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(call_info["model"], "gpt-5.6-terra")
         self.assertEqual(call_info["attempts"][0]["status"], "failed")
         self.assertEqual(call_info["attempts"][1], {"model": "gpt-5.6-terra", "status": "ok"})
+
+    def test_ai_director_panel_timeout_applies_to_every_model_attempt(self) -> None:
+        settings = {
+            "enabled": True,
+            "baseUrl": "https://director.example.test/v1",
+            "apiKey": "secret",
+            "model": "gpt-5.6-sol",
+            "fallbackModels": ["gpt-5.6-terra"],
+            "timeout": 90,
+            "source": "panel",
+        }
+        with patch.dict(
+            os.environ,
+            {"AI_DIRECTOR_ATTEMPT_TIMEOUT": "40", "AI_DIRECTOR_TOTAL_TIMEOUT": "80"},
+            clear=False,
+        ), patch.object(
+            backend,
+            "invoke_ai_director_chat_once",
+            side_effect=[ValueError("primary timeout"), ('{"ok":true}', 250)],
+        ) as invoke:
+            content, _latency_ms = backend.invoke_ai_director_chat(settings, [{"role": "user", "content": "vision plan"}])
+
+        self.assertEqual(content, '{"ok":true}')
+        self.assertEqual([call.args[0]["timeout"] for call in invoke.call_args_list], [90, 90])
+        public = backend.public_ai_director_settings(settings)
+        self.assertEqual(public["attemptTimeout"], 90)
+        self.assertGreaterEqual(public["totalTimeout"], 190)
 
     def test_ai_director_gateway_timeout_stops_repeating_the_same_endpoint(self) -> None:
         settings = {
@@ -1354,6 +2193,643 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(public["autoFallbackEnabled"])
         self.assertNotIn("apiKey", public)
 
+    def test_frontend_refreshes_shared_director_after_save_and_before_every_suite_plan(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        save_start = app_source.index("async function saveAiDirectorSettings")
+        save_end = app_source.index("async function testAiDirectorConnection", save_start)
+        plan_start = app_source.index("async function prepareAiImageSuitePlan")
+        plan_end = app_source.index("async function aiImageSuiteStyleAnchorFile", plan_start)
+
+        self.assertIn("await loadAiImageConfig(true);", app_source[save_start:save_end])
+        self.assertIn("await loadAiImageConfig(true);", app_source[plan_start:plan_end])
+
+    def test_open_image_prompts_local_search_keeps_source_prompt_out_of_director_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "skills" / "img-gen-prompts" / "scripts" / "oip.py"
+            script.parent.mkdir(parents=True)
+            script.write_text("# fixture\n", encoding="utf-8")
+            (root / "db").mkdir()
+            (root / "db" / "prompts.db.gz").write_bytes(b"fixture")
+            (root / "data").mkdir()
+            (root / "data" / "public-corpus.json").write_text(
+                json.dumps({"dataset_version": "fixture-v1", "taxonomy_version": "oip-visual-v2", "counts": {"prompts": 14}}),
+                encoding="utf-8",
+            )
+            completed = Mock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "results": [
+                            {
+                                "tweet_id": "stable-123",
+                                "source_prompt": "SOURCE PROMPT MUST STAY OUT",
+                                "tags": [{"id": "lighting:natural-daylight", "dimension": "lighting"}],
+                                "images": {"representative": {"url": "https://example.test/image.jpg"}},
+                            }
+                        ],
+                        "related_results": [],
+                    }
+                ),
+                stderr="",
+            )
+            backend._OPEN_IMAGE_PROMPTS_SEARCH_CACHE.clear()
+            with patch.dict(os.environ, {"OPEN_IMAGE_PROMPTS_ROOT": str(root)}), patch.object(
+                backend.subprocess, "run", return_value=completed
+            ) as run_process:
+                result = backend.search_open_image_prompts("全身 女性 自然光", 4)
+
+        self.assertEqual(result["referenceCount"], 1)
+        self.assertEqual(result["references"][0]["stableId"], "stable-123")
+        self.assertEqual(result["references"][0]["visualTags"], ["lighting:natural-daylight"])
+        self.assertNotIn("SOURCE PROMPT MUST STAY OUT", json.dumps(result))
+
+    def test_open_image_prompts_full_prompt_blueprint_mode_keeps_source_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "skills" / "img-gen-prompts" / "scripts" / "oip.py"
+            script.parent.mkdir(parents=True)
+            script.write_text("# fixture\n", encoding="utf-8")
+            (root / "db").mkdir()
+            (root / "db" / "prompts.db.gz").write_bytes(b"fixture")
+            (root / "data").mkdir()
+            (root / "data" / "public-corpus.json").write_text(
+                json.dumps({"dataset_version": "fixture-v2", "taxonomy_version": "oip-visual-v2", "counts": {"prompts": 14}}),
+                encoding="utf-8",
+            )
+            source_prompt = (
+                "REFERENCE LOCK: preserve the supplied product. CAMERA: 85mm. LIGHTING: soft side light. "
+                "COMPOSITION: one dominant hero product with negative space. MATERIAL: realistic woven texture. "
+                "AVOID: collage, clutter, fake labels. " * 8
+            )
+            completed = Mock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "results": [
+                            {
+                                "tweet_id": "stable-blueprint-1",
+                                "author": "fixture-author",
+                                "tool": "GPT-Image-2",
+                                "source_prompt": source_prompt,
+                                "tags": [
+                                    {"id": "lighting:soft-side-light", "dimension": "lighting"},
+                                    {"id": "camera-lens:85mm", "dimension": "camera_lens"},
+                                ],
+                                "images": {"representative": {"url": "https://example.test/image.jpg"}},
+                            }
+                        ],
+                        "related_results": [],
+                    }
+                ),
+                stderr="",
+            )
+            backend._OPEN_IMAGE_PROMPTS_SEARCH_CACHE.clear()
+            with patch.dict(os.environ, {"OPEN_IMAGE_PROMPTS_ROOT": str(root)}), patch.object(
+                backend.subprocess, "run", return_value=completed
+            ) as run_process:
+                internal = backend.search_open_image_prompts(
+                    "fashion editorial soft light",
+                    3,
+                    include_source_prompts=True,
+                )
+
+        self.assertEqual(internal["integrationMode"], "full-prompt-blueprint")
+        self.assertIn("REFERENCE LOCK", internal["references"][0]["sourcePrompt"])
+        public = backend.public_open_image_prompts_payload(internal)
+        self.assertEqual(public["blueprintReferenceCount"], 1)
+        self.assertEqual(public["integrationMode"], "full-prompt-blueprint")
+        self.assertNotIn("sourcePrompt", json.dumps(public))
+        self.assertNotIn("REFERENCE LOCK", json.dumps(public))
+        self.assertIn("--limit", run_process.call_args.args[0])
+        self.assertIn("8", run_process.call_args.args[0])
+
+    def test_ai_director_messages_quote_full_prompts_and_request_visual_blueprints(self) -> None:
+        base_pages = backend.build_ai_image_suite_plan(
+            "[Product] Exact black linen dress from reference image 1.",
+            "面向日本市场；保持黑色棉麻吊带长裙；场景为日本街道；可见文案使用日语。",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            count=3,
+        )
+        messages = backend.build_ai_director_messages(
+            base_pages,
+            "[Product] Exact black linen dress from reference image 1.",
+            "面向日本市场；保持黑色棉麻吊带长裙；场景为日本街道；可见文案使用日语。",
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+            None,
+            False,
+            {
+                "datasetVersion": "fixture-v2",
+                "integrationMode": "full-prompt-blueprint",
+                "references": [
+                    {
+                        "stableId": "stable-blueprint-1",
+                        "tool": "GPT-Image-2",
+                        "visualTags": ["lighting:soft-side-light"],
+                        "sourcePrompt": "UNIQUE COMPLETE MASTER PROMPT: 85mm lens, side light, realistic linen texture.",
+                    }
+                ],
+            },
+        )
+
+        user_content = messages[-1]["content"]
+        self.assertIsInstance(user_content, str)
+        self.assertIn("UNIQUE COMPLETE MASTER PROMPT", user_content)
+        self.assertIn('"inspirationBlueprint"', user_content)
+        self.assertNotIn('"visualEnhancement"', user_content)
+        self.assertIn("separate batched creative pass", user_content)
+        self.assertIn("untrusted inspiration records", user_content)
+        self.assertIn("must not replace", user_content)
+
+    def test_visual_blueprint_reaches_final_prompt_at_lowest_priority(self) -> None:
+        base_prompt = "[Product] Exact blue portable fan from reference image 1."
+        brief = "保持蓝色机身；背景使用浅灰色；日本市场使用日语；展示静音送风。"
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_AMAZON_APLUS_SIZE,
+            suite_key=backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY,
+        )
+        enhanced_pages = backend.apply_ai_director_visual_enhancements(
+            pages,
+            {
+                "inspirationBlueprint": {
+                    "camera": "50mm eye-level product photography",
+                    "lighting": "soft directional daylight with controlled fill",
+                    "materialRendering": "retain realistic matte plastic and grille detail",
+                    "negativeConstraints": ["cluttered collage", "invented labels"],
+                },
+                "pageVisualEnhancements": {
+                    "1": {"composition": "one dominant product with a clean headline safe zone"}
+                },
+            },
+        )
+        prompts, normalized_pages = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_AMAZON_APLUS_SIZE,
+            suite_key=backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY,
+            plan=enhanced_pages,
+        )
+
+        self.assertEqual(normalized_pages[0]["visualEnhancement"]["camera"], "50mm eye-level product photography")
+        self.assertIn(backend.AI_IMAGE_USER_PROMPT_FIDELITY_LOCK, prompts[0])
+        self.assertIn("保持蓝色机身", prompts[0])
+        self.assertIn("[Open Image Prompts-derived visual enhancement — lowest content priority]", prompts[0])
+        self.assertIn("50mm eye-level product photography", prompts[0])
+        self.assertIn("one dominant product with a clean headline safe zone", prompts[0])
+        self.assertIn("cluttered collage", prompts[0])
+        self.assertGreater(
+            prompts[0].index("[Open Image Prompts-derived visual enhancement — lowest content priority]"),
+            prompts[0].index("[Amazon A+ content director]"),
+        )
+
+    def test_director_refinement_requests_full_prompts_and_returns_only_public_blueprint_metadata(self) -> None:
+        base_prompt = "[Product] Exact black linen dress from reference image 1."
+        brief = "保持黑色棉麻吊带长裙；日本街道场景；自然日语文案。"
+        base_pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_AMAZON_APLUS_SIZE,
+            suite_key=backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY,
+        )
+        model_payload = {
+            "productSummary": "黑色棉麻吊带长裙",
+            "inspirationBlueprint": {
+                "camera": "85mm full-frame editorial lens",
+                "lighting": "soft side daylight",
+                "materialRendering": "natural linen fibers and folds",
+                "negativeConstraints": ["cheap ecommerce look", "cluttered collage"],
+            },
+            "pages": [
+                {
+                    "page": page["page"],
+                    "focusTitle": page["focusTitle"],
+                    "focusDescription": page["focusDescription"],
+                    "evidenceDirection": "保持本页锁定内容",
+                    "contentDensity": page.get("contentDensity", "focused"),
+                    "visualEnhancement": {
+                        "composition": "one dominant subject and a restrained copy-safe zone"
+                    }
+                    if page["page"] == 1
+                    else {},
+                }
+                for page in base_pages
+            ],
+        }
+        settings = {
+            "enabled": True,
+            "baseUrl": "https://director.example.test/v1",
+            "apiKey": "secret",
+            "model": "director-model",
+            "timeout": 60,
+            "visionEnabled": False,
+            "openImagePromptsEnabled": True,
+            "source": "panel",
+        }
+        inspiration = {
+            "ready": True,
+            "datasetVersion": "fixture-v2",
+            "taxonomyVersion": "oip-visual-v2",
+            "referenceCount": 1,
+            "integrationMode": "full-prompt-blueprint",
+            "references": [
+                {
+                    "stableId": "stable-blueprint-1",
+                    "tool": "GPT-Image-2",
+                    "visualTags": ["lighting:soft-side-light"],
+                    "sourcePrompt": "PRIVATE MASTER PROMPT CONTENT",
+                    "sourcePromptChars": 29,
+                }
+            ],
+        }
+
+        with patch.object(backend, "load_ai_director_settings", return_value=settings), patch.object(
+            backend,
+            "search_open_image_prompts",
+            return_value=inspiration,
+        ) as search, patch.object(
+            backend,
+            "invoke_ai_director_chat",
+            return_value=(json.dumps(model_payload, ensure_ascii=False), 245),
+        ), patch.object(
+            backend,
+            "get_ai_director_cached_analysis",
+            return_value=None,
+        ), patch.object(
+            backend,
+            "put_ai_director_cached_analysis",
+        ):
+            refined, metadata = backend.refine_ai_image_suite_plan_with_director(
+                base_pages,
+                base_prompt,
+                brief,
+                backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY,
+            )
+
+        self.assertEqual(search.call_args_list[0].kwargs["limit"], 3)
+        self.assertTrue(all(call.kwargs["include_source_prompts"] for call in search.call_args_list))
+        self.assertTrue(metadata["inspirationUsed"])
+        self.assertTrue(metadata["blueprintApplied"])
+        self.assertGreaterEqual(metadata["blueprintReferenceCount"], 1)
+        self.assertEqual(metadata["inspiration"]["integrationMode"], "full-prompt-blueprint")
+        self.assertGreaterEqual(metadata["inspiration"]["blueprintReferenceCount"], 1)
+        self.assertNotIn("PRIVATE MASTER PROMPT CONTENT", json.dumps(metadata))
+        self.assertEqual(refined[0]["visualEnhancement"]["camera"], "85mm full-frame editorial lens")
+        self.assertEqual(
+            refined[0]["visualEnhancement"]["composition"],
+            "one dominant subject and a restrained copy-safe zone",
+        )
+
+    def test_all_reference_contact_sheet_contains_every_uploaded_image(self) -> None:
+        from PIL import Image
+
+        references = []
+        colors = [f"#{index:02x}{(index * 7) % 255:02x}{(index * 13) % 255:02x}" for index in range(1, 17)]
+        for index, color in enumerate(colors, start=1):
+            output = BytesIO()
+            Image.new("RGB", (320 + index * 10, 480), color).save(output, format="PNG")
+            references.append((f"reference-{index}.png", output.getvalue(), "image/png"))
+
+        sheet = backend.ai_director_reference_contact_sheet(references)
+
+        self.assertIsNotNone(sheet)
+        self.assertEqual(sheet[0], "all-reference-contact-sheet.jpg")
+        self.assertEqual(sheet[2], "image/jpeg")
+        with Image.open(BytesIO(sheet[1])) as image:
+            self.assertGreaterEqual(image.width, 2300)
+            self.assertGreaterEqual(image.height, 2500)
+
+    def test_suite_plan_upload_labels_every_reference_by_assigned_role(self) -> None:
+        fields = {
+            "prompt": "Japanese fashion landing page",
+            "suiteBrief": "日本成熟女装",
+            "referenceBindings": json.dumps(
+                [
+                    {"index": 1, "filename": "product.png", "role": "product"},
+                    {"index": 2, "filename": "layout.png", "role": "styleSet"},
+                ],
+                ensure_ascii=False,
+            ),
+        }
+        files = {"reference0": object(), "reference1": object()}
+        decoded = [
+            ("product.png", b"product", "image/png"),
+            ("layout.png", b"layout", "image/png"),
+        ]
+
+        with patch.object(backend, "read_ai_image_upload", side_effect=decoded), patch.object(
+            backend,
+            "plan_ai_image_suite",
+            return_value={"ok": True},
+        ) as plan:
+            backend.plan_ai_image_suite_upload(fields, files, {"role": "admin"})
+
+        labelled = plan.call_args.args[3]
+        self.assertEqual(len(labelled), 2)
+        self.assertIn("[主商品]", labelled[0][0])
+        self.assertIn("[系列风格参考]", labelled[1][0])
+
+    def test_oip_page_archetype_retrieval_is_private_and_page_specific(self) -> None:
+        pages = [
+            {"page": 1, "role": "品牌主视觉", "focus": "商品首图"},
+            {"page": 2, "role": "面料微距", "focus": "棉麻纹理"},
+            {"page": 3, "role": "显瘦Before After", "focus": "版型对比"},
+        ]
+
+        def fake_search(intent, limit=3, include_source_prompts=False):
+            stable_id = f"ref-{abs(hash(intent)) % 100000}"
+            return {
+                "ready": True,
+                "datasetVersion": "fixture-v3",
+                "taxonomyVersion": "oip-visual-v2",
+                "referenceCount": 1,
+                "integrationMode": "full-prompt-blueprint",
+                "references": [
+                    {
+                        "stableId": stable_id,
+                        "sourcePrompt": f"PRIVATE {intent} MASTER PROMPT",
+                        "sourcePromptChars": 800,
+                        "visualTags": [],
+                    }
+                ],
+            }
+
+        with patch.object(backend, "search_open_image_prompts", side_effect=fake_search):
+            internal = backend.search_open_image_prompts_for_pages(
+                "[Product] black linen dress",
+                "日本市场",
+                backend.AI_IMAGE_LANDING_SUITE_KEY,
+                pages,
+            )
+
+        self.assertEqual([page["inspirationArchetype"] for page in pages], ["hero", "macro", "comparison"])
+        self.assertEqual(set(internal["archetypeBlueprints"]), {"hero", "macro", "comparison"})
+        public = backend.public_open_image_prompts_payload(internal)
+        self.assertNotIn("PRIVATE", json.dumps(public))
+        self.assertGreaterEqual(public["blueprintReferenceCount"], 4)
+
+    def test_second_pass_director_messages_preserve_locked_pages(self) -> None:
+        pages = [
+            {
+                "page": 1,
+                "role": "品牌主视觉",
+                "focus": "黑色棉麻长裙",
+                "pageArchetype": "品牌海报",
+                "scene": "日本街道",
+                "pose": "自然行走",
+                "composition": "完整全身",
+                "headline": "自然に、私らしく",
+            }
+        ]
+        messages = backend.build_ai_director_page_refinement_messages(
+            pages,
+            {"productSummary": "黑色棉麻长裙", "globalRequirements": ["保持黑色"]},
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+            {
+                "archetypeBlueprints": {
+                    "hero": {
+                        "references": [
+                            {"stableId": "hero-1", "tool": "GPT-Image-2", "sourcePrompt": "PRIVATE HERO BLUEPRINT"}
+                        ]
+                    }
+                }
+            },
+        )
+        content = messages[-1]["content"]
+        self.assertIn("PRIVATE HERO BLUEPRINT", content)
+        self.assertIn("locked page plan", content)
+        self.assertIn("inspirationArchetype", content)
+        self.assertIn('"visualEnhancement"', content)
+
+    def test_precise_japanese_typography_overlays_exact_headline(self) -> None:
+        from PIL import Image
+
+        source = BytesIO()
+        Image.new("RGB", (750, 1000), "#efe8df").save(source, format="PNG")
+        with patch.dict(os.environ, {"AI_IMAGE_PRECISE_TYPOGRAPHY_ENABLED": "true"}, clear=True):
+            rendered, metadata = backend.apply_ai_image_suite_typography(
+                [(source.getvalue(), "image/png")],
+                [{"page": 1, "headline": "自然に、私らしく", "textPolicy": "requested"}],
+                [0],
+                backend.AI_IMAGE_LANDING_SUITE_KEY,
+                "JP",
+            )
+
+        self.assertTrue(metadata[0]["typographyApplied"])
+        self.assertEqual(metadata[0]["typographyText"], "自然に、私らしく")
+        self.assertNotEqual(rendered[0][0], source.getvalue())
+        with Image.open(BytesIO(rendered[0][0])) as image:
+            self.assertEqual(image.size, (750, 1000))
+
+    def test_precise_typography_is_opt_in_to_prevent_duplicate_headlines(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(
+                backend.ai_image_programmatic_typography_enabled(
+                    backend.AI_IMAGE_LANDING_SUITE_KEY,
+                    "JP",
+                )
+            )
+        with patch.dict(os.environ, {"AI_IMAGE_PRECISE_TYPOGRAPHY_ENABLED": "true"}, clear=True):
+            self.assertTrue(
+                backend.ai_image_programmatic_typography_enabled(
+                    backend.AI_IMAGE_LANDING_SUITE_KEY,
+                    "JP",
+                )
+            )
+
+    def test_japan_landing_pages_default_to_concise_native_copy(self) -> None:
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact black linen dress from reference image 1.",
+            "日本市场；保持黑色棉麻吊带长裙；日本街道自然行走；背景使用浅米色。",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            suite_count=8,
+        )
+
+        self.assertEqual(pages[0]["textPolicy"], "requested")
+        self.assertIn("[Requested-copy execution lock — highest text priority]", prompts[0])
+        self.assertIn("Use the approved Japanese headline exactly", prompts[0])
+        self.assertNotIn("[Post-render Japanese typography lock", prompts[0])
+
+    def test_japan_landing_explicit_no_text_request_remains_binding(self) -> None:
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact black linen dress from reference image 1.",
+            "日本市场；保持黑色棉麻吊带长裙；不要任何文字、标题或标签。",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertEqual(pages[0]["textPolicy"], "none")
+        self.assertIn("[No-added-text execution lock — highest text priority]", prompts[0])
+        self.assertNotIn("[Localized headline instruction]", prompts[0])
+
+    def test_explicit_copy_request_keeps_short_localized_headline(self) -> None:
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact black linen dress from reference image 1.",
+            "日本市场；每张图要有一条简短日语标题；保持黑色棉麻吊带长裙。",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            suite_count=8,
+        )
+
+        self.assertEqual(pages[0]["textPolicy"], "requested")
+        self.assertIn("[Requested-copy execution lock — highest text priority]", prompts[0])
+        self.assertIn("Use the approved Japanese headline exactly", prompts[0])
+
+    def test_structured_size_and_feedback_pages_keep_only_essential_text(self) -> None:
+        size_page = {
+            "pageArchetype": "尺寸表",
+            "role": "尺码指南",
+            "objective": "展示已核实尺寸",
+            "evidence": "verified size fields",
+        }
+        feedback_page = {
+            "pageArchetype": "好评反馈页",
+            "role": "用户评价",
+            "objective": "四条简短使用感受",
+            "evidence": "four short feedback cards",
+        }
+
+        self.assertEqual(backend.ai_image_page_text_policy("", size_page), "essential")
+        self.assertEqual(backend.ai_image_page_text_policy("", feedback_page), "essential")
+        instruction = backend.ai_image_text_policy_instruction("essential", "日文")
+        self.assertIn("Do not add a marketing headline", instruction)
+        self.assertIn("exact structural content", instruction)
+
+    def test_hero_ab_fallback_selects_one_candidate(self) -> None:
+        from PIL import Image, ImageDraw
+
+        flat = BytesIO()
+        Image.new("RGB", (750, 1000), "#777777").save(flat, format="PNG")
+        detailed_image = Image.new("RGB", (750, 1000), "#f6f0eb")
+        draw = ImageDraw.Draw(detailed_image)
+        draw.rectangle((120, 160, 630, 900), fill="#202020")
+        detailed = BytesIO()
+        detailed_image.save(detailed, format="PNG")
+
+        with patch.object(backend, "load_ai_director_settings", return_value={"enabled": False}), patch.object(
+            backend,
+            "public_ai_director_settings",
+            return_value={"enabled": False, "configured": False},
+        ):
+            winner, metadata = backend.select_ai_image_hero_candidate(
+                [(flat.getvalue(), "image/png"), (detailed.getvalue(), "image/png")],
+                "750x1000",
+                {"role": "品牌主视觉", "focus": "商品"},
+            )
+
+        self.assertIn(winner, {0, 1})
+        self.assertEqual(metadata["candidateCount"], 2)
+        self.assertEqual(metadata["source"], "visual-heuristic")
+
+    def test_quality_telemetry_biases_scheduler_toward_higher_scoring_node(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        nodes = [
+            {"id": "lower-quality", "name": "Lower", "weight": 1},
+            {"id": "higher-quality", "name": "Higher", "weight": 1},
+        ]
+        backend.record_ai_image_quality_telemetry(
+            {
+                "entries": [
+                    {"nodeId": "lower-quality", "score": 62, "passed": False},
+                    {"nodeId": "higher-quality", "score": 94, "passed": True},
+                ]
+            },
+            {"username": "admin", "role": "admin"},
+        )
+
+        assignments, _reserved = backend.reserve_ai_image_generation_nodes(nodes, [0])
+
+        self.assertEqual(assignments, [1])
+        self.assertEqual(backend.ai_image_node_runtime_stats("higher-quality")["averageQualityScore"], 94)
+
+    def test_single_image_template_receives_private_oip_blueprint(self) -> None:
+        settings = {
+            "enabled": True,
+            "configured": True,
+            "openImagePromptsEnabled": True,
+            "visionEnabled": False,
+            "model": "director-model",
+        }
+        inspiration = {
+            "ready": True,
+            "referenceCount": 1,
+            "integrationMode": "full-prompt-blueprint",
+            "references": [
+                {"stableId": "single-1", "sourcePrompt": "PRIVATE SINGLE MASTER PROMPT", "sourcePromptChars": 600}
+            ],
+        }
+        with patch.object(backend, "load_ai_director_settings", return_value=settings), patch.object(
+            backend,
+            "public_ai_director_settings",
+            return_value=settings,
+        ), patch.object(
+            backend,
+            "search_open_image_prompts",
+            return_value=inspiration,
+        ), patch.object(
+            backend,
+            "invoke_ai_director_chat",
+            return_value=(json.dumps({"visualEnhancement": {"camera": "85mm editorial lens"}}), 123),
+        ):
+            enhanced, metadata = backend.enhance_single_ai_image_prompt_with_open_prompts(
+                "LOCKED USER PROMPT: exact black dress",
+                "main",
+            )
+
+        self.assertIn("LOCKED USER PROMPT", enhanced)
+        self.assertIn("85mm editorial lens", enhanced)
+        self.assertTrue(metadata["used"])
+        self.assertNotIn("PRIVATE SINGLE MASTER PROMPT", json.dumps(metadata))
+
+    def test_frontend_exposes_full_optimization_controls_and_prompt_diff(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        server_source = (backend.ROOT_DIR / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn("directorReferences.forEach", app_source)
+        self.assertIn('formData.append("heroAB", "true")', app_source)
+        self.assertIn("提示词保护与增强对照", app_source)
+        self.assertIn("ai-image-quality-telemetry", app_source)
+        self.assertIn("ai-image-quality-telemetry", server_source)
+
+    def test_frontend_exposes_focused_ai_workshop_and_quick_workflows(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        html_source = (backend.ROOT_DIR / "static" / "index.html").read_text(encoding="utf-8")
+        styles_source = (backend.ROOT_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('document.body.dataset.activeView = state.view', app_source)
+        self.assertIn('brandTitle.textContent = aiWorkspaceActive ? "AI 创意工坊"', app_source)
+        self.assertIn('function startAiImageQuickWorkflow(templateKey)', app_source)
+        self.assertIn('async function loadAiImageConfig(silent = false)', app_source)
+        self.assertIn('/api/sku-board/ai-image-config', app_source)
+        self.assertIn('data-ai-quick-template="codDetail"', html_source)
+        self.assertIn('id="ai-image-quick-entry"', html_source)
+        self.assertIn('body[data-active-view="aiImages"] .summary-grid', styles_source)
+        self.assertIn('.ai-image-quick-entry-grid', styles_source)
+
+    def test_fast_ai_image_config_does_not_load_meta_ad_catalogs(self) -> None:
+        actor = {"username": "designer", "role": "designer"}
+        with patch.object(backend, "load_board", return_value={"items": [], "adLaunches": []}) as load_board, patch.object(
+            backend,
+            "ad_launch_ai_image_config",
+            return_value={"enabled": True, "skill": {"version": "3.0.0"}, "nodes": []},
+        ) as image_config, patch.object(
+            backend,
+            "ad_launch_options_from_facebook",
+        ) as meta_options:
+            payload = backend.get_ai_image_config(actor)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["aiImage"]["skill"]["version"], "3.0.0")
+        self.assertEqual(payload["products"], [])
+        load_board.assert_called_once()
+        image_config.assert_called_once()
+        meta_options.assert_not_called()
+
     def test_ai_director_frontend_shows_terra_sol_failover_chain(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
         html_source = (backend.ROOT_DIR / "static" / "index.html").read_text(encoding="utf-8")
@@ -1366,6 +2842,9 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertIn("gpt-5.6-terra", html_source)
         self.assertIn("gpt-5.6-sol", html_source)
         self.assertIn('const AI_DIRECTOR_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"]', app_source)
+        self.assertIn('id="ai-director-open-prompts"', html_source)
+        self.assertIn('label: "灵感检索 Skill"', app_source)
+        self.assertIn("Open Image Prompts", app_source)
 
     def test_ai_director_refines_locked_pages_without_changing_platform_structure(self) -> None:
         base_pages = backend.build_ai_image_suite_plan(
@@ -1534,7 +3013,7 @@ class AiImageSuiteTests(unittest.TestCase):
                 )
 
             self.assertEqual(len(first_pages), 9)
-            self.assertEqual(len(cached_pages), 32)
+            self.assertEqual(len(cached_pages), 25)
             self.assertEqual(first_metadata["source"], "model")
             self.assertEqual(cached_metadata["source"], "cache")
             self.assertTrue(cached_metadata["cacheHit"])
@@ -1640,12 +3119,12 @@ class AiImageSuiteTests(unittest.TestCase):
     def test_frontend_reference_roles_are_generic_and_suites_stay_in_edit_mode(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
-        for label in ("主商品", "产品细节", "使用方式", "场景参考", "人物参考", "包袋参考", "帽子参考", "鞋履参考", "首饰参考", "穿搭配饰", "排版风格", "系列风格参考", "包装与配件"):
+        for label in ("主商品", "产品细节", "使用方式", "场景参考", "人物参考", "排版风格", "系列风格参考", "包装与配件"):
             self.assertIn(label, app_source)
         self.assertIn("[Reference role map]", app_source)
         self.assertIn("data-ai-reference-keywords", app_source)
         self.assertIn("setAiImageReferenceKeyword", app_source)
-        self.assertIn("exact identity source for face, hair, age impression", app_source)
+        self.assertIn("face, hair, age impression, skin tone and body proportions", app_source)
         self.assertIn("environment, location, props, lighting and atmosphere", app_source)
         self.assertIn("full-page visual system", app_source)
         self.assertIn("[External style-set lock]", app_source)
@@ -1881,7 +3360,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertIn("2 张以上参考", app_source)
         self.assertIn("(conversation.referenceImages || []).filter((reference) => reference.file)", app_source)
         self.assertIn("function aiImageSuiteReferencesForPage", app_source)
-        self.assertIn("const AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT = 2", app_source)
+        self.assertIn("const AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT = 5", app_source)
         self.assertIn("const AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT = 5", app_source)
         self.assertIn('formData.append("referenceUploadCount"', app_source)
 
@@ -2030,6 +3509,12 @@ class AiImageSuiteTests(unittest.TestCase):
             "suiteRunId": "b1c2d3e4f5a6",
             "suitePageIndexes": "[1]",
             "suiteBrief": "Product reference test.",
+            "referenceBindings": json.dumps(
+                [
+                    {"index": index + 1, "filename": f"reference-{index}.jpg", "role": "product"}
+                    for index in range(12)
+                ]
+            ),
         }
         files = {}
         for index in [10, 2, 7, 0, 11, 3, 9, 1, 8, 6, 5, 4]:
@@ -2092,7 +3577,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(result["outputs"], [])
         self.assertIn("Too many open files", result["errors"][0]["message"])
 
-    def test_suite_plan_follows_a_32_page_sales_story_for_non_fashion_products(self) -> None:
+    def test_suite_plan_follows_a_fixed_25_page_sales_story_for_non_fashion_products(self) -> None:
         brief = """
 产品：便携式无叶颈挂风扇
 5 大主卖点
@@ -2116,8 +3601,8 @@ LED电量显示
 
         pages = backend.build_ai_image_suite_plan("[Product] Bladeless wearable neck fan.", brief, "1500x2000")
 
-        self.assertEqual(len(pages), 32)
-        self.assertEqual([page["page"] for page in pages], list(range(1, 33)))
+        self.assertEqual(len(pages), 25)
+        self.assertEqual([page["page"] for page in pages], list(range(1, 26)))
         self.assertEqual(pages[0]["role"], "产品首屏主视觉 01")
         self.assertEqual(pages[1]["role"], "痛点与改善 02")
         self.assertEqual(pages[2]["role"], "主卖点01结果证明 03")
@@ -2163,20 +3648,21 @@ LED电量显示
         )
 
         page_two = prompts[1]
-        self.assertEqual(len(prompts), 32)
-        self.assertEqual(len(pages), 32)
+        self.assertEqual(len(prompts), 25)
+        self.assertEqual(len(pages), 25)
         self.assertNotIn("[User intent]", page_two)
         self.assertNotIn("把所有卖点全部放进每张图", page_two)
         self.assertNotIn("低噪运行", page_two)
         self.assertIn("环绕送风", page_two)
-        self.assertIn("[Localized headline instruction]", page_two)
+        self.assertEqual(pages[1]["textPolicy"], "none")
+        self.assertNotIn("[Localized headline instruction]", page_two)
         self.assertIn("[Product interaction direction]", page_two)
         self.assertIn("[Action exclusions]", page_two)
         self.assertIn("final reference image is the approved page-1 style anchor", page_two)
         self.assertNotIn("The garment must be the visual priority", page_two)
         self.assertNotIn("Preserve every garment feature", page_two)
-        self.assertIn("[Japanese-only visible text lock — highest priority]", page_two)
-        self.assertIn("The approved visible headline is exactly", page_two)
+        self.assertIn("[No-added-text execution lock — highest text priority]", page_two)
+        self.assertNotIn("The approved visible headline is exactly", page_two)
         self.assertNotIn("日本語見出し", page_two)
         self.assertIn("silently verify", page_two)
 
@@ -2204,21 +3690,30 @@ LED电量显示
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["suiteKey"], backend.AI_IMAGE_SUITE_KEY)
         self.assertEqual(payload["suitePlanVersion"], backend.AI_IMAGE_SUITE_PLAN_VERSION)
-        self.assertEqual(len(payload["suitePages"]), 32)
+        self.assertEqual(len(payload["suitePages"]), 25)
 
-    def test_japan_landing_skill_and_frontend_support_selected_counts(self) -> None:
+    def test_japan_landing_skill_and_frontend_use_fixed_25_pages(self) -> None:
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "landing")
         app_text = (Path(backend.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertEqual(template["suiteKey"], "jp-landing-page-32")
-        self.assertEqual(template["count"], 32)
-        self.assertEqual(template["planVersion"], "director-v8-prompt-fidelity")
-        self.assertIn('"jp-landing-page-32"', app_text)
-        self.assertIn('label: "日本落地页（可选数量）"', app_text)
-        self.assertIn("AI_IMAGE_JP_LANDING_COUNT_OPTIONS = [8, 12, 16, 20, 24, 30, 32]", app_text)
-        self.assertIn("countConfigurable: true", app_text)
-        self.assertIn('"jp-landing-page-10": "jp-landing-page-32"', app_text)
+        self.assertEqual(skill["version"], "3.9.0")
+        self.assertEqual(template["suiteKey"], "jp-landing-page-25")
+        self.assertEqual(template["count"], 25)
+        self.assertEqual(template["planVersion"], backend.AI_IMAGE_SUITE_PLAN_VERSION)
+        self.assertEqual(template["planVersion"], "director-v24-company-photography-density")
+        self.assertIn('"jp-landing-page-25"', app_text)
+        self.assertIn('label: "日本产品落地页 25图"', app_text)
+        self.assertIn("三层参考分析", app_text)
+        self.assertIn("先成像后落字", app_text)
+        self.assertIn("摄影与空间规划", app_text)
+        self.assertIn("密度与防翻车", app_text)
+        self.assertIn("日本市场调研", app_text)
+        self.assertIn("人物页硬约束", app_text)
+        self.assertIn("完整Prompt送达", app_text)
+        self.assertNotIn("AI_IMAGE_JP_LANDING_COUNT_OPTIONS", app_text)
+        self.assertIn('"jp-landing-page-10": "jp-landing-page-25"', app_text)
+        self.assertIn('"jp-landing-page-32": "jp-landing-page-25"', app_text)
 
     def test_japanese_fashion_plan_uses_real_baselines_japanese_casting_and_varied_scenes(self) -> None:
         base_prompt = "[Product] Japanese womens wide-leg trousers."
@@ -2232,23 +3727,23 @@ LED电量显示
             base_prompt,
             brief,
             suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
-            suite_count=32,
+            suite_count=25,
         )
         by_archetype = {page["pageArchetype"]: page for page in pages}
 
-        for archetype in ("显瘦对比", "长度对比", "版型原理对比", "面料对比"):
+        for archetype in ("痛点对比", "综合对比"):
             comparison_page = by_archetype[archetype]
             self.assertIn("普通", comparison_page["evidence"])
             self.assertIn("本品", comparison_page["evidence"])
 
-        slimming_prompt = prompts[by_archetype["显瘦对比"]["page"] - 1]
+        slimming_prompt = prompts[by_archetype["痛点对比"]["page"] - 1]
         self.assertIn("[Comparison-baseline lock", slimming_prompt)
         self.assertIn("must NOT be the supplied product", slimming_prompt)
         self.assertIn("rather than cloning the exact pose", slimming_prompt)
-        self.assertIn("[Japanese casting lock]", slimming_prompt)
-        self.assertIn("Avoid Korean beauty-editorial signals", slimming_prompt)
-        self.assertIn("[Assigned Japanese scene lock", slimming_prompt)
-        self.assertIn("Do not replace an assigned route with a generic apartment", slimming_prompt)
+        self.assertIn("[Casting lock]", slimming_prompt)
+        self.assertIn("Exclude glass-skin airbrushing", slimming_prompt)
+        self.assertIn("Finished scene:", slimming_prompt)
+        self.assertIn("distinct camera/action from adjacent pages", slimming_prompt)
 
         scene_text = "\n".join(page["scene"] for page in pages)
         for required_scene in ("办公室", "办公楼", "旅行", "公园", "咖啡", "约会"):
@@ -2292,6 +3787,183 @@ LED电量显示
         self.assertIn("reject any result that places the supplied product", review_text)
         self.assertIn("Reject Korean beauty-editorial casting", review_text)
         self.assertIn("repeats generic indoor apartments", review_text)
+        self.assertIn("reference-image skeleton", review_text)
+        self.assertIn("percentage-based spatial plan", review_text)
+        self.assertIn("simple hand gesture", review_text)
+        self.assertIn("natural skin texture", review_text)
+        self.assertIn("visual evidence modules prove only the assigned selling point", review_text)
+
+    def test_japanese_landing_generation_references_are_role_isolated(self) -> None:
+        reference_items = ["product", "layout", "usage", "scene", "detail", "style"]
+        bindings = [
+            {"index": 1, "role": "product", "name": "product.jpg"},
+            {"index": 2, "role": "layout", "name": "layout.jpg"},
+            {"index": 3, "role": "usage", "name": "worn.jpg"},
+            {"index": 4, "role": "scene", "name": "scene.jpg"},
+            {"index": 5, "role": "detail", "name": "detail.jpg"},
+            {"index": 6, "role": "styleSet", "name": "style.jpg"},
+        ]
+
+        filtered_items, filtered_bindings = backend.filter_ai_image_suite_generation_reference_items(
+            reference_items,
+            bindings,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertEqual(filtered_items, ["product", "usage", "detail"])
+        self.assertEqual([item["role"] for item in filtered_bindings], ["product", "usage", "detail"])
+        self.assertEqual([item["index"] for item in filtered_bindings], [1, 2, 3])
+
+    def test_japanese_landing_unbound_generation_references_keep_only_first_product(self) -> None:
+        filtered_items, filtered_bindings = backend.filter_ai_image_suite_generation_reference_items(
+            ["product", "untrusted-style", "untrusted-layout"],
+            [],
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertEqual(filtered_items, ["product"])
+        self.assertEqual(filtered_bindings, [{"index": 1, "role": "product", "name": "", "keywords": ""}])
+
+    def test_japanese_fashion_pages_have_unique_pose_fingerprints_and_unknown_back_guard(self) -> None:
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact Japanese womens jacket from the supplied product references.",
+            "产品：日本成熟女性外套。主卖点：显瘦、活动舒适、面料质感。次卖点：袖口、口袋、叠穿、旅行、百搭。",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            suite_count=25,
+        )
+
+        fingerprints = [page.get("poseFingerprint") for page in pages]
+        self.assertEqual(len(fingerprints), 25)
+        self.assertTrue(all(fingerprints))
+        self.assertEqual(len(set(fingerprints)), 25)
+        self.assertTrue(all("[Per-page pose fingerprint" in prompt for prompt in prompts))
+        self.assertTrue(all("[Undocumented-back protection" in prompt for prompt in prompts))
+        self.assertTrue(all("Every visible surface must continue the exact documented fabric" in prompt for prompt in prompts))
+        self.assertTrue(all("Never invent or import lace, mesh, crochet" not in prompt for prompt in prompts))
+        self.assertNotIn("背面", pages[14]["evidence"])
+        self.assertNotIn("侧后方", pages[14]["pose"])
+        self.assertIn("no bag", prompts[1])
+
+    def test_japanese_landing_stale_plan_scrubs_rejected_garment_features_before_generation(self) -> None:
+        base_prompt = "[Product] Exact light-beige short-sleeve blazer from product reference image 1."
+        brief = "日本市场短袖西装外套，日语排版，1500x2000。商品外观严格按照参考图。"
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            "1500x2000",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            count=25,
+        )
+        stale_page = pages[17]
+        stale_page.update(
+            {
+                "title": "第18张 · 子卖点深度证明：背影蕾丝拼接",
+                "focusTitle": "背影",
+                "focusDescription": "后背大面积立体蕾丝拼接，并加入网纱、钩花和开叉",
+                "focus": "背影。后背大面积立体蕾丝拼接，并加入网纱、钩花和开叉",
+                "sellingPoint": "后背蕾丝拼接",
+                "pose": "侧后方展示完整背面",
+                "visualFactConflict": True,
+                "productTruthSummary": "浅灰米色宽松短袖西装外套；翻驳领；卷边短袖；双贴袋；深色双纽扣；连续梭织面料",
+                "blockedVisualFeatures": ["蕾丝/lace", "网纱/mesh", "钩花/crochet", "拼接/contrast panel", "开叉/slit"],
+                "visualEnhancement": {
+                    "riskControls": ["不得生成蕾丝、网纱、钩花、拼接或开叉", "保持商品一致"],
+                },
+            }
+        )
+
+        guarded = backend.sanitize_ai_image_suite_visual_fact_conflicts(
+            pages,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+        guarded_page = guarded[17]
+        guarded_positive = "。".join(
+            str(guarded_page.get(field) or "")
+            for field in ("title", "focusTitle", "focusDescription", "focus", "sellingPoint", "pose")
+        )
+        for rejected in ("蕾丝", "网纱", "钩花", "拼接", "开叉", "背面", "侧后方"):
+            self.assertNotIn(rejected, guarded_positive)
+        self.assertIn("正面", guarded_page["pose"])
+        self.assertNotIn("蕾丝", "。".join(guarded_page["visualEnhancement"]["riskControls"]))
+
+        prompts, compiled_pages = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            "1500x2000",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            plan=guarded,
+            suite_count=25,
+        )
+        locked_point_line = next(
+            line for line in prompts[17].splitlines() if line.startswith("[Locked current-page source point]")
+        )
+        self.assertIn("参考图确认的真实商品表现", locked_point_line)
+        self.assertNotIn("蕾丝", locked_point_line)
+        self.assertIn("[Reference-image fact supremacy", prompts[17])
+        self.assertEqual(compiled_pages[17]["visualFactConflict"], True)
+
+    def test_reference_fact_lock_prefers_positive_visible_facts_over_negated_summary(self) -> None:
+        analysis = {
+            "productSummary": "实际产品是短袖西装外套，并非透视蕾丝棒球衫。",
+            "mainSellingPoints": [{"title": "立体蕾丝拼接", "description": "后背蕾丝面板"}],
+            "secondarySellingPoints": [{"title": "双贴袋", "description": "前身两侧可见贴袋"}],
+            "factAudit": {
+                "visible": [
+                    {"claim": "浅灰米色宽松短袖西装外套", "source": "image"},
+                    {"claim": "翻驳领、卷边短袖、双贴袋和深色双纽扣", "source": "image"},
+                ],
+                "blocked": [
+                    {
+                        "claim": "后背蕾丝拼接",
+                        "category": "结构缺乏证明",
+                        "reason": "参考图未见该结构",
+                    }
+                ],
+            },
+        }
+        pages = [
+            {
+                "page": 1,
+                "title": "第1张 · 背影蕾丝",
+                "role": "商品展示",
+                "objective": "展示蕾丝背面",
+                "focusTitle": "蕾丝背影",
+                "focusDescription": "后背蕾丝拼接",
+                "focus": "蕾丝背影。后背蕾丝拼接",
+                "sellingPoint": "蕾丝背影",
+                "evidence": "背面特写",
+                "scene": "日本街头",
+                "pose": "侧后方",
+                "composition": "背面主图",
+                "headline": "軽やかな後ろ姿",
+            }
+        ]
+
+        locked = backend.apply_ai_director_visual_fact_lock(
+            pages,
+            analysis,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+        truth = locked[0]["productTruthSummary"]
+        self.assertIn("浅灰米色宽松短袖西装外套", truth)
+        self.assertNotIn("蕾丝", truth)
+        self.assertNotIn("棒球衫", truth)
+
+    def test_japanese_landing_frontend_separates_analysis_images_from_generation_images(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        html_source = (backend.ROOT_DIR / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("AI_IMAGE_JP_GENERATION_REFERENCE_ROLES", app_source)
+        self.assertIn('addAiImageReferences(event.target.files || [], { role: aiImagePrimaryUploadReferenceRole() })', app_source)
+        self.assertIn('addAiImageReferences(event.target.files || [], { role: "usage" })', app_source)
+        self.assertIn('formData.append("referenceBindings", JSON.stringify(aiImageReferenceBindings(references)))', app_source)
+        self.assertIn("aiImageSuiteUsesGeneratedStyleAnchor", app_source)
+        self.assertIn('conversation.suiteKey !== "jp-landing-page-25"', app_source)
+        self.assertIn("const personSources = references.filter", app_source)
+        self.assertIn("if (japaneseLanding && hasHuman)", app_source)
+        self.assertIn("add(personSources[0])", app_source)
+        self.assertIn('id="ai-image-usage-reference-file"', html_source)
+        self.assertIn('id="ai-image-usage-upload-btn"', html_source)
 
     def test_amazon_aplus_plan_has_nine_policy_safe_modules(self) -> None:
         brief = """
@@ -2354,7 +4026,9 @@ Type-C充电
         self.assertIn("No Amazon logo", prompts[0])
         self.assertIn("970x600", prompts[0])
         self.assertIn("identify the actual product category", prompts[0])
-        self.assertIn("Visible copy must use Japanese only", prompts[0])
+        self.assertEqual(pages[0]["textPolicy"], "none")
+        self.assertIn("[No-added-text execution lock — highest text priority]", prompts[0])
+        self.assertNotIn("Visible copy must use Japanese only", prompts[0])
         self.assertNotIn("The garment must be the visual priority", prompts[0])
         self.assertIn("approved module-1 style anchor", prompts[1])
 
@@ -2417,7 +4091,7 @@ Type-C充电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "amazonAplus")
 
-        self.assertEqual(skill["version"], "2.4.1")
+        self.assertEqual(skill["version"], "3.9.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_AMAZON_APLUS_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -2489,7 +4163,9 @@ USB供电
         self.assertIn("No Rakuten logo", prompts[0])
         self.assertIn("1200x1200", prompts[0])
         self.assertIn("identify the actual product category", prompts[0])
-        self.assertIn("Visible copy must use Japanese only", prompts[0])
+        self.assertEqual(pages[0]["textPolicy"], "none")
+        self.assertIn("[No-added-text execution lock — highest text priority]", prompts[0])
+        self.assertNotIn("Visible copy must use Japanese only", prompts[0])
         self.assertNotIn("The garment must be the visual priority", prompts[0])
         self.assertIn("approved image-1 Rakuten style anchor", prompts[1])
 
@@ -2514,7 +4190,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "rakutenSuite")
 
-        self.assertEqual(skill["version"], "2.4.1")
+        self.assertEqual(skill["version"], "3.9.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_RAKUTEN_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_RAKUTEN_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -2670,7 +4346,9 @@ USB供电
         self.assertNotEqual(pages[0]["visualTreatment"], pages[1]["visualTreatment"])
         self.assertNotEqual(pages[8]["visualTreatment"], pages[9]["visualTreatment"])
         self.assertIn("No price, discount, coupon", prompts[0])
-        self.assertIn("Visible copy must use Traditional Chinese used in Taiwan only", prompts[0])
+        self.assertEqual(pages[0]["textPolicy"], "requested")
+        self.assertIn("[Requested-copy execution lock — highest text priority]", prompts[0])
+        self.assertIn("Traditional Chinese used in Taiwan", prompts[0])
         self.assertIn("approved image-1 台湾 COD landing-page style anchor", prompts[1])
         self.assertNotIn("stainless-steel head", prompts[0])
         self.assertNotIn("food styling", prompts[0])
@@ -2689,6 +4367,50 @@ USB供电
         self.assertIn("current user brief are the source of truth", prompts[0])
         self.assertNotIn("The garment must be the visual priority", prompts[0])
         self.assertNotIn("Preserve the exact garment category and silhouette", prompts[0])
+
+    def test_cod_suites_default_to_local_copy_and_keep_explicit_no_text_override(self) -> None:
+        brief = "日本市场宠物眼部护理滴液；使用日语；卖点：温和清洁、操作方便、日常护理。"
+        for suite_key, count in (
+            (backend.AI_IMAGE_COD_SUITE_KEY, 8),
+            (backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, 12),
+        ):
+            with self.subTest(suite_key=suite_key):
+                prompts, pages = backend.build_ai_image_suite_prompts(
+                    "[Product] Exact pet eye-care drops from reference image 1.",
+                    brief,
+                    "750x1000",
+                    suite_key=suite_key,
+                    country="JP",
+                    suite_count=count,
+                )
+                requested_indexes = [index for index, page in enumerate(pages) if page["textPolicy"] == "requested"]
+                self.assertTrue(requested_indexes)
+                self.assertIn(
+                    "[Requested-copy execution lock — highest text priority]",
+                    prompts[requested_indexes[0]],
+                )
+                self.assertIn("[Japanese-only visible text lock — highest priority]", prompts[requested_indexes[0]])
+                self.assertIn("natural Japanese written for Japanese shoppers", prompts[requested_indexes[0]])
+
+                no_text_prompts, no_text_pages = backend.build_ai_image_suite_prompts(
+                    "[Product] Exact pet eye-care drops from reference image 1.",
+                    brief + " 全部图片无文字、无标题、无标签。",
+                    "750x1000",
+                    suite_key=suite_key,
+                    country="JP",
+                    suite_count=count,
+                )
+                self.assertTrue(all(page["textPolicy"] == "none" for page in no_text_pages))
+                self.assertTrue(
+                    all("[No-added-text execution lock — highest text priority]" in prompt for prompt in no_text_prompts)
+                )
+
+    def test_cod_hook_prompt_defaults_to_one_localized_headline(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("[COD visible-copy lock — highest text priority]", app_source)
+        self.assertIn("Render one short, prominent", app_source)
+        self.assertIn("[COD hook text policy — highest text priority]", app_source)
 
     def test_cod_country_plan_endpoint_uses_country_configuration(self) -> None:
         payload = backend.plan_ai_image_suite(
@@ -2714,7 +4436,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "codKorea")
 
-        self.assertEqual(skill["version"], "2.4.1")
+        self.assertEqual(skill["version"], "3.9.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_COD_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_COD_KR_PLAN_VERSION)
         self.assertEqual(template["count"], 30)
@@ -2750,7 +4472,9 @@ USB供电
         self.assertTrue(all(page["country"] == "DE" for page in pages))
         self.assertTrue(all(page["countryLabel"] == "德国" for page in pages))
         self.assertIn("Target market: 德国 (DE)", prompts[0])
-        self.assertIn("German used in Germany only", prompts[0])
+        self.assertEqual(pages[0]["textPolicy"], "requested")
+        self.assertIn("[Requested-copy execution lock — highest text priority]", prompts[0])
+        self.assertIn("German used in Germany", prompts[0])
         self.assertIn("Berlin, Hamburg or Munich", prompts[0])
         self.assertIn("Amazon.de, Otto, Kaufland.de, Zalando", prompts[0])
 
@@ -2782,9 +4506,7 @@ USB供电
         task_id = "sosove-a1b2c3d4e5f6-p30-r112233-a1"
 
         self.assertEqual(backend.parse_ai_image_suite_task_id(task_id)["page"], 30)
-        self.assertIsNotNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p31-r112233-a1"))
-        self.assertIsNotNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p32-r112233-a1"))
-        self.assertIsNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p33-r112233-a1"))
+        self.assertIsNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p31-r112233-a1"))
 
     def test_cod_detail_suite_builds_default_category_story_with_one_feedback_page(self) -> None:
         pages = backend.build_ai_image_suite_plan(
@@ -3290,7 +5012,7 @@ USB供电
         self.assertEqual(template["size"], "750x1000")
         self.assertNotIn("suiteKey", template)
 
-    def test_virtual_styling_template_is_exposed_with_dedicated_upload_controls(self) -> None:
+    def test_virtual_try_on_template_is_exposed_with_dedicated_upload_controls(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
         html_source = (backend.ROOT_DIR / "static" / "index.html").read_text(encoding="utf-8")
         skill = backend.ai_image_skill_config()
@@ -3299,13 +5021,6 @@ USB供电
         self.assertIn('{ key: "virtualTryOn", label: "模特换装/搭配"', app_source)
         self.assertIn('templateKey === "virtualTryOn"', app_source)
         self.assertIn("[Virtual styling binding — highest priority]", app_source)
-        self.assertIn("Every input image is source-only", app_source)
-        self.assertIn('{ key: "bag", label: "包袋参考"', app_source)
-        self.assertIn('{ key: "hat", label: "帽子参考"', app_source)
-        self.assertIn('{ key: "shoes", label: "鞋履参考"', app_source)
-        self.assertIn('{ key: "jewelry", label: "首饰参考"', app_source)
-        self.assertIn('file="${fileName}"', app_source)
-        self.assertIn("固定 1 张完整场景图", app_source)
         self.assertIn('id="ai-image-model-upload-btn"', html_source)
         self.assertIn('id="ai-image-model-reference-file"', html_source)
         self.assertEqual(template["label"], "模特换装/搭配")
@@ -3339,7 +5054,6 @@ USB供电
         self.assertEqual(payload["templateKey"], "virtualTryOn")
         self.assertEqual(payload["mode"], "compose")
         self.assertIn("[Server-enforced virtual try-on lock", generate.call_args.kwargs["prompt"])
-        self.assertIn("Every uploaded image is source-only", generate.call_args.kwargs["prompt"])
         self.assertEqual(len(generate.call_args.kwargs["reference_images"]), 2)
 
         missing_person_fields = {**fields, "prompt": "[Reference role map] Image 1=主商品; Image 2=产品细节."}
@@ -3349,45 +5063,6 @@ USB供电
                 {"reference0": Upload(), "reference1": Upload()},
                 {"role": "admin"},
             )
-
-    def test_virtual_styling_backend_binds_named_items_and_forces_one_full_body_scene(self) -> None:
-        bindings = [
-            {"index": 1, "role": "product", "name": "skirt.png", "keywords": "保留裙型"},
-            {"index": 2, "role": "person", "name": "model.jpg", "keywords": "完整全身"},
-            {"index": 3, "role": "package", "name": "614615_2620167_5.jpg", "keywords": "替换原包"},
-            {"index": 4, "role": "product", "name": "white-shirt.jpg", "keywords": "替换白色T恤"},
-            {"index": 5, "role": "jewelry", "name": "ScreenShot_2026-05-18_114406_057.png", "keywords": "作为耳环佩戴"},
-            {"index": 6, "role": "hat", "name": "ScreenShot_2026-05-18_154352_589.png", "keywords": "帽子改成黑色"},
-            {"index": 7, "role": "shoes", "name": "ScreenShot_2026-07-22_143924_306.png", "keywords": "替换成白鞋"},
-            {"index": 8, "role": "scene", "name": "scene.jpg", "keywords": "使用该场景"},
-        ]
-        fields = {
-            "prompt": "按文件名替换包、衬衣、耳环、帽子和鞋，只生成单张完整模特场景，不要宫格。",
-            "mode": "compose",
-            "model": "gpt-image-2",
-            "size": "1024x1536",
-            "quality": "high",
-            "count": "4",
-            "templateKey": backend.AI_IMAGE_VIRTUAL_TRY_ON_TEMPLATE_KEY,
-            "referenceBindings": json.dumps(bindings, ensure_ascii=False),
-        }
-        output_images = [(b"generated-styled-look", "image/png")]
-        files = {f"reference{index}": Upload() for index in range(len(bindings))}
-        with (
-            patch.object(backend, "chatgpt2api_image_tasks_enabled", return_value=True),
-            patch.object(backend, "generate_images_via_chatgpt2api_tasks", return_value=output_images) as generate,
-            patch.object(backend, "save_ai_image_outputs", return_value=([{}], ["preview"])),
-        ):
-            payload = backend.generate_ad_launch_ai_image_edit(fields, files, {"role": "designer"})
-
-        generated_prompt = generate.call_args.kwargs["prompt"]
-        self.assertTrue(payload["ok"])
-        self.assertEqual(generate.call_args.kwargs["count"], 1)
-        self.assertEqual(len(generate.call_args.kwargs["reference_images"]), 8)
-        self.assertIn("[Server reference bindings", generated_prompt)
-        self.assertIn('Image 3=包装与配件 [file="614615_2620167_5.jpg"]', generated_prompt)
-        self.assertIn('Image 6=帽子参考 [file="ScreenShot_2026-05-18_154352_589.png"] (帽子改成黑色)', generated_prompt)
-        self.assertIn("exactly one continuous photorealistic full-body scene", generated_prompt)
 
     def test_cod_hook_strip_sizes_are_accepted_and_normalized_to_exact_pixels(self) -> None:
         from PIL import Image
@@ -3645,6 +5320,458 @@ USB供电
             with self.subTest(suite_key=suite_key):
                 self.assertEqual(skill_versions[suite_key], version)
                 self.assertIn(f'planVersion: "{version}"', app_source)
+        self.assertIn("检测到旧版导演分镜，正在按最新商品事实锁重新策划", app_source)
+
+    def test_company_narrative_arc_maps_ten_pages_to_five_sales_stages(self) -> None:
+        stages = [
+            backend.ai_image_company_narrative_stage(page, 10)["key"]
+            for page in range(1, 11)
+        ]
+
+        self.assertEqual(
+            stages,
+            [
+                "problem-solution",
+                "problem-solution",
+                "benefit-deepening",
+                "benefit-deepening",
+                "localized-trust",
+                "localized-trust",
+                "proof-and-craft",
+                "proof-and-craft",
+                "proof-and-craft",
+                "commitment-close",
+            ],
+        )
+
+    def test_product_visual_dna_normalizes_hex_and_uses_neutral_fallbacks(self) -> None:
+        product_dna = backend.normalize_ai_director_product_visual_dna(
+            {
+                "observableColors": ["#e8a440", "invalid", "#112233", "#E8A440"],
+                "backgroundColor": "#fff",
+                "accentColor": "#aabbcc",
+                "textColor": "not-a-color",
+                "shapeAnchors": ["amber bottle", "Amber Bottle", "white dropper"],
+                "materialAnchors": ["transparent amber glass"],
+                "labelAnchors": ["white label"],
+            },
+            {"product": "Amber product color #E8A440 with white label #FFFFFF."},
+            "Exact eye-care bottle.",
+        )
+
+        self.assertEqual(product_dna["observableColors"], ["#E8A440", "#112233", "#FFFFFF"])
+        self.assertEqual(product_dna["backgroundColor"], "#FBF7F0")
+        self.assertEqual(product_dna["accentColor"], "#AABBCC")
+        self.assertEqual(product_dna["textColor"], "#3D2B1F")
+        self.assertEqual(product_dna["shapeAnchors"], ["amber bottle", "white dropper"])
+        self.assertEqual(product_dna["paletteSource"], "reference-observed")
+
+    def test_reference_breakdown_normalizes_every_three_layer_record_and_role(self) -> None:
+        breakdown = backend.normalize_ai_director_reference_breakdown(
+            [
+                {
+                    "index": 1,
+                    "role": "main product",
+                    "product": "Khaki #8B7355 linen blazer with double buttons.",
+                    "layout": "Centered white-background product view.",
+                    "informationArchitecture": "One product fact source.",
+                    "useAs": "product-lock",
+                    "exclude": "Do not copy the white background.",
+                },
+                {
+                    "index": 2,
+                    "role": "style-set",
+                    "product": "Not a product-fact source.",
+                    "layout": "Top title, center hero, bottom icon row.",
+                    "informationArchitecture": "Headline plus four proof modules.",
+                    "useAs": "art-direction-only",
+                    "exclude": "Do not transfer its garment or model.",
+                },
+                {"index": 2, "role": "product", "product": "duplicate"},
+                {"index": 99, "role": "product", "product": "out of range"},
+            ]
+        )
+
+        self.assertEqual([item["index"] for item in breakdown], [1, 2])
+        self.assertEqual([item["role"] for item in breakdown], ["product", "styleset"])
+        self.assertEqual(breakdown[1]["layout"], "Top title, center hero, bottom icon row.")
+        self.assertIn("Do not transfer", breakdown[1]["exclude"])
+
+    def test_company_creative_logic_builds_five_dimension_brief_and_safeguards(self) -> None:
+        pages = [
+            {
+                "page": 1,
+                "headline": "涙のように、優しい。",
+                "textPolicy": "requested",
+                "scene": "A Japanese owner gently applies one drop beside her dog.",
+                "pose": "One relaxed hand supports the dog.",
+                "composition": "Product and dog occupy the left 62%; copy safe-zone occupies the upper-right 38%.",
+                "visualEnhancement": {
+                    "emotionAnchor": "Gentle clinical reassurance.",
+                    "shotConcept": "A real warm home-care moment at the instant the drop reaches the eye area.",
+                    "camera": "50mm lens at the dog's eye height.",
+                    "lighting": "Soft window side-light at 4800K.",
+                    "spatialPlan": "Left 62% subject, right 38% information zone.",
+                    "modulePlan": "One headline and one observable close-up proof.",
+                    "artDirection": "Japanese documentary ecommerce photography.",
+                    "materialRendering": "Natural amber glass and matte white paper label.",
+                    "spatialDepth": "Shallow real optical depth.",
+                },
+            },
+            {"page": 2, "headline": "", "textPolicy": "none", "scene": "Product macro."},
+        ]
+        analysis = {
+            "productSummary": "Exact amber-and-white eye-care bottle.",
+            "referenceAnalysis": {
+                "product": "Amber bottle #E8A440, white label #FFFFFF, exact white dropper.",
+                "layout": "Japanese editorial layout.",
+                "informationArchitecture": "One promise with one proof.",
+            },
+            "productVisualDNA": {
+                "observableColors": ["#E8A440", "#FFFFFF"],
+                "backgroundColor": "#FBF7F0",
+                "accentColor": "#E8A440",
+                "textColor": "#3D2B1F",
+                "shapeAnchors": ["compact amber bottle", "white dropper cap"],
+                "materialAnchors": ["amber glass"],
+                "labelAnchors": ["white rectangular label"],
+            },
+            "referenceBreakdown": [
+                {
+                    "index": 1,
+                    "role": "product",
+                    "product": "Exact amber bottle and white label.",
+                    "layout": "Centered product reference.",
+                    "informationArchitecture": "Product evidence only.",
+                    "useAs": "product-lock",
+                    "exclude": "Do not copy source background.",
+                },
+                {
+                    "index": 2,
+                    "role": "layout",
+                    "product": "Not a product fact source.",
+                    "layout": "Top title, center hero, lower proof row.",
+                    "informationArchitecture": "One promise and one proof.",
+                    "useAs": "layout-skeleton-only",
+                    "exclude": "Do not transfer its product.",
+                },
+            ],
+        }
+
+        enriched = backend.apply_ai_image_company_creative_logic(
+            pages,
+            analysis,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+        first_logic = enriched[0]["companyCreativeLogic"]
+        first_instruction = backend.ai_image_company_creative_logic_instruction(enriched[0])
+        second_instruction = backend.ai_image_company_creative_logic_instruction(enriched[1])
+
+        self.assertEqual(first_logic["version"], backend.AI_IMAGE_COMPANY_CREATIVE_LOGIC_VERSION)
+        self.assertIn("50mm lens", first_logic["fiveDimensions"]["scene"])
+        self.assertIn("Left 62% subject", first_logic["fiveDimensions"]["layout"])
+        self.assertIn("Natural amber glass", first_logic["fiveDimensions"]["style"])
+        self.assertEqual(first_logic["fiveDimensions"]["copy"], "涙のように、優しい。")
+        self.assertEqual(len(first_logic["safeguards"]), 3)
+        self.assertIn("Image 1 product→product-lock", first_logic["analysisPromptMapping"]["referenceSources"])
+        self.assertIn("[Company method · v2]", first_instruction)
+        self.assertIn("[Analysis-to-prompt map]", first_instruction)
+        self.assertIn("authority or performance claims require evidence", first_instruction)
+        self.assertIn("exact copy→No added text", second_instruction)
+
+    def test_company_module_blueprint_covers_all_twenty_five_page_archetypes(self) -> None:
+        pages = backend.build_ai_image_suite_plan(
+            "[Product] Exact khaki linen double-breasted jacket apparel product.",
+            "Japanese Rakuten fashion page for a mature woman in her 40s; three main benefits and five details.",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+        pages = backend.apply_ai_image_company_module_plans(pages, backend.AI_IMAGE_LANDING_SUITE_KEY)
+
+        self.assertEqual(len(pages), 25)
+        self.assertTrue(all(2 <= len(page["companyModulePlan"]) <= 3 for page in pages))
+        self.assertTrue(
+            all(
+                {"id", "visual", "content", "position", "weight", "container"}.issubset(module)
+                for page in pages
+                for module in page["companyModulePlan"]
+            )
+        )
+        self.assertIn("FAIR_COMPARISON", {item["id"] for item in pages[9]["companyModulePlan"]})
+        self.assertIn("PAIN_GRID", {item["id"] for item in pages[11]["companyModulePlan"]})
+        self.assertIn("MATERIAL_HERO", {item["id"] for item in pages[22]["companyModulePlan"]})
+        self.assertIn("SIZE_TABLE", {item["id"] for item in pages[23]["companyModulePlan"]})
+        self.assertIn("QUALITY_HERO", {item["id"] for item in pages[24]["companyModulePlan"]})
+        self.assertEqual(
+            {item["id"] for item in pages[0]["companyModulePlan"]},
+            {"SECTION_HEADER", "HERO_PHOTO"},
+        )
+        self.assertEqual(
+            {item["id"] for item in pages[1]["companyModulePlan"]},
+            {"SECTION_HEADER", "PRIMARY_PHOTO", "EVIDENCE_INSET"},
+        )
+        self.assertEqual(pages[0]["contentDensity"], "minimal")
+        self.assertEqual(pages[1]["contentDensity"], "focused")
+        self.assertEqual(pages[9]["contentDensity"], "structured")
+
+    def test_company_module_contract_uses_explicit_construction_fields_without_fake_specs(self) -> None:
+        page = backend.build_ai_image_suite_plan(
+            "[Product] Exact khaki linen jacket apparel product.",
+            "Japanese fashion detail page; use only verified product information.",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )[23]
+        page["companyModulePlan"] = backend.build_ai_image_company_module_plan(page)
+        instruction = backend.ai_image_company_module_contract_instruction(page)
+
+        self.assertIn("[Company module construction contract", instruction)
+        self.assertIn("Visual:", instruction)
+        self.assertIn("Content:", instruction)
+        self.assertIn("Position:", instruction)
+        self.assertIn("Weight:", instruction)
+        self.assertIn("Container:", instruction)
+        self.assertIn("never estimate numbers", instruction)
+        self.assertIn("[Unframed module rule]", instruction)
+        self.assertIn("Do not draw an outer frame", instruction)
+        self.assertNotIn("洗濯100回", instruction)
+        self.assertNotIn("約○○g", instruction)
+
+    def test_director_points_bind_to_company_pages_and_localized_copy(self) -> None:
+        base_prompt = "[Product] Exact light-khaki short-sleeve tailored jacket from every supplied product reference."
+        brief = "日本市场；40代日本女性；背景#d3d7d8。"
+        analysis = {
+            "productSummary": "ライトカーキの半袖テーラードジャケット。",
+            "mainSellingPoints": [
+                {"title": "ゆったり折り返し袖", "description": "腕まわりに余裕を持たせる", "copyLabels": ["ゆとりある袖口", "動きやすい"]},
+                {"title": "リネンライクな表情", "description": "細かな織り感で軽やか", "copyLabels": ["自然な織り感"]},
+                {"title": "端正なラペルと2つボタン", "description": "オンオフに合わせやすい", "copyLabels": ["端正なラペル"]},
+            ],
+            "secondarySellingPoints": [
+                {"title": "ドロップショルダー", "description": "肩線をなだらかに見せる"},
+                {"title": "着回しやすい丈感", "description": "パンツにもワンピースにも重ねやすい"},
+                {"title": "大型パッチポケット", "description": "左右の大きなポケット"},
+                {"title": "前開きで重ね着自在", "description": "さっと羽織りやすい"},
+                {"title": "上品なライトカーキ", "description": "日常になじむ色"},
+            ],
+            "referenceAnalysis": {"product": "exact product", "layout": "rich modular ecommerce", "informationArchitecture": "dominant proof plus supporting details"},
+            "productVisualDNA": {"observableColors": ["#D3D7D8"], "backgroundColor": "#D3D7D8", "accentColor": "#BD8555", "textColor": "#3D2B1F", "shapeAnchors": ["折り返し袖"], "materialAnchors": ["織り感"]},
+            "marketResearch": {},
+            "inspirationBlueprint": {},
+            "pageVisualEnhancements": {},
+        }
+        pages = backend.build_ai_image_suite_plan(base_prompt, brief, backend.AI_IMAGE_SUITE_SIZE, suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY)
+        pages = backend.apply_ai_director_selling_points_to_pages(pages, analysis, base_prompt, brief, backend.AI_IMAGE_LANDING_SUITE_KEY)
+        pages = backend.apply_ai_image_company_creative_logic(pages, analysis, backend.AI_IMAGE_LANDING_SUITE_KEY, "")
+        pages = backend.apply_ai_image_company_module_plans(pages, backend.AI_IMAGE_LANDING_SUITE_KEY)
+        prompts, compiled = backend.build_ai_image_suite_prompts(base_prompt, brief, backend.AI_IMAGE_SUITE_SIZE, suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY, plan=pages)
+
+        self.assertEqual(compiled[1]["focusTitle"], "ゆったり折り返し袖")
+        self.assertEqual(compiled[2]["focusTitle"], "リネンライクな表情")
+        self.assertEqual(compiled[1]["headline"], "ゆったり折り返し袖")
+        self.assertIn("ゆとりある袖口", prompts[1])
+        self.assertIn("ゆったり折り返し袖", prompts[1])
+        self.assertNotIn("核心使用效果", prompts[1])
+        self.assertLessEqual(max(map(len, prompts)), backend.AI_IMAGE_JP_COMPANY_PROMPT_LIMIT)
+
+    def test_jp_company_execution_prompt_is_positive_first_and_not_truncated(self) -> None:
+        prompts, _pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact black linen suspender maxi dress from all product references.",
+            "日本市场；40代日本女性；核心卖点：显瘦、棉麻、四季叠穿。",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+        self.assertTrue(all(prompt.startswith("[COMPANY JAPAN ECOMMERCE EXECUTION]") for prompt in prompts))
+        self.assertTrue(all("[Company compact shooting brief — visualize first]" in prompt for prompt in prompts))
+        self.assertTrue(all("[Company module construction contract" in prompt for prompt in prompts))
+        self.assertTrue(all("[FINAL QUALITY CHECK]" in prompt for prompt in prompts))
+        self.assertTrue(all("[FULL-BLEED EDGE LOCK" in prompt for prompt in prompts))
+        self.assertTrue(all("[SUITE VISUAL BIBLE — immutable across all 25 pages]" in prompt for prompt in prompts))
+        self.assertTrue(all("[CURRENT-PAGE CONTENT BOUNDARY — highest content priority]" in prompt for prompt in prompts))
+        self.assertTrue(all("Unplanned cards, badges, icons, arrows, insets, page numbers and decorative labels are absent." in prompt for prompt in prompts))
+        self.assertTrue(all("No outer frame, border, rounded card" in prompt for prompt in prompts))
+        self.assertTrue(all("decorative horizontal rule" in prompt for prompt in prompts))
+        self.assertLessEqual(max(map(len, prompts)), backend.AI_IMAGE_JP_COMPANY_PROMPT_LIMIT)
+
+    def test_director_schema_requests_visual_dna_narrative_arc_and_evidence_guard(self) -> None:
+        pages = backend.build_ai_image_suite_plan(
+            "[Product] Exact amber-and-white eye-care bottle.",
+            "日本向けの商品画像10枚。",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            count=10,
+        )
+        messages = backend.build_ai_director_messages(
+            pages,
+            "[Product] Exact amber-and-white eye-care bottle.",
+            "日本向けの商品画像10枚。",
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "",
+            None,
+            False,
+            reference_image_count=10,
+        )
+        user_prompt = messages[-1]["content"]
+
+        self.assertIn('"productVisualDNA"', user_prompt)
+        self.assertIn('"referenceBreakdown"', user_prompt)
+        self.assertIn("Return exactly 10 referenceBreakdown records", user_prompt)
+        self.assertIn("product facts, layout skeleton and information architecture", user_prompt)
+        self.assertIn("[Company narrative arc]", user_prompt)
+        self.assertIn("Authority seals, medical-grade positioning, certification", user_prompt)
+        self.assertIn("Do not return a pages array in this first pass", user_prompt)
+
+    def test_planned_pages_and_final_prompts_carry_company_creative_logic(self) -> None:
+        payload = {
+            "suiteKey": backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "suiteCount": 10,
+            "size": backend.AI_IMAGE_SUITE_SIZE,
+            "prompt": "[Product] Exact amber-and-white eye-care bottle from every supplied reference.",
+            "suiteBrief": "日本市場向け。商品形状、琥珀色、白ラベルを保持する。",
+        }
+        with patch.object(backend, "shared_ai_director_enabled", return_value=False):
+            plan_payload = backend.plan_ai_image_suite(payload, {"username": "designer", "role": "designer"})
+
+        self.assertEqual(len(plan_payload["suitePages"]), 25)
+        self.assertTrue(all(page.get("companyCreativeLogic") for page in plan_payload["suitePages"]))
+        self.assertTrue(all(page["companyCreativeLogic"].get("analysisPromptMapping") for page in plan_payload["suitePages"]))
+        self.assertTrue(all(2 <= len(page.get("companyModulePlan") or []) <= 3 for page in plan_payload["suitePages"]))
+        self.assertEqual(
+            {page["companyCreativeLogic"]["narrativeStage"] for page in plan_payload["suitePages"]},
+            {"problem-solution", "benefit-deepening", "localized-trust", "proof-and-craft", "commitment-close"},
+        )
+
+        normalized_round_trip = backend.normalize_ai_image_suite_plan(plan_payload["suitePages"], 25)
+        self.assertEqual(len(normalized_round_trip), 25)
+        self.assertTrue(all(page.get("companyCreativeLogic", {}).get("analysisPromptMapping") for page in normalized_round_trip))
+        self.assertTrue(all(2 <= len(page.get("companyModulePlan") or []) <= 3 for page in normalized_round_trip))
+
+        prompts, prompt_pages = backend.build_ai_image_suite_prompts(
+            payload["prompt"],
+            payload["suiteBrief"],
+            payload["size"],
+            suite_key=payload["suiteKey"],
+            plan=plan_payload["suitePages"],
+            suite_count=10,
+        )
+        self.assertEqual(len(prompts), 25)
+        self.assertTrue(all("[Company method · v2]" in prompt for prompt in prompts))
+        self.assertTrue(all("[Analysis-to-prompt map]" in prompt for prompt in prompts))
+        self.assertTrue(all("[Company module construction contract" in prompt for prompt in prompts))
+        self.assertTrue(all("Density: COMPANY-" in prompt for prompt in prompts))
+        self.assertTrue(all(page.get("companyCreativeLogic") for page in prompt_pages))
+
+    def test_japanese_twenty_five_page_prompts_fit_provider_limit_with_trace_map(self) -> None:
+        prompts, _pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact black linen suspender maxi dress from all product references.",
+            "Japanese market; woman in her 40s; three main benefits: flattering silhouette, linen texture, four-season layering; five secondary details; preserve every supplied color and construction detail.",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertEqual(len(prompts), 25)
+        self.assertLessEqual(max(map(len, prompts)), backend.AI_IMAGE_PROVIDER_PROMPT_LIMIT)
+        self.assertTrue(all("[COMPANY JAPAN ECOMMERCE EXECUTION]" in prompt for prompt in prompts))
+        self.assertLessEqual(max(map(len, prompts)), backend.AI_IMAGE_JP_COMPANY_PROMPT_LIMIT)
+        self.assertTrue(all("[Company module construction contract" in prompt for prompt in prompts))
+
+    def test_company_module_prompts_fit_provider_limit_for_khaki_jacket_sequence(self) -> None:
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact khaki beige linen-like relaxed-fit double-breasted jacket apparel product; rolled half sleeves, notched lapel and patch pockets.",
+            "Japanese Rakuten fashion landing page; mature Japanese woman in her 40s; background #d3d7d8; product khaki #8B7355; three main benefits and five secondary details.",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertLessEqual(sum(len(page.get("companyModulePlan") or []) for page in pages), 75)
+        self.assertGreaterEqual(sum(len(page.get("companyModulePlan") or []) for page in pages), 50)
+        self.assertLessEqual(max(map(len, prompts)), backend.AI_IMAGE_PROVIDER_PROMPT_LIMIT)
+        self.assertIn("[MODULE 2 — FAIR_COMPARISON]", prompts[9])
+        self.assertIn("[MODULE 2 — PAIN_GRID]", prompts[11])
+        self.assertIn("[MODULE 3 — SIZE_TABLE]", prompts[23])
+
+    def test_jp_product_identity_keeps_full_apparel_topology_and_reference_evidence(self) -> None:
+        page = {
+            "companyCreativeLogic": {
+                "narrativeStage": "problem-solution",
+                "productVisualDNA": {
+                    "observableColors": ["#D8D0C4"],
+                    "shapeAnchors": [
+                        "hip-length straight silhouette",
+                        "medium notched lapel",
+                        "short folded cuffs",
+                        "exactly two dark buttons in one horizontal row",
+                        "exactly two large front patch pockets",
+                        "straight continuous front hem",
+                    ],
+                    "materialAnchors": ["fine linen-like woven texture", "soft natural drape"],
+                    "labelAnchors": ["Mincho title treatment"],
+                },
+                "referenceProductEvidence": [
+                    "Image 1 confirms the two horizontal buttons and two patch pockets.",
+                    "Image 2 confirms the folded cuff and notched lapel stitching.",
+                ],
+            },
+        }
+
+        identity = backend.ai_image_jp_company_product_identity(
+            page,
+            "[Product] Exact light-beige short-sleeve tailored jacket.",
+        )
+        topology = backend.ai_image_jp_company_apparel_topology_lock(page)
+
+        self.assertIn("exactly two dark buttons in one horizontal row", identity)
+        self.assertIn("exactly two large front patch pockets", identity)
+        self.assertIn("Image 2 confirms the folded cuff", identity)
+        self.assertNotIn("Mincho title treatment", identity)
+        self.assertIn("exact count, row/column arrangement", topology)
+        self.assertIn("separate styling layers", topology)
+        self.assertIn("front-three-quarter", topology)
+
+    def test_jp_current_reference_topology_supersedes_stale_plan_indexes(self) -> None:
+        instruction = backend.ai_image_jp_generation_reference_topology_instruction(
+            [
+                {"index": 1, "role": "product", "name": "front.jpg"},
+                {"index": 2, "role": "detail", "name": "cuff.jpg"},
+                {"index": 3, "role": "usage", "name": "worn.jpg"},
+                {"index": 4, "role": "person", "name": "model.jpg"},
+            ]
+        )
+
+        self.assertIn("Current reference image 1 is the exact primary garment", instruction)
+        self.assertIn("Detail image(s) 2", instruction)
+        self.assertIn("Usage/worn image(s) 3", instruction)
+        self.assertIn("Person image(s) 4", instruction)
+        self.assertIn("supersedes planning-time image numbers", instruction)
+        stale_prompt = (
+            "[VARIANT BINDING] primary product must come from reference image 3.\n"
+            + instruction
+        )
+        self.assertEqual(backend.ai_image_primary_reference_index(stale_prompt), 1)
+
+    def test_jp_company_prompt_places_topology_lock_before_product_rendering(self) -> None:
+        prompts, pages = backend.build_ai_image_suite_prompts(
+            "[Product] Exact beige short-sleeve blazer apparel product from the supplied references.",
+            "日本市場。商品参考图优先。",
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertTrue(all("[APPAREL TOPOLOGY LOCK" in prompt for prompt in prompts))
+        self.assertTrue(all("[FINAL QUALITY CHECK]" in prompt for prompt in prompts))
+        self.assertLessEqual(max(map(len, prompts)), backend.AI_IMAGE_JP_COMPANY_PROMPT_LIMIT)
+        self.assertIn("P03_FRONT_THREE_QUARTER_LATERAL_STEP", pages[2]["poseFingerprint"])
+
+    def test_japanese_director_monitor_displays_visual_dna_and_narrative_arc(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('label: "产品视觉 DNA"', app_source)
+        self.assertIn('label: "整套叙事弧线"', app_source)
+        self.assertIn('label: "逐图三层解剖"', app_source)
+        self.assertIn('label: "分析→Prompt映射"', app_source)
+        self.assertIn('label: "公司式模块施工图"', app_source)
+        self.assertIn('Visual / Content / Position / Weight / Container', app_source)
+        self.assertIn('companyNarrativeStages.size === 5', app_source)
+        self.assertIn('问题解决 → 卖点深挖 → 本土信任 → 证据工艺 → 决策收尾', app_source)
 
     def test_account_pool_refresh_reports_ready_accounts(self) -> None:
         refresh_response = FakeResponse({"errors": []})
@@ -3680,3 +5807,4 @@ USB供电
 
 if __name__ == "__main__":
     unittest.main()
+

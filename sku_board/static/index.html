@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SOSOVE 主推品作战看板</title>
     <link rel="icon" href="/static/assets/sosove-logo.jpeg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260723-jp-scenes-v7" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260801-jp-company-density-v17" />
   </head>
   <body>
     <main class="app-shell">
@@ -460,6 +460,9 @@
                             <select id="ad-launch-ai-model">
                               <option value="gpt-image-2">gpt-image-2</option>
                               <option value="codex-gpt-image-2">codex-gpt-image-2</option>
+                              <option value="acore/gpt-image-2">公司 · gpt-image-2</option>
+                              <option value="acore/nano-banana-2">公司 · nano-banana-2</option>
+                              <option value="acore/nano-banana-pro">公司 · nano-banana-pro</option>
                             </select>
                           </label>
                           <label>尺寸
@@ -721,8 +724,9 @@
       <section id="ai-images-panel" class="workspace-panel ai-image-panel" data-panel="aiImages" aria-label="AI生图" hidden>
         <div class="workspace-head">
           <div>
-            <span class="panel-kicker">AI Creative</span>
-            <h2>AI生图</h2>
+            <span class="panel-kicker">AI CREATIVE WORKSHOP</span>
+            <h2>从商品图到整套电商成图</h2>
+            <p>上传商品、模特与风格参考，AI 先完成产品分析和逐页导演，再进入生成、质检与单页修改。</p>
           </div>
           <div class="workspace-actions">
             <button class="mini-btn" id="ai-image-recover-btn" type="button">恢复远端套图</button>
@@ -734,6 +738,47 @@
           <p>登录后管理员、运营、选品、设计可以按商品生成投放图片素材。</p>
           <button class="primary-btn" data-open-login-from-ai-image type="button">登录</button>
         </div>
+        <section id="ai-image-quick-entry" class="ai-image-quick-entry" aria-label="常用创作入口">
+          <div class="ai-image-quick-entry-head">
+            <div>
+              <span class="panel-kicker">START WITH A WORKFLOW</span>
+              <h3>你今天想做什么？</h3>
+            </div>
+            <span>选入口后仍可调整国家、尺寸、数量、导演模式、生成策略和商品一致性</span>
+          </div>
+          <div class="ai-image-quick-entry-grid">
+            <button class="ai-image-quick-card landing" data-ai-quick-template="landing" type="button" disabled>
+              <span class="ai-image-quick-number">01</span>
+              <strong>落地页生成</strong>
+              <small>多参考图分析 · 日本本土化场景 · 逐页导演套图</small>
+              <b>进入落地页工作流 →</b>
+            </button>
+            <button class="ai-image-quick-card cod" data-ai-quick-template="codDetail" type="button" disabled>
+              <span class="ai-image-quick-number">02</span>
+              <strong>COD 国家详情图</strong>
+              <small>逐页锁定卖点 · 本地语言 · 痛点、对比、场景与背书编排</small>
+              <b>进入 COD 导演流程 →</b>
+            </button>
+            <button class="ai-image-quick-card refresh" data-ai-quick-template="refresh" type="button" disabled>
+              <span class="ai-image-quick-number">03</span>
+              <strong>复刻 / 本地化</strong>
+              <small>锁定商品外观，参考原图重做场景、模特与本地版式</small>
+              <b>进入参考图翻新 →</b>
+            </button>
+            <button class="ai-image-quick-card main" data-ai-quick-template="main" type="button" disabled>
+              <span class="ai-image-quick-number">04</span>
+              <strong>创意生图</strong>
+              <small>单张主图、穿搭广告、场景图与社交电商素材</small>
+              <b>进入创意工作台 →</b>
+            </button>
+          </div>
+          <ol class="ai-image-workflow-steps" aria-label="AI生图四步流程">
+            <li><span>1</span><strong>商品与参考图</strong><small>确认商品、颜色、模特、细节和风格来源</small></li>
+            <li><span>2</span><strong>AI 识别与锁定</strong><small>读取全部参考图，提取事实并保护原提示词</small></li>
+            <li><span>3</span><strong>逐页导演方案</strong><small>为每页分配一个卖点、场景、构图和参考图</small></li>
+            <li><span>4</span><strong>成图与质检</strong><small>多节点生成、失败回退、评分、补图与单页重做</small></li>
+          </ol>
+        </section>
         <div id="ai-image-workspace" class="ai-image-shell">
           <aside class="ai-image-sidebar" aria-label="AI生图任务">
             <button class="ai-image-new-btn" id="ai-image-new-btn" type="button">＋ 新建对话</button>
@@ -781,10 +826,12 @@
               <div class="ai-image-dock-toolbar">
                 <input id="ai-image-reference-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
                 <input id="ai-image-model-reference-file" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                <input id="ai-image-usage-reference-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
                 <input id="ai-image-style-set-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
                 <input id="ai-image-mask-file" type="file" accept="image/png" hidden />
                 <button class="ghost-btn" id="ai-image-upload-btn" type="button">上传图片</button>
                 <button class="ghost-btn" id="ai-image-model-upload-btn" type="button" title="上传需要换装或完整搭配的人物原图" hidden>上传人物参考</button>
+                <button class="ghost-btn" id="ai-image-usage-upload-btn" type="button" title="上传当前商品的真实模特上身图；只用于商品穿着、垂坠与使用方式" hidden>上传模特上身图</button>
                 <button class="ghost-btn ai-image-style-set-btn" id="ai-image-style-set-upload-btn" type="button" title="上传其他产品的页面图，只参考整套视觉风格" hidden>上传系列风格</button>
                 <button class="ghost-btn" id="ai-image-mask-btn" type="button" hidden>上传蒙版</button>
                 <button class="ghost-btn" id="ai-image-product-prompt-btn" type="button">更新专业提示词</button>
@@ -849,13 +896,14 @@
                   <div class="ai-director-settings-switches">
                     <label><input id="ai-director-enabled" type="checkbox" />启用导演模型</label>
                     <label><input id="ai-director-vision" type="checkbox" />发送产品图分析</label>
+                    <label><input id="ai-director-open-prompts" type="checkbox" />启用 Open Image Prompts 灵感检索</label>
                     <label><input id="ai-director-review-enabled" type="checkbox" />成图 AI 质检与一次补图</label>
                   </div>
                   <div class="ai-director-settings-actions">
                     <button class="ghost-btn" id="ai-director-test-btn" type="button">测试连接</button>
                     <button class="primary-btn" id="ai-director-save-btn" type="button">保存配置</button>
                   </div>
-                  <small id="ai-director-settings-message">密钥仅保存在服务端，不会返回页面。</small>
+                  <small id="ai-director-settings-message">Open Image Prompts 在本地检索完整案例；AI导演只提炼摄影、布光、构图、材质和排除项，原提示词与参考图保持锁定。</small>
                 </section>
                 <input id="ai-image-size" type="hidden" value="1024x1024" />
                 <div>
@@ -1335,6 +1383,6 @@
     </dialog>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js?v=20260724-virtual-styling-v17"></script>
+    <script src="/static/app.js?v=20260801-jp-company-density-v17"></script>
   </body>
 </html>

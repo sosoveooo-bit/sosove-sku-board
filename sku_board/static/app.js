@@ -74,6 +74,8 @@ const state = {
     settings: { usePlatformPurchase: true, targetCpa: "", stopSpend: 5, stopClicks: 30 },
   },
   aiImages: {
+    configLoaded: false,
+    configLoading: false,
     material: null,
     materials: [],
     previewDataUrl: "",
@@ -120,6 +122,7 @@ const state = {
       model: "gpt-5.6-terra",
       timeout: 60,
       visionEnabled: true,
+      openImagePromptsEnabled: true,
       reviewEnabled: true,
       reviewThreshold: 78,
       apiKeyConfigured: false,
@@ -161,7 +164,6 @@ const AI_IMAGE_SIZE_PRESETS = [
   { value: "auto", label: "auto", hint: "自动" },
 ];
 const AI_IMAGE_COUNT_PRESETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-const AI_IMAGE_JP_LANDING_COUNT_OPTIONS = [8, 12, 16, 20, 24, 30, 32];
 const AI_IMAGE_COD_COUNT_OPTIONS = [8, 12, 16, 20, 24, 30];
 const AI_IMAGE_COD_DETAIL_COUNT_OPTIONS = [12, 16, 20, 22];
 const AI_IMAGE_COD_HOOK_TYPES = [
@@ -176,13 +178,14 @@ const AI_IMAGE_STATE_STORAGE_KEY = "sosove.sku-board.ai-image-state.v1";
 const AI_IMAGE_STATE_STORAGE_VERSION = 1;
 const AI_IMAGE_STATE_MAX_CONVERSATIONS = 12;
 const AI_IMAGE_SUITE_WORKER_COUNT = 4;
-const AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT = 2;
+const AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT = 5;
 const AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT = 5;
 const AI_IMAGE_SUITE_MAX_RETRIES = 2;
 const AI_IMAGE_SUITE_AUTO_RETRY_CYCLES = 2;
 const AI_IMAGE_SUITE_REVIEW_BATCH_SIZE = 4;
 const AI_IMAGE_SUITE_REVIEW_WORKER_COUNT = 2;
 const AI_IMAGE_SUITE_REVIEW_MAX_RETRIES = 1;
+const AI_IMAGE_JP_GENERATION_REFERENCE_ROLES = new Set(["product", "detail", "usage", "person"]);
 const AI_IMAGE_REFERENCE_ROLES = [
   { key: "product", label: "主商品", instruction: "Use as the exact product identity source." },
   { key: "detail", label: "产品细节", instruction: "Use only for observable construction, texture and detail evidence." },
@@ -216,30 +219,30 @@ const AI_IMAGE_GENERATION_PROFILES = [
   { key: "quality", label: "精审", hint: "最多4路稳态并发 · 高质 · 全套质检", workers: 4, perNode: 2, quality: "high", review: "all", maxRetries: 2, autoRetryCycles: 2 },
 ];
 const AI_IMAGE_SUITE_CONFIGS = {
-  "jp-landing-page-32": {
-    key: "jp-landing-page-32",
-    count: 32,
-    countConfigurable: true,
-    countOptions: AI_IMAGE_JP_LANDING_COUNT_OPTIONS,
+  "jp-landing-page-25": {
+    key: "jp-landing-page-25",
+    count: 25,
     size: "1500x2000",
     unit: "页",
-    label: "日本产品落地页 32图",
-    planTitle: "日本产品落地页 32图品牌导演脚本",
-    planHint: "按品牌案例固定节奏生成颜色、面料、模特、对比、场景、搭配、单品与尺寸信息",
+    label: "日本产品落地页 25图",
+    planTitle: "日本产品落地页 25图品牌导演脚本",
+    planHint: "创意总监模式：先成像、三层读图、加载日本市场调研，再为固定10张主图+15张详情图生成逐页摄影brief与人物硬约束",
     templateKey: "landing",
-    planVersion: "director-v8-prompt-fidelity",
-    promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点和特殊要求；系统会结合全部主商品参考图生成 32 张日本品牌落地页",
+    planVersion: "director-v24-company-photography-density",
+    marketResearchVersion: "jp-market-research-2026-07-30-v1",
+    promptPlaceholder: "填写产品名称、全部颜色/规格、3个核心卖点、5个子卖点和特殊要求；系统会分析全部商品图、模特图与版式图并生成固定25张日本落地页",
     resultClass: "landing",
     anchorPrefix: "landing-page",
-    sizeLocked: false,
+    sizeLocked: true,
     monitor: {
       eyebrow: "JAPAN LANDING DIRECTOR",
       ariaLabel: "日本落地页导演监控",
-      description: "监控 32 页品牌故事、全部颜色覆盖、页面原型差异、产品一致性与日本本土化规则。",
+      description: "监控10张主图、15张详情图、三层参考分析、日本市场调研、先成像后落字、人物硬约束、完整Prompt送达与本土化质检。",
+      planLabel: "10 主图 + 15 详情",
       sizeLabel: "落地页尺寸",
-      sizeHint: "支持所选竖版尺寸",
+      sizeHint: "1500×2000 竖版画布自动锁定",
       complianceLabel: "日本落地页规则",
-      complianceHint: "禁价格、虚假数据与平台 UI",
+      complianceHint: "少·大·准日文、简单手势、真实肤质、精确商品",
     },
   },
   "amazon-jp-aplus-9": {
@@ -251,7 +254,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "Amazon A+ 9图导演脚本",
     planHint: "根据当前产品动态生成横版卖点、结构、场景、规格与维护模块",
     templateKey: "amazonAplus",
-    planVersion: "amazon-aplus-v4-prompt-fidelity",
+    planVersion: "amazon-aplus-v7-all-optimization",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点、规格和特殊要求；系统会动态生成 9 张 Amazon日本站 A+ 模块图",
     resultClass: "amazon",
     anchorPrefix: "amazon-aplus",
@@ -275,7 +278,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "乐天日本站 9图导演脚本",
     planHint: "根据当前产品动态生成方图卖点、结构、场景、规格与维护内容",
     templateKey: "rakutenSuite",
-    planVersion: "rakuten-director-v3-prompt-fidelity",
+    planVersion: "rakuten-director-v6-all-optimization",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点、规格和特殊要求；系统会动态生成 9 张乐天日本站商品图",
     resultClass: "rakuten",
     anchorPrefix: "rakuten-product",
@@ -299,7 +302,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "COD国家落地页 30图导演脚本",
     planHint: "按参考落地页逻辑生成一图一卖点、一图一效果的 8 张主图与 22 张详情图",
     templateKey: "codKorea",
-    planVersion: "cod-country-v15-prompt-fidelity",
+    planVersion: "cod-country-v18-all-optimization",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点和特殊要求；系统会结合产品图按所选国家生成8张主图与22张详情图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-landing",
@@ -326,7 +329,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "COD详情图 22张导演脚本",
     planHint: "促销→背书→痛点→全面海报→主卖点→次卖点→多角度/场景→好评→收尾",
     templateKey: "codDetail",
-    planVersion: "cod-detail-v10-prompt-fidelity",
+    planVersion: "cod-detail-v13-all-optimization",
     promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点、使用效果和背书；系统会按品类与国家生成动态COD详情图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-detail",
@@ -346,7 +349,8 @@ const AI_IMAGE_SUITE_CONFIGS = {
   },
 };
 const AI_IMAGE_SUITE_KEY_ALIASES = {
-  "jp-landing-page-10": "jp-landing-page-32",
+  "jp-landing-page-10": "jp-landing-page-25",
+  "jp-landing-page-32": "jp-landing-page-25",
   "amazon-jp-aplus-7": "amazon-jp-aplus-9",
   "cod-kr-landing-30": "cod-country-landing-30",
 };
@@ -385,7 +389,7 @@ const AI_IMAGE_PROMPT_TEMPLATES = [
   { key: "model", label: "模特上身", size: "1024x1536", count: 4 },
   { key: "virtualTryOn", label: "模特换装/搭配", size: "1024x1536", count: 1, mode: "compose" },
   { key: "poster", label: "Rakuten 单张海报", size: "1024x1536", count: 2 },
-  { key: "landing", label: "日本落地页（可选数量）", size: "1500x2000", count: 32, mode: "edit", suiteKey: "jp-landing-page-32" },
+  { key: "landing", label: "日本产品落地页 25图", size: "1500x2000", count: 25, mode: "edit", suiteKey: "jp-landing-page-25" },
   { key: "amazonAplus", label: "Amazon A+专区", size: "970x600", count: 9, mode: "edit", suiteKey: "amazon-jp-aplus-9" },
   { key: "rakutenSuite", label: "乐天专区", size: "1200x1200", count: 9, mode: "edit", suiteKey: "rakuten-jp-product-9" },
   { key: "codKorea", label: "COD国家专区", size: "750x1000", count: 30, mode: "edit", suiteKey: "cod-country-landing-30" },
@@ -614,7 +618,7 @@ function canManageFacebookAds() {
 }
 
 function canUseAiImages() {
-  return ["admin", "ops", "selection", "designer"].includes(state.auth.user?.role);
+  return ["admin", "ops", "selection", "designer", "customer"].includes(state.auth.user?.role);
 }
 
 function facebookBinding(ad = {}) {
@@ -827,7 +831,7 @@ async function logout() {
   state.adLaunches.material = null;
   state.metaCredentials = { loaded: false, loading: false, credentials: [], bindings: [], assets: [], assetDetails: [], users: [], summary: {}, oauthConfigured: false, oauthReady: false, oauthMode: "unconfigured", bindingCredentialId: "", bindingBusinessId: "", bindingAccountId: "", systemWizard: { sourceCredentialId: "", businessId: "", accountIds: [], pageIds: [] } };
   state.aiImages.health = { status: "unknown", message: "尚未检测服务", latencyMs: 0, checkedAt: "", baseUrl: "", loading: false };
-  state.aiImages.director = { loaded: false, loading: false, enabled: false, configured: false, baseUrl: "", model: "gpt-5.6-terra", timeout: 60, visionEnabled: true, apiKeyConfigured: false, secureTransport: false, status: "unknown", message: "", formDirty: false };
+  state.aiImages.director = { loaded: false, loading: false, enabled: false, configured: false, baseUrl: "", model: "gpt-5.6-terra", timeout: 60, visionEnabled: true, openImagePromptsEnabled: true, apiKeyConfigured: false, secureTransport: false, status: "unknown", message: "", formDirty: false };
   renderAuth();
   showToast("已退出登录");
 }
@@ -1753,12 +1757,71 @@ function aiImageOptions() {
     aiImage: options.aiImage || {
       enabled: true,
       model: "gpt-image-2",
-      models: ["gpt-image-2", "codex-gpt-image-2", "auto"],
+      models: ["gpt-image-2", "codex-gpt-image-2", "auto", "acore/gpt-image-2", "acore/nano-banana-2", "acore/nano-banana-pro"],
       sizes: AI_IMAGE_SIZE_PRESETS.map((item) => item.value),
       qualities: ["auto", "low", "medium", "high"],
       maxCount: 10,
     },
   };
+}
+
+function setAiImageQuickEntryLoading(loading) {
+  const section = $("#ai-image-quick-entry");
+  if (!section) return;
+  section.classList.toggle("is-loading", Boolean(loading));
+  section.querySelectorAll("[data-ai-quick-template]").forEach((button) => {
+    button.disabled = Boolean(loading);
+  });
+}
+
+async function loadAiImageConfig(silent = false) {
+  if (!state.auth.user || !canUseAiImages()) return null;
+  state.aiImages.configLoading = true;
+  setAiImageQuickEntryLoading(true);
+  try {
+    const payload = await api("/api/sku-board/ai-image-config");
+    state.adLaunches.options = {
+      ...adLaunchOptions(),
+      products: Array.isArray(payload.products) ? payload.products : adLaunchOptions().products,
+      aiImage: payload.aiImage || adLaunchOptions().aiImage,
+    };
+    const sharedDirector = payload.aiImage?.director;
+    if (sharedDirector && typeof sharedDirector === "object") {
+      state.aiImages.director = {
+        ...(state.aiImages.director || {}),
+        ...sharedDirector,
+        loaded: isAdmin() ? Boolean(state.aiImages.director?.loaded) : true,
+        loading: false,
+        formDirty: false,
+      };
+    }
+    state.aiImages.configLoaded = Boolean(payload.aiImage);
+    state.aiImages.configLoading = false;
+    setAiImageQuickEntryLoading(false);
+    renderAiImagePanel();
+    if (!silent) showToast(`AI 生图配置已加载 · Skill v${aiImageSkillConfig().version || "内置"}`);
+    return payload;
+  } catch (error) {
+    state.aiImages.configLoaded = false;
+    state.aiImages.configLoading = false;
+    setAiImageQuickEntryLoading(false);
+    renderAiImagePanel();
+    if (!silent) showToast(error.message);
+    return null;
+  }
+}
+
+function aiImageModelProvider(model = "") {
+  return String(model || "").startsWith("acore/") ? "acore" : "chatgpt2api";
+}
+
+function aiImageModelLabel(model = "") {
+  const value = String(model || "");
+  return aiImageModelProvider(value) === "acore" ? `公司 · ${value.slice("acore/".length)}` : value;
+}
+
+function aiImageProviderLabel(model = "") {
+  return aiImageModelProvider(model) === "acore" ? "Giikin Acore 公司生图" : "ChatGPT2API";
 }
 
 function aiImageSkillConfig() {
@@ -1871,35 +1934,16 @@ function aiImageSuiteKeyFromIntent(value = "") {
     || (rakutenSignal && (source.includes("整套商品图") || source.includes("商品图套图") || source.includes("9张商品图") || source.includes("9 张商品图")));
   if (rakutenSuiteSignal) return "rakuten-jp-product-9";
   const landingSignal = source.includes("落地页") || source.includes("landing page") || source.includes("一整套") || source.includes("套图");
-  const countSignal = /(?:8|10|12|16|20|24|30|32)\s*(?:张|页)/.test(source)
-    || source.includes("三十二张") || source.includes("十张") || source.includes("十页");
+  const countSignal = /(?:8|10|12|16|20|24|25|30|32)\s*(?:张|页)/.test(source)
+    || source.includes("二十五张") || source.includes("三十二张") || source.includes("十张") || source.includes("十页");
   const pageSignal = source.includes("一张图片一个卖点") || source.includes("一个卖点一张") || source.includes("图片顺序");
-  return landingSignal && (countSignal || pageSignal) ? "jp-landing-page-32" : "";
+  return landingSignal && (countSignal || pageSignal) ? "jp-landing-page-25" : "";
 }
 
 function aiImageSuiteConfig(value = {}) {
   const key = typeof value === "string" ? value : value?.suiteKey || "";
   const config = AI_IMAGE_SUITE_CONFIGS[AI_IMAGE_SUITE_KEY_ALIASES[key] || key] || null;
   if (!config || typeof value === "string") return config;
-  if (config.key === "jp-landing-page-32") {
-    const requestedCount = Number(value?.suiteCount || value?.count || config.count);
-    const count = AI_IMAGE_JP_LANDING_COUNT_OPTIONS.includes(requestedCount) ? requestedCount : config.count;
-    return {
-      ...config,
-      count,
-      label: `日本产品落地页 ${count}图`,
-      planTitle: `日本产品落地页 ${count}图品牌导演脚本`,
-      planHint: count === 32
-        ? "按完整品牌案例节奏生成颜色、面料、模特、对比、场景、搭配、单品与尺寸信息"
-        : `按 ${count} 页精简品牌节奏保留颜色、模特、面料、对比、场景、尺码与工艺收尾`,
-      promptPlaceholder: `填写当前产品名称、全部颜色/规格、主卖点、次卖点和特殊要求；系统会结合全部主商品参考图生成 ${count} 张日本品牌落地页`,
-      monitor: {
-        ...config.monitor,
-        description: `监控 ${count} 页品牌故事、全部颜色覆盖、页面原型差异、产品一致性与日本本土化规则。`,
-        planLabel: `${count} 页品牌落地页`,
-      },
-    };
-  }
   if (config.key === "cod-country-detail-12") {
     const requestedCount = Number(value?.suiteCount || value?.count || config.count);
     const count = AI_IMAGE_COD_DETAIL_COUNT_OPTIONS.includes(requestedCount) ? requestedCount : config.count;
@@ -2021,7 +2065,7 @@ function aiImageTemplateDirection(templateKey, productName, size = "") {
     detail: `premium ecommerce detail study for ${productName}, macro and medium close-up views of fabric texture, stitching, waist, neckline, sleeve, hem and construction, tactile material rendering on a warm light-gray textile surface`,
     facebook: "Facebook and Instagram feed ad creative, immediate focal point, product benefit readable at first glance, strong subject-background separation, energetic asymmetric composition, room for optional copy overlay, conversion-focused fashion photography",
     poster: "information-rich Japanese Rakuten fashion poster, large model on the right with full product silhouette, designed advertising area on the left, layered editorial panels, color swatch blocks, size badge shapes and benefit callouts, warm light-gray paper texture, red and gold accent shapes, use intentional blank label areas instead of fake readable text",
-    landing: "coordinated selected-count Japanese mature-womenswear brand landing page, exact 1500x2000 full-bleed vertical assets, retaining the selected brand-story archetypes for real color range, fabric and construction macros, varied full-body model colors, fair fit comparisons, Japanese cafe and city lifestyle, layering proposals, product-only color pages, verified size guide and final craft close, with exact garment identity and Japanese-only typography",
+    landing: "fixed 25-image Japanese mature-womenswear landing page, exact 1500x2000 full-bleed vertical assets, 10 main images followed by 15 detail images: brand hero, three core selling points, five secondary selling points, fair pain-point comparison, brand philosophy, 2x2 four-pain grid, solution, eight matching deep-proof pages, comprehensive comparison, material and craft, verified size plus complete real colors, and quality close; exact garment identity, Japanese women age 35-55, documentary daylight; hero pages use one photograph plus approved copy, ordinary pages use one photograph plus at most one planned proof inset, and only comparison, pain-grid and size/color pages use structured layouts",
     amazonAplus: "coordinated nine-module Amazon Japan A+ product content set, exact 970x600 horizontal assets, dynamic product-category analysis, product-first information hierarchy, restrained localized lifestyle or professional photography, structure, materials, use cases, specifications, compatibility and maintenance proof, generous safe margins, no prices, promotions, reviews, ratings, Amazon logos or interface elements",
     rakutenSuite: "coordinated nine-image Rakuten Japan product-page set, exact 1200x1200 square assets, dynamic product-category analysis, strong mobile-thumbnail recognition, information-rich but disciplined Japanese marketplace layout, realistic localized lifestyle or professional photography, structure, materials, use cases, specifications and maintenance proof, no fabricated prices, rankings, reviews, Rakuten logos or interface elements",
     codKorea: "coordinated country-targeted COD landing-page image suite with up to eight conversion-focused main images followed by product-specific detail images, exact 750x1000 full-bleed vertical assets, country-localized language, people, scenes, palette and ecommerce hierarchy, dynamic product-category analysis from the reference image and current prompt, pain-point comparisons, static steps and a final product-information image, no prices, animation, platform UI, fabricated data or white outer margins",
@@ -2061,6 +2105,7 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
   const targetCountry = (isCountryCod || isCodHook) ? aiImageCodCountryConfig(options.country || "KR") : null;
   const globalRules = aiImageSkillConfig().global || {};
   const userIntent = String(options.userIntent || "").trim();
+  const explicitNoVisibleText = /(?:不要|无需|不需要|禁止|去掉|移除|无)(?:添加|出现|显示|保留|任何)?[\s、，,:：-]{0,3}(?:文字|文案|标题|标语|字幕|标签)|(?:纯|只要)(?:画面|图片|场景|产品图|模特图).{0,8}(?:无字|无文字)|\b(?:no|without)\s+(?:added\s+)?(?:text|copy|headline|caption|label)s?\b/i.test(userIntent);
   const userPromptFidelityRule = [
     "[User-prompt fidelity lock — highest content priority] The current user prompt is the binding content contract for this image.",
     "Preserve every explicit product, category, color or specification, target country, visible language, person identity or casting, scene, action, camera intent, composition, visual style, palette, typography, selling point, requested text, quantity rule and exclusion from that prompt.",
@@ -2093,9 +2138,9 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
   const sellingPointRule = isVirtualTryOn
     ? "[Virtual styling output] Create exactly one clean finished full-body model scene. Apply every garment and styling replacement explicitly requested by filename or selected role. Preserve every unspecified person or outfit attribute. No advertising text, benefit cards, comparison panels or product cutout insets."
     : sellingPoints.length
-    ? `[Selling points] Express visually: ${sellingPoints.join("; ")}.`
+    ? `[Candidate selling points for AI ranking — source only] ${sellingPoints.join("; ")}. Select the one point that best matches the current user prompt; do not render this whole list as separate labels or modules.`
     : isGenericProductSuite
-    ? "[Selling points] Use the current user prompt as the source of truth. Visually prove the supplied main and secondary benefits with category-appropriate details, usage and results."
+    ? "[Selling-point selection] Use the current user prompt as the source of truth. Select one dominant benefit for this image and prove it with one category-appropriate detail, use action or result."
     : "[Selling points] Show flattering fit, wearable comfort and premium material through the image rather than text.";
   const negativeRule = isVirtualTryOn
     ? "No unrequested face, hairstyle, age, skin tone or body-proportion change. No omitted requested item, leftover replaced garment or accessory, item duplication, product redesign, unsupported color change, warped anatomy, fused limbs, floating clothing, wrong item scale, plastic skin, text, logo, watermark, split screen, before-and-after panel, grid, contact sheet, collage, card, inset or duplicate model."
@@ -2105,6 +2150,16 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
   const codHookRule = isCodHook
     ? `[COD hook mode] Selected creative type: ${codHookType.label}. ${codHookType.instruction} Generate each requested output as one finished standalone image from the current single prompt. Preserve the user's intended selling point and exact supplied promotion or price text. Keep the product as the dominant subject, use one main hook only, and do not add unrelated claims, generic filler copy or repeated benefit cards.`
     : "";
+  const codHookTextRule = isCodHook
+    ? explicitNoVisibleText
+      ? "[COD hook text policy — highest text priority] Create a text-free hook image and communicate the selected point through the product, result, scene, action and composition only."
+      : `[COD visible-copy lock — highest text priority] This is a finished ${targetCountry?.label || "local-market"} COD selling graphic. Render one short, prominent ${targetCountry?.language || "localized"} headline derived only from the current user prompt, plus the one exact hook, promotion, discount or price element required by the selected creative type. Keep copy few, large and readable; omit paragraphs, filler labels and invented claims.`
+    : "";
+  const singleImageContentBudgetRule = isVirtualTryOn
+    ? ""
+    : isCodHook
+    ? "[AI single-image content budget — highest layout priority] Read the complete user prompt first, select exactly one dominant hook, and keep the product or result as the largest visual. Visible copy may contain one short headline plus the one hook, promotion or price element explicitly requested by the selected COD hook type. Do not add another selling point, paragraph, badge row, icon row, card wall, comparison collection or unrelated inset."
+    : "[AI single-image content budget — highest layout priority] Read the complete user prompt and candidate selling points, then select exactly one primary message for this image and at most one directly supporting proof detail. Use one dominant product, model or result visual covering most of the canvas, one short headline and at most one small supporting callout. Do not visualize every supplied selling point, repeat the prompt as copy, or add paragraphs, badge rows, icon rows, card walls or unrelated insets.";
   const referenceRoleMap = aiImageReferenceRoleMap(options.referenceRoles || [], hasReferences);
   const productReferenceIndexes = (options.referenceRoles || [])
     .map((reference, index) => ({ index: index + 1, role: aiImageReferenceRoleKey(reference, index) }))
@@ -2136,7 +2191,9 @@ function aiImageTemplatePrompt(templateKey, product = {}, hasReferences = false,
     multiProductVariantRule,
     hasExternalStyleSet ? "[External style-set lock] References assigned as 系列风格参考 control only the suite visual system: palette, visual hierarchy, headline scale, information density, module shapes, callout rhythm, image-to-text ratio, macro or result presentation and cross-page pacing. Reference image 1 remains the exact product source. Never import another product, person, text, logo, badge, certification or claim from style-set references. Generated suite page 1 must adapt this visual DNA as the shared style anchor; later pages inherit that anchor while using clearly different compositions." : "",
     `[Scene and model] ${aiImageTemplateDirection(templateKey, productName, options.size || "")}.`,
+    codHookTextRule,
     codHookRule,
+    singleImageContentBudgetRule,
     sellingPointRule,
     `[Material and light] ${materialRule}`,
     `[Advertising layout] ${layoutRule}`,
@@ -2484,11 +2541,13 @@ function renderAdLaunchPanel() {
 function renderAiImagePanel() {
   const loginRequired = $("#ai-image-login-required");
   const workspace = $("#ai-image-workspace");
+  const quickEntry = $("#ai-image-quick-entry");
   if (!loginRequired || !workspace) return;
   const loggedIn = Boolean(state.auth.user);
   const allowed = loggedIn && canUseAiImages();
   loginRequired.hidden = allowed;
   workspace.hidden = !allowed;
+  if (quickEntry) quickEntry.hidden = !allowed;
   const loginButton = loginRequired.querySelector("[data-open-login-from-ai-image]");
   if (!allowed) {
     loginRequired.querySelector("strong").textContent = loggedIn ? "当前账号无权限" : "请先登录";
@@ -2582,7 +2641,7 @@ function renderAiImageHealth() {
   card.className = `ai-image-health-card ${aiImageHealthTone(status)}`;
   $("#ai-image-health-label").textContent = aiImageHealthLabel(status);
   $("#ai-image-health-message").textContent = health.loading
-    ? (health.nodeLoadingId ? "正在检测指定的 chatgpt2api 服务节点..." : "正在并行检测全部 chatgpt2api 服务节点...")
+    ? (health.nodeLoadingId ? "正在检测指定的生图服务节点..." : "正在并行检测全部生图服务节点...")
     : (health.message || "点击检测服务，确认域名、密钥和服务是否可用。");
   const poolMeta = ["remote_account_pool", "multi_node_account_pool"].includes(health.dispatchMode)
     ? ` · ${health.dispatchMode === "multi_node_account_pool" ? `服务节点 ${Number(health.configuredNodeCount || health.nodeCount || 0)} 个 · ` : ""}账号池 ${Number(health.accountPoolReady || 0)}/${Number(health.accountPoolTotal || 0)} 可用 · 自动调度`
@@ -2667,6 +2726,7 @@ function renderAiDirectorSettings() {
     $("#ai-director-timeout").value = String(director.timeout || 60);
     $("#ai-director-enabled").checked = Boolean(director.enabled);
     $("#ai-director-vision").checked = director.visionEnabled !== false;
+    $("#ai-director-open-prompts").checked = director.openImagePromptsEnabled !== false;
     $("#ai-director-review-enabled").checked = director.reviewEnabled !== false;
     $("#ai-director-review-threshold").value = String(director.reviewThreshold || 78);
     $("#ai-director-api-key").value = "";
@@ -2675,9 +2735,12 @@ function renderAiDirectorSettings() {
   const modelChain = [director.model || "gpt-5.6-terra", ...fallbackModels];
   const fallbackNote = $("#ai-director-fallback-note");
   if (fallbackNote) {
+    const timeoutNote = director.attemptTimeout
+      ? `；每个模型最多 ${director.attemptTimeout} 秒，整条链最多 ${director.totalTimeout || director.attemptTimeout} 秒`
+      : "";
     fallbackNote.textContent = fallbackModels.length
-      ? `主模型异常、超时或无有效内容时自动切换：${fallbackModels.join(" → ")}`
-      : "主模型异常后将自动切换备用模型";
+      ? `主模型异常、超时或无有效内容时自动切换：${fallbackModels.join(" → ")}${timeoutNote}`
+      : `主模型异常后将自动切换备用模型${timeoutNote}`;
   }
   $("#ai-director-api-key").placeholder = director.apiKeyConfigured
     ? "已保存密钥，留空则保持不变"
@@ -2703,7 +2766,7 @@ function renderAiDirectorSettings() {
   message.textContent = director.message
     || (!director.secureTransport && director.baseUrl
       ? "当前 API 使用 HTTP，密钥传输未加密。密钥仅保存在服务端。"
-      : "密钥仅保存在服务端，不会返回页面。");
+      : "密钥仅保存在服务端；Open Image Prompts 完整案例只交给AI导演提炼视觉蓝图，原提示词与参考图保持锁定。");
   $("#ai-director-save-btn").disabled = busy;
   $("#ai-director-test-btn").disabled = busy || !configured && !director.formDirty;
 }
@@ -2741,6 +2804,7 @@ function aiDirectorSettingsFormPayload() {
     apiKey: $("#ai-director-api-key")?.value.trim() || "",
     timeout: Number($("#ai-director-timeout")?.value || 60),
     visionEnabled: Boolean($("#ai-director-vision")?.checked),
+    openImagePromptsEnabled: Boolean($("#ai-director-open-prompts")?.checked),
     reviewEnabled: Boolean($("#ai-director-review-enabled")?.checked),
     reviewThreshold: Number($("#ai-director-review-threshold")?.value || 78),
   };
@@ -2765,6 +2829,10 @@ async function saveAiDirectorSettings(silent = false) {
       message: "AI 导演配置已保存",
       formDirty: false,
     });
+    // Refresh the shared runtime returned by /ai-image-config as well. This
+    // keeps the administrator form, generation workspace and other-role view
+    // on the same model chain immediately after a website save.
+    await loadAiImageConfig(true);
     renderAiDirectorSettings();
     if (!silent) showToast("AI 导演配置已保存");
     return director;
@@ -2830,9 +2898,9 @@ async function recoverRecentAiImageSuite(silent = false, runId = "") {
       method: "POST",
       body: JSON.stringify({ suiteRunId, knownPages, suiteKey: activeConversation?.suiteKey || "", suiteCount: activeConversation?.suiteCount || activeConversation?.count || 0, suiteCountry: activeConversation?.suiteCountry || "KR" }),
     });
-    const recoveredSuiteKey = payload.suiteKey || activeConversation?.suiteKey || "jp-landing-page-32";
+    const recoveredSuiteKey = payload.suiteKey || activeConversation?.suiteKey || "jp-landing-page-25";
     const recoveredCountry = payload.suiteCountry || activeConversation?.suiteCountry || "KR";
-    const suiteConfig = aiImageSuiteConfig({ suiteKey: recoveredSuiteKey, suiteCount: payload.suiteCount }) || AI_IMAGE_SUITE_CONFIGS["jp-landing-page-32"];
+    const suiteConfig = aiImageSuiteConfig({ suiteKey: recoveredSuiteKey, suiteCount: payload.suiteCount }) || AI_IMAGE_SUITE_CONFIGS["jp-landing-page-25"];
     const recoveredPreviews = payload.previewDataUrls?.length ? payload.previewDataUrls : [payload.previewDataUrl].filter(Boolean);
     const recoveredMaterials = (payload.materials || []).map((material, index) => ({
       ...material,
@@ -3048,6 +3116,15 @@ async function regenerateAiImageSuitePage(index = 0, options = {}) {
     showToast("当前套图缺少原始提示词或导演分镜，无法重做");
     return;
   }
+  const suiteConfig = aiImageSuiteConfig(conversation);
+  if (!isPromptEdit && suiteConfig && conversation.suitePlanVersion !== suiteConfig.planVersion) {
+    showToast("检测到旧版导演分镜，正在按最新商品事实锁重新策划");
+    await prepareAiImageSuitePlan(
+      conversation,
+      conversation.prompt,
+      conversation.userIntent || "",
+    );
+  }
   let editSource = null;
   let editInstruction = "";
   if (isPromptEdit) {
@@ -3258,7 +3335,7 @@ function renderAiImageForm() {
     codHookTypeSelect.value = currentCodHookType.key;
   }
   $("#ai-image-model").innerHTML = (options.aiImage?.models || ["gpt-image-2", "codex-gpt-image-2"])
-    .map((model) => `<option value="${esc(model)}" ${model === currentModel ? "selected" : ""}>${esc(model)}</option>`)
+    .map((model) => `<option value="${esc(model)}" ${model === currentModel ? "selected" : ""}>${esc(aiImageModelLabel(model))}</option>`)
     .join("");
   if ($("#ai-image-quality")) $("#ai-image-quality").value = currentQuality;
   if ($("#ai-image-size")) $("#ai-image-size").value = currentSize;
@@ -3289,6 +3366,8 @@ function renderAiImageForm() {
   $("#ai-image-upload-btn").textContent = virtualTryOnActive ? "上传商品/配饰图" : suiteActive || codHookActive ? "上传产品图片" : currentMode === "inpaint" ? "上传原图" : currentMode === "compose" ? "添加合成图" : "上传参考图";
   const modelUploadButton = $("#ai-image-model-upload-btn");
   if (modelUploadButton) modelUploadButton.hidden = !virtualTryOnActive;
+  const usageUploadButton = $("#ai-image-usage-upload-btn");
+  if (usageUploadButton) usageUploadButton.hidden = conversation.suiteKey !== "jp-landing-page-25";
   const styleSetUploadButton = $("#ai-image-style-set-upload-btn");
   if (styleSetUploadButton) styleSetUploadButton.hidden = virtualTryOnActive || !suiteActive || currentMode === "inpaint";
   $("#ai-image-mask-btn").hidden = currentMode !== "inpaint";
@@ -3458,7 +3537,9 @@ function aiImageStatusText(options, conversation = {}) {
   if (conversation.status === "done") return `${taskLabel}已生成 ${conversation.materials?.length || 0} ${unit}`;
   if (conversation.status === "partial") return `${taskLabel}已显示 ${conversation.materials?.length || 0}/${suiteConfig?.count || conversation.count || 1} ${unit}`;
   if (conversation.status === "error") return "生成失败";
-  return options.aiImage?.enabled ? "已连接 chatgpt2api" : "未配置生图服务";
+  return options.aiImage?.enabled
+    ? `已连接 ${aiImageProviderLabel(conversation.model || options.aiImage?.model || "gpt-image-2")}`
+    : "未配置生图服务";
 }
 
 function aiImageQualityLabel(value) {
@@ -3519,7 +3600,7 @@ function renderAiImageCountPresets(currentCount, maxCount = 10, suiteConfig = nu
   const container = $("#ai-image-count-presets");
   if (!container) return;
   container.classList.toggle("cod-count-options", Boolean(suiteConfig?.countConfigurable));
-  container.classList.toggle("landing-count-options", suiteConfig?.key === "jp-landing-page-32" && Boolean(suiteConfig?.countConfigurable));
+  container.classList.toggle("landing-count-options", false);
   if (fixedCountLabel) {
     container.innerHTML = `<button class="ai-image-count active" type="button" disabled>${esc(fixedCountLabel)}</button>`;
     return;
@@ -3527,7 +3608,7 @@ function renderAiImageCountPresets(currentCount, maxCount = 10, suiteConfig = nu
   if (suiteConfig) {
     if (suiteConfig.countConfigurable) {
       container.innerHTML = suiteConfig.countOptions
-        .map((count) => `<button class="ai-image-count ${count === currentCount ? "active" : ""}" data-ai-count="${count}" type="button">${count === 32 && suiteConfig.key === "jp-landing-page-32" ? "32张完整版" : `${count}张`}</button>`)
+        .map((count) => `<button class="ai-image-count ${count === currentCount ? "active" : ""}" data-ai-count="${count}" type="button">${count}张</button>`)
         .join("");
       return;
     }
@@ -3731,19 +3812,21 @@ function setAiImageGenerationProfile(profileKey = "standard") {
   showToast(`已切换为${profile.label}生成策略`);
 }
 
-function aiImageGenerationNodes() {
+function aiImageGenerationNodes(conversation = ensureAiImageConversation()) {
   const healthNodes = Array.isArray(state.aiImages.health?.nodes) ? state.aiImages.health.nodes : [];
   const configuredNodes = adLaunchOptions().aiImage?.nodes || [];
+  const provider = aiImageModelProvider(conversation.model || state.aiImages.model || "gpt-image-2");
+  const matchesProvider = (node) => String(node?.provider || "chatgpt2api") === provider;
   if (healthNodes.length) {
-    const healthyNodes = healthNodes.filter((node) => node && node.id && ["ok", "warning"].includes(String(node.status || "").toLowerCase()));
+    const healthyNodes = healthNodes.filter((node) => node && node.id && matchesProvider(node) && ["ok", "warning"].includes(String(node.status || "").toLowerCase()));
     if (healthyNodes.length) return healthyNodes;
   }
-  return configuredNodes.filter((node) => node && node.id);
+  return configuredNodes.filter((node) => node && node.id && matchesProvider(node));
 }
 
 function aiImageGenerationWorkerCount(conversation = {}, pageCount = 1) {
   const profile = aiImageGenerationProfile(conversation);
-  const nodes = aiImageGenerationNodes();
+  const nodes = aiImageGenerationNodes(conversation);
   const nodeCount = Math.max(1, nodes.length || Number(state.aiImages.health?.healthyNodeCount || 0) || 1);
   const perNode = Math.max(1, Number(profile.perNode || 1));
   const readyAccounts = Number(state.aiImages.health?.accountPoolReady || 0);
@@ -3909,6 +3992,45 @@ function applyAiImageTemplate(templateKey) {
   intentField.setSelectionRange(intentField.value.length, intentField.value.length);
 }
 
+function startAiImageQuickWorkflow(templateKey) {
+  const skill = aiImageSkillConfig();
+  const quickTitles = {
+    landing: "新的落地页任务",
+    codDetail: "新的 COD 国家详情图任务",
+    refresh: "新的复刻 / 本地化任务",
+    main: "新的创意生图任务",
+  };
+  createAiImageConversation({
+    title: quickTitles[templateKey] || "新的生图任务",
+    prompt: "",
+    userIntent: "",
+    compiledIntent: "",
+    productSku: "",
+    mode: "text",
+    lockLevel: skill.defaults?.lockLevel || "strict",
+    templateKey: skill.defaults?.templateKey || "main",
+    suiteKey: "",
+    suiteCount: 0,
+    suiteCountry: "JP",
+    suitePages: [],
+    materials: [],
+    previewDataUrls: [],
+    referenceImages: [],
+    maskImage: null,
+  });
+  renderAiImageForm();
+  applyAiImageTemplate(templateKey);
+  const conversation = aiImageActiveConversation();
+  if (conversation) {
+    conversation.title = quickTitles[templateKey] || conversation.title;
+    if (["landing", "codDetail"].includes(templateKey)) conversation.suiteCountry = "JP";
+    syncAiImageStateFromConversation(conversation);
+    renderAiImageSidebar();
+    renderAiImageResults();
+  }
+  document.querySelector("#ai-image-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function setAiImageSuiteCountry(countryCode = "KR") {
   const country = aiImageCodCountryConfig(countryCode);
   const conversation = ensureAiImageConversation();
@@ -3949,7 +4071,7 @@ function setAiImageCodHookType(type = "hook") {
   renderAiImageResults();
 }
 
-function setAiImageSuiteCount(count = 32) {
+function setAiImageSuiteCount(count = 22) {
   const conversation = ensureAiImageConversation();
   const suiteConfig = aiImageSuiteConfig(conversation);
   if (!suiteConfig?.countConfigurable) return;
@@ -3978,6 +4100,11 @@ function setAiImageSuiteCount(count = 32) {
 
 function aiImageDefaultReferenceRole(index = 0) {
   return ["product", "detail", "scene", "person"][index] || "layout";
+}
+
+function aiImagePrimaryUploadReferenceRole() {
+  const conversation = ensureAiImageConversation();
+  return conversation.suiteKey === "jp-landing-page-25" ? "product" : "";
 }
 
 function aiImageReferenceRoleKey(reference = {}, index = 0) {
@@ -4042,18 +4169,6 @@ function normalizeAiImageReferenceRoles(references = []) {
   return references.map((reference, index) => ({
     ...reference,
     role: aiImageReferenceRoleKey(reference, index),
-    keywords: String(reference.keywords || "").trim().slice(0, 240),
-  }));
-}
-
-function aiImageReferenceBindings(references = []) {
-  return (Array.isArray(references) ? references : []).map((reference, index) => ({
-    index: index + 1,
-    role: aiImageReferenceRoleKey(reference, index),
-    name: String(reference.name || reference.file?.name || "")
-      .replace(/[\r\n\[\];]/g, " ")
-      .trim()
-      .slice(0, 120),
     keywords: String(reference.keywords || "").trim().slice(0, 240),
   }));
 }
@@ -4263,9 +4378,25 @@ function removeAiImageMask() {
 function aiImageStoredPreviewUrl(material = {}) {
   const previewUrl = String(material.previewUrl || material.previewDataUrl || "");
   if (previewUrl.startsWith("/api/sku-board/ai-image-output/")) return previewUrl;
-  if (/^https?:\/\//i.test(previewUrl) && (material.storage === "remote" || material.remotePath)) return previewUrl;
   const materialId = String(material.id || "").toUpperCase();
-  return /^AI-[A-F0-9]{10}$/.test(materialId) ? `/api/sku-board/ai-image-output/${materialId}` : "";
+  if (/^AI-[A-F0-9]{10}$/.test(materialId)) {
+    const remoteUrl = String(material.remoteUrl || (/^https?:\/\//i.test(previewUrl) ? previewUrl : ""));
+    const remoteQuery = remoteUrl ? `?remote=${encodeURIComponent(remoteUrl)}` : "";
+    return `/api/sku-board/ai-image-output/${materialId}${remoteQuery}`;
+  }
+  return /^https?:\/\//i.test(previewUrl) ? previewUrl : "";
+}
+
+function aiImageReferenceBindings(references = []) {
+  return (Array.isArray(references) ? references : []).map((reference, index) => ({
+    index: index + 1,
+    role: aiImageReferenceRoleKey(reference, index),
+    name: String(reference.name || reference.file?.name || "")
+      .replace(/[\r\n\[\];]/g, " ")
+      .trim()
+      .slice(0, 120),
+    keywords: String(reference.keywords || "").trim().slice(0, 240),
+  }));
 }
 
 function aiImagePersistedMaterial(material = {}) {
@@ -4354,6 +4485,9 @@ function revokeAiImageReferenceUrls(conversation) {
 
 function aiImageErrorDiagnosis(message = "") {
   const lower = String(message || "").toLowerCase();
+  const activeModel = aiImageActiveConversation()?.model || state.aiImages.model || "gpt-image-2";
+  const providerLabel = aiImageProviderLabel(activeModel);
+  const isAcore = aiImageModelProvider(activeModel) === "acore";
   if (lower.includes("no available image quota") || lower.includes("image quota") || lower.includes("生图额度")) {
     return {
       title: "部分生图账号额度不足",
@@ -4373,16 +4507,24 @@ function aiImageErrorDiagnosis(message = "") {
   if (lower.includes("timeout") || lower.includes("\u8d85\u65f6") || lower.includes("timed out")) {
     return {
       title: "\u751f\u56fe\u670d\u52a1\u54cd\u5e94\u8d85\u65f6",
-      reason: "\u5f53\u524d\u8282\u70b9\u8d85\u8fc7\u7b49\u5f85\u9608\u503c\uff1b\u9762\u677f\u4f1a\u628a\u8be5\u8282\u70b9\u4e34\u65f6\u964d\u7ea7\uff0c\u5e76\u628a\u5931\u8d25\u9875\u81ea\u52a8\u5207\u6362\u5230\u5176\u4ed6\u670d\u52a1\u8282\u70b9\u7eed\u8dd1\u3002",
-      advice: ["\u70b9\u51fb\u91cd\u8bd5\u4f1a\u4ece\u5176\u4ed6\u5065\u5eb7\u8282\u70b9\u7ee7\u7eed\u5f53\u524d\u9875", "\u5957\u56fe\u5df2\u5b8c\u6210\u7684\u9875\u9762\u4f1a\u4fdd\u7559\uff0c\u53ea\u8865\u5931\u8d25\u9875", "\u8fdc\u7aef\u4efb\u52a1\u4ecd\u5728\u8fd0\u884c\u65f6\u53ef\u70b9\u51fb\u6062\u590d\u8fdc\u7aef\u5957\u56fe\u53d6\u56de\u7ed3\u679c"],
+      reason: isAcore
+        ? `当前${providerLabel}任务超过等待阈值；重试仍会使用已选择的公司模型。`
+        : "\u5f53\u524d\u8282\u70b9\u8d85\u8fc7\u7b49\u5f85\u9608\u503c\uff1b\u9762\u677f\u4f1a\u628a\u8be5\u8282\u70b9\u4e34\u65f6\u964d\u7ea7\uff0c\u5e76\u628a\u5931\u8d25\u9875\u81ea\u52a8\u5207\u6362\u5230\u5176\u4ed6\u670d\u52a1\u8282\u70b9\u7eed\u8dd1\u3002",
+      advice: isAcore
+        ? ["点击重试会继续使用当前公司模型", "套图已完成的页面会保留，只补失败页", "远端任务仍在运行时可点击恢复远端套图取回结果"]
+        : ["\u70b9\u51fb\u91cd\u8bd5\u4f1a\u4ece\u5176\u4ed6\u5065\u5eb7\u8282\u70b9\u7ee7\u7eed\u5f53\u524d\u9875", "\u5957\u56fe\u5df2\u5b8c\u6210\u7684\u9875\u9762\u4f1a\u4fdd\u7559\uff0c\u53ea\u8865\u5931\u8d25\u9875", "\u8fdc\u7aef\u4efb\u52a1\u4ecd\u5728\u8fd0\u884c\u65f6\u53ef\u70b9\u51fb\u6062\u590d\u8fdc\u7aef\u5957\u56fe\u53d6\u56de\u7ed3\u679c"],
       actions: ["recover-suite", "retry"],
     };
   }
   if (lower.includes("please retry") || lower.includes("try again") || lower.includes("稍后重试") || lower.includes("稍後重試") || lower.includes("server busy") || lower.includes("temporarily unavailable")) {
     return {
-      title: "远端生图节点正在切换账号",
-      reason: "远端账号池短暂繁忙时会返回“请稍后重试”。面板会自动改走其他节点；本次未完成页面可继续补图。",
-      advice: ["点击重试会优先避开刚刚失败的节点", "已完成图片会保留，只补失败页面", "若持续发生，使用错误编号在 ai_image_errors.log 中定位节点"],
+      title: isAcore ? "公司生图服务暂时繁忙" : "远端生图节点正在切换账号",
+      reason: isAcore
+        ? `${providerLabel}暂时繁忙；点击重试仍会使用当前公司模型，本次已完成页面会继续保留。`
+        : "远端账号池短暂繁忙时会返回“请稍后重试”。面板会自动改走其他节点；本次未完成页面可继续补图。",
+      advice: isAcore
+        ? ["稍等片刻后重试当前公司模型", "已完成图片会保留，只补失败页面", "若持续发生，使用错误编号在 ai_image_errors.log 中定位任务"]
+        : ["点击重试会优先避开刚刚失败的节点", "已完成图片会保留，只补失败页面", "若持续发生，使用错误编号在 ai_image_errors.log 中定位节点"],
       actions: ["recover-suite", "retry"],
     };
   }
@@ -4390,7 +4532,7 @@ function aiImageErrorDiagnosis(message = "") {
     return {
       title: "请求太频繁或账号限流",
       reason: "当前账号池可能被限流，或者一次生成数量过多。",
-      advice: ["减少生成数量", "稍等几分钟再试", "检查 chatgpt2api 账号池状态"],
+      advice: ["减少生成数量", "稍等几分钟再试", `检查 ${providerLabel} 服务状态`],
       actions: ["count-one", "retry"],
     };
   }
@@ -4405,8 +4547,8 @@ function aiImageErrorDiagnosis(message = "") {
   if (lower.includes("auth") || lower.includes("401") || lower.includes("403") || lower.includes("key")) {
     return {
       title: "接口密钥或权限异常",
-      reason: "CHATGPT2API_AUTH_KEY 可能不对，或者远端接口拒绝访问。",
-      advice: ["检查 .env 里的 CHATGPT2API_AUTH_KEY", "确认远端 auth-key 和面板配置一致"],
+      reason: `${providerLabel}密钥可能不对，或者远端接口拒绝访问。`,
+      advice: [`检查 .env 里的 ${isAcore ? "ACORE_IMAGE_AUTH_KEY" : "CHATGPT2API_AUTH_KEY"}`, "确认服务端密钥与面板配置一致"],
       actions: ["retry"],
     };
   }
@@ -4421,7 +4563,7 @@ function aiImageErrorDiagnosis(message = "") {
   return {
     title: "生成服务返回错误",
     reason: "面板已收到失败信息，但需要看具体错误文本判断。",
-    advice: ["先点重试", "如果仍失败，查看本地 ai_image_errors.log", "确认 chatgpt2api 服务能打开"],
+    advice: ["先点重试", "如果仍失败，查看本地 ai_image_errors.log", `确认 ${providerLabel} 服务能打开`],
     actions: ["retry"],
   };
 }
@@ -4454,6 +4596,7 @@ function renderAiImageDirectorMonitor(conversation = {}) {
   const countryConfig = aiImageCodCountryActive(conversation) ? aiImageCodCountryConfig(conversation.suiteCountry || "KR") : null;
   const detailSuite = suiteConfig.key === "cod-country-detail-12";
   const codExpressive = aiImageCodCountryActive(conversation);
+  const jpCreativeDirector = suiteConfig.key === "jp-landing-page-25";
   const monitorEyebrow = countryConfig ? `${countryConfig.value} COD${detailSuite ? " DETAIL" : ""} DIRECTOR` : monitorConfig.eyebrow;
   const monitorAriaLabel = countryConfig ? `COD${countryConfig.label}${detailSuite ? "详情图" : "落地页"}导演监控` : monitorConfig.ariaLabel;
   const monitorDescription = countryConfig
@@ -4506,12 +4649,55 @@ function renderAiImageDirectorMonitor(conversation = {}) {
   const firstRole = conversation.suitePages?.[0]?.role || (detailSuite ? "商品介绍" : "第 1 图");
   const lastRole = conversation.suitePages?.[suiteConfig.count - 1]?.role || (detailSuite ? "产品信息收尾" : "品牌收尾");
   const directorRun = conversation.director || {};
+  const inspirationRun = directorRun.inspiration || aiImageSkillConfig().inspirationLibraryRuntime || {};
+  const inspirationBlueprintCount = Number(
+    directorRun.blueprintReferenceCount || inspirationRun.blueprintReferenceCount || 0,
+  );
+  const inspirationBlueprintReady = inspirationRun.integrationMode === "full-prompt-blueprint" || inspirationBlueprintCount > 0;
   const blockedClaimCount = Array.isArray(directorRun.factAudit?.blocked) ? directorRun.factAudit.blocked.length : 0;
   const sellingPointCoverage = directorRun.sellingPointCoverage || {};
   const sellingPointTotal = Number(sellingPointCoverage.total || 0);
   const sellingPointAssigned = Number(sellingPointCoverage.assigned || 0);
   const sellingPointMissing = Array.isArray(sellingPointCoverage.missing) ? sellingPointCoverage.missing : [];
   const directorConfig = state.aiImages.director || {};
+  const referenceAnalysis = directorRun.referenceAnalysis || {};
+  const referenceBreakdown = Array.isArray(directorRun.referenceBreakdown) ? directorRun.referenceBreakdown : [];
+  const expectedReferenceAnalysisCount = Number(
+    directorRun.referenceImageCount || conversation.referenceImages?.length || 0,
+  );
+  const marketResearchRun = directorRun.marketResearch || {};
+  const companyCreativePages = (conversation.suitePages || []).filter((page) => page.companyCreativeLogic?.version);
+  const productVisualDNA = directorRun.productVisualDNA
+    || companyCreativePages[0]?.companyCreativeLogic?.productVisualDNA
+    || {};
+  const productDnaColors = Array.from(new Set([
+    ...(Array.isArray(productVisualDNA.observableColors) ? productVisualDNA.observableColors : []),
+    productVisualDNA.backgroundColor,
+    productVisualDNA.accentColor,
+    productVisualDNA.textColor,
+  ].filter((color) => /^#[0-9a-f]{6}$/i.test(String(color || "")))));
+  const productDnaAnchorCount = ["shapeAnchors", "materialAnchors", "labelAnchors"]
+    .reduce((total, field) => total + (Array.isArray(productVisualDNA[field]) ? productVisualDNA[field].length : 0), 0);
+  const companyNarrativeStages = new Set(companyCreativePages
+    .map((page) => page.companyCreativeLogic?.narrativeStage)
+    .filter(Boolean));
+  const mappedPromptPages = companyCreativePages.filter((page) => {
+    const mapping = page.companyCreativeLogic?.analysisPromptMapping || {};
+    return mapping.product && mapping.layout && mapping.copy !== undefined && mapping.realism;
+  }).length;
+  const moduleBlueprintPages = (conversation.suitePages || []).filter((page) => (
+    Array.isArray(page.companyModulePlan) && page.companyModulePlan.length >= 4
+  ));
+  const companyModuleCount = moduleBlueprintPages.reduce((total, page) => total + page.companyModulePlan.length, 0);
+  const referenceAnalysisCount = ["product", "layout", "informationArchitecture"]
+    .filter((field) => String(referenceAnalysis[field] || "").trim()).length;
+  const previsualizedPages = (conversation.suitePages || []).filter((page) => {
+    const visual = page.visualEnhancement || {};
+    return visual.emotionAnchor && visual.shotConcept && visual.camera && visual.lighting
+      && visual.spatialPlan && visual.modulePlan && Array.isArray(visual.riskControls);
+  }).length;
+  const humanPages = (conversation.suitePages || []).filter((page) => page.hasHuman === true).length;
+  const marketResearchVersion = marketResearchRun.version || suiteConfig.marketResearchVersion || "";
   const generationProfile = aiImageGenerationProfile(conversation);
   const directorTone = ["model", "cache"].includes(directorRun.source)
     ? "ready"
@@ -4582,6 +4768,88 @@ function renderAiImageDirectorMonitor(conversation = {}) {
         ? `${Number(directorRun.analysisCounts?.main || 0)} 主卖点 · ${Number(directorRun.analysisCounts?.secondary || 0)} 次卖点 · 0ms`
         : directorRun.warning || "模型失败时自动使用本地规则",
     },
+    ...(jpCreativeDirector ? [
+      {
+        tone: referenceAnalysisCount === 3 || planReady ? "ready" : "waiting",
+        label: "三层参考分析",
+        value: referenceAnalysisCount === 3 ? "产品 / 排版 / 信息架构已读透" : planReady ? "本地三层骨架已加载" : "等待识别参考图",
+        hint: "提取HEX与材质、模块密度与留白、卖点证据层级",
+      },
+      {
+        tone: expectedReferenceAnalysisCount > 0 && referenceBreakdown.length === expectedReferenceAnalysisCount
+          ? "ready"
+          : planReady ? "warning" : "waiting",
+        label: "逐图三层解剖",
+        value: `${referenceBreakdown.length}/${expectedReferenceAnalysisCount || conversation.referenceImages?.length || 0} 张参考图已逐张分析`,
+        hint: "每张分别记录产品事实、排版骨架、信息架构、用途与禁止迁移项",
+      },
+      {
+        tone: productDnaColors.length ? "ready" : planReady ? "warning" : "waiting",
+        label: "产品视觉 DNA",
+        value: productDnaColors.length ? productDnaColors.join(" / ") : "等待提取产品色彩基因",
+        hint: `${productDnaAnchorCount} 项形状/材质/标签锚点 · 色板从产品与参考图生长`,
+      },
+      {
+        tone: companyNarrativeStages.size === 5 ? "ready" : planReady ? "warning" : "waiting",
+        label: "整套叙事弧线",
+        value: `${companyNarrativeStages.size}/5 阶段已覆盖`,
+        hint: "问题解决 → 卖点深挖 → 本土信任 → 证据工艺 → 决策收尾",
+      },
+      {
+        tone: mappedPromptPages === suiteConfig.count ? "ready" : planReady ? "warning" : "waiting",
+        label: "分析→Prompt映射",
+        value: `${mappedPromptPages}/${suiteConfig.count} 页已建立映射`,
+        hint: "产品、受众、背景、版式、文案、语言、真实感逐项进入当前页Prompt",
+      },
+      {
+        tone: moduleBlueprintPages.length === suiteConfig.count ? "ready" : planReady ? "warning" : "waiting",
+        label: "公司式模块施工图",
+        value: `${moduleBlueprintPages.length}/${suiteConfig.count} 页 · ${companyModuleCount} 个模块`,
+        hint: "每个模块明确 Visual / Content / Position / Weight / Container",
+      },
+      {
+        tone: suiteConfig.planVersion === "director-v24-company-photography-density" ? "ready" : "waiting",
+        label: "公司式短 Prompt 执行",
+        value: "正向成片 Brief · 单页 ≤ 7800 字符",
+        hint: "先写具体场景与当前卖点，再写模块施工图；移除重复规则和整套卖点干扰",
+      },
+      {
+        tone: marketResearchVersion ? "ready" : "waiting",
+        label: "日本市场调研",
+        value: marketResearchVersion ? `本地权威档案 · ${marketResearchVersion}` : "等待加载市场档案",
+        hint: "Rakuten商品摄影、商品同一性与W3C/JIS日文组版规则",
+      },
+      {
+        tone: previsualizedPages === suiteConfig.count ? "ready" : planReady ? "warning" : "waiting",
+        label: "先成像后落字",
+        value: `${previsualizedPages}/${suiteConfig.count} 页摄影预演`,
+        hint: "先形成完整成片，再写焦段、光线、动作与文案",
+      },
+      {
+        tone: previsualizedPages === suiteConfig.count ? "ready" : planReady ? "warning" : "waiting",
+        label: "摄影与空间规划",
+        value: previsualizedPages ? `${previsualizedPages} 页已锁定焦段/光向/百分比分区` : "等待逐页导演brief",
+        hint: "相邻页机位、景别、光向、场景和信息区不重复",
+      },
+      {
+        tone: planReady ? "ready" : "waiting",
+        label: "密度与防翻车",
+        value: planReady ? "首图2模块 · 普通页最多3模块 · 专用页结构锁定" : "等待结构编排",
+        hint: "同页模块只证明同一卖点；少大准日文、简单手势、真实肤质",
+      },
+      {
+        tone: humanPages === 24 ? "ready" : planReady ? "warning" : "waiting",
+        label: "人物页硬约束",
+        value: planReady ? `${humanPages}/25 页已声明 has_human` : "等待识别人物页",
+        hint: "单模特、40代日本女性、真实毛孔、简单手势与自然解剖",
+      },
+      {
+        tone: planReady ? "ready" : "waiting",
+        label: "完整Prompt送达",
+        value: planReady ? "逐页最高 24,000 字符直送生图节点" : "等待逐页Prompt编译",
+        hint: "保留尾部商品锁、人物锁、质检门与防翻车约束",
+      },
+    ] : []),
     {
       tone: referenceReady ? "ready" : "danger",
       label: "商品主图",
@@ -4605,6 +4873,22 @@ function renderAiImageDirectorMonitor(conversation = {}) {
       label: countryConfig ? `${countryConfig.label}${detailSuite ? "COD详情图" : "落地页"}规则` : monitorConfig.complianceLabel,
       value: "生成规则已注入",
       hint: monitorConfig.complianceHint,
+    },
+    {
+      tone: inspirationRun.ready ? "ready" : inspirationRun.installed ? "warning" : "waiting",
+      label: "灵感检索 Skill",
+      value: inspirationRun.ready
+        ? inspirationBlueprintReady
+          ? `Open Image Prompts · ${inspirationBlueprintCount} 条完整蓝图`
+          : `Open Image Prompts · ${Number(inspirationRun.referenceCount || 0)} 条标签参考`
+        : inspirationRun.installed
+        ? "Open Image Prompts · 等待数据"
+        : "Open Image Prompts · 待安装",
+      hint: inspirationRun.ready
+        ? inspirationBlueprintReady
+          ? `${inspirationRun.taxonomyVersion || "oip-visual-v2"} · 完整提示词仅供AI导演提炼 · 原提示词与参考图锁定`
+          : `${inspirationRun.taxonomyVersion || "oip-visual-v2"} · 视觉标签参考 · 原提示词内容保持`
+        : inspirationRun.message || "本地只读提示词参考库",
     },
     ...(codExpressive ? [{
       tone: sellingPointTotal && sellingPointAssigned >= sellingPointTotal ? "ready" : planReady ? "warning" : "waiting",
@@ -4812,6 +5096,7 @@ function renderAiImageSuitePlan(conversation = {}) {
         const nodeName = material.nodeName || meta.nodeName || aiImageGenerationNodeForPage(pageNumber).name || "自动调度";
         const elapsedMs = Number(material.generationMs || meta.elapsedMs || (["running", "retrying", "quality-retry"].includes(stateValue) && meta.startedAt ? Date.now() - Number(meta.startedAt) : 0));
         const attempt = Number(meta.attempt || 0);
+        const densityLabel = { minimal: "简洁", focused: "聚焦", structured: "结构化" }[page.contentDensity] || "聚焦";
         return `
           <article class="ai-image-suite-plan-item ${esc(stateValue)}">
             <span class="ai-image-suite-plan-number">${String(pageNumber).padStart(2, "0")}</span>
@@ -4821,6 +5106,7 @@ function renderAiImageSuitePlan(conversation = {}) {
               <p>${esc(page.focus || "")}</p>
               <div class="ai-image-suite-live-meta">
                 <span>NODE <b>${esc(nodeName)}</b></span>
+                <span>内容 <b>${esc(densityLabel)}</b></span>
                 <span>${esc(stateLabel)}</span>
                 <span>${elapsedMs ? `耗时 ${esc(formatAiImageDuration(elapsedMs))}` : "等待计时"}</span>
                 ${attempt > 1 ? `<span>第 ${attempt} 次</span>` : ""}
@@ -4876,6 +5162,7 @@ function renderAiImageResults() {
   const suiteCount = suiteConfig?.count || Number(conversation.count || 1);
   const suiteCountryLabel = aiImageCodCountryActive(conversation) ? aiImageCodCountryConfig(conversation.suiteCountry || "KR").label : "";
   const modeLabel = suiteConfig ? `${suiteConfig.label}${suiteCountryLabel ? ` · ${suiteCountryLabel}` : ""}` : aiImageModeLabel(conversation.mode || "text");
+  const providerLabel = aiImageProviderLabel(conversation.model || state.aiImages.model || "gpt-image-2");
   const unit = suiteConfig?.unit || "张";
   const promptBlock = prompt
     ? `
@@ -4918,7 +5205,7 @@ function renderAiImageResults() {
       <div class="ai-image-generating">
         <span class="ai-image-generating-spinner"></span>
         <div class="ai-image-generating-copy">
-          <strong>${suiteActive ? esc(suiteSummary.message || `正在通过账号池分批生成整套${suiteConfig.label}`) : `正在调用 chatgpt2api 执行${esc(modeLabel)}，生成 ${esc(conversation.count || 1)} 张图片`}</strong>
+          <strong>${suiteActive ? esc(suiteSummary.message || `正在通过${providerLabel}分批生成整套${suiteConfig.label}`) : `正在调用 ${esc(providerLabel)} 执行${esc(modeLabel)}，生成 ${esc(conversation.count || 1)} 张图片`}</strong>
           ${suiteActive ? `
             <small>完成 ${esc(suiteSummary.succeeded || 0)}/${suiteCount} · 生成或待恢复 ${esc(suiteSummary.running || 0)} · 失败 ${esc(suiteSummary.failed || 0)}</small>
             <div class="ai-image-generation-progress" aria-label="${esc(suiteConfig.label)}生成进度"><i style="width:${suiteProgress}%"></i></div>
@@ -4960,6 +5247,11 @@ function renderAiImageResultCard(material, index, conversation) {
   const pixelHeight = Number(material.pixelHeight || 0);
   const isStrip = pixelWidth > 0 && pixelHeight > 0 && pixelWidth / pixelHeight >= 4;
   const thumbAspect = pixelWidth > 0 && pixelHeight > 0 ? `style="aspect-ratio:${pixelWidth}/${pixelHeight}"` : "";
+  const lockedPageContent = pagePlan
+    ? [pagePlan.focus, pagePlan.scene, pagePlan.pose, pagePlan.composition, pagePlan.headline].filter(Boolean).join("\n")
+    : conversation.userIntent || "";
+  const visualEnhancement = pagePlan?.visualEnhancement || material.singlePromptBlueprint?.visualEnhancement || {};
+  const finalPrompt = material.prompt || "";
   const meta = [
     material.model || conversation.model || "gpt-image-2",
     material.sizePreset || conversation.size || "auto",
@@ -4972,7 +5264,7 @@ function renderAiImageResultCard(material, index, conversation) {
   return `
     <article class="ai-image-result-card ${isStrip ? "is-strip" : ""} ${aiReview ? (aiReview.passed ? "review-pass" : "review-fail") : ""}">
       <button class="ai-image-result-thumb" type="button" data-ai-preview-index="${index}" ${thumbAspect} ${preview ? "" : "disabled"}>
-        ${preview ? `<img src="${esc(preview)}" alt="${esc(title)}" />` : `<span>图片已保存</span>`}
+        ${preview ? `<img src="${esc(preview)}" alt="${esc(title)}" loading="lazy" decoding="async" />` : `<span>图片已保存</span>`}
       </button>
       <div class="ai-image-result-meta">
         <span>${esc(pageLabel)}</span>
@@ -4991,6 +5283,27 @@ function renderAiImageResultCard(material, index, conversation) {
           ${aiReview.issues?.length ? `<ul>${aiReview.issues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul>` : `<p>${aiReview.passed ? "商品、卖点、文字与画面检查通过" : "复检后仍建议人工确认"}</p>`}
         </div>
       ` : ""}
+      <details class="ai-image-prompt-diff">
+        <summary>提示词保护与增强对照</summary>
+        <div class="ai-image-prompt-diff-grid">
+          <section class="locked">
+            <span>原始内容锁定</span>
+            <pre>${esc(conversation.userIntent || "使用当前专业提示词")}</pre>
+          </section>
+          <section class="page-lock">
+            <span>当前图片任务</span>
+            <pre>${esc(lockedPageContent || "单图任务")}</pre>
+          </section>
+          <section class="enhancement">
+            <span>AI导演 / Open Image Prompts增强</span>
+            <pre>${esc(Object.keys(visualEnhancement).length ? JSON.stringify(visualEnhancement, null, 2) : "本图使用模板摄影规则")}</pre>
+          </section>
+          <section class="final">
+            <span>最终提交提示词</span>
+            <pre>${esc(finalPrompt || conversation.prompt || "")}</pre>
+          </section>
+        </div>
+      </details>
       <div class="ai-image-result-tags">
         ${AI_IMAGE_RESULT_TAGS.map((tag) => `
           <button class="${activeTag === tag.key ? "active" : ""}" type="button" data-ai-tag-index="${index}" data-ai-tag="${esc(tag.key)}">
@@ -5391,10 +5704,10 @@ function mergeAiImageSuitePayload(conversation, payload = {}) {
   conversation.skillId = payload.skillId || conversation.skillId;
   conversation.skillVersion = payload.skillVersion || conversation.skillVersion;
   conversation.lockLevel = payload.lockLevel || conversation.lockLevel;
-  conversation.suiteKey = payload.suiteKey || conversation.suiteKey || "jp-landing-page-32";
+  conversation.suiteKey = payload.suiteKey || conversation.suiteKey || "jp-landing-page-25";
   conversation.suiteCount = Number(payload.suiteCount || conversation.suiteCount || conversation.count || 0);
   conversation.suiteCountry = payload.suiteCountry || conversation.suiteCountry || "KR";
-  const suiteConfig = aiImageSuiteConfig(conversation) || AI_IMAGE_SUITE_CONFIGS["jp-landing-page-32"];
+  const suiteConfig = aiImageSuiteConfig(conversation) || AI_IMAGE_SUITE_CONFIGS["jp-landing-page-25"];
   conversation.count = suiteConfig.count;
   conversation.suiteRunId = payload.suiteRunId || conversation.suiteRunId || "";
   conversation.suitePlanVersion = payload.suitePlanVersion || conversation.suitePlanVersion || suiteConfig.planVersion;
@@ -5419,6 +5732,10 @@ function setAiImageDirectorStage(conversation, stageIndex = 0, message = "") {
 }
 
 async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
+  // Always pull the administrator-owned shared runtime immediately before a
+  // real director run. Long-lived browser sessions must not keep an older
+  // model/enable state after another administrator changes the configuration.
+  await loadAiImageConfig(true);
   const suiteConfig = aiImageSuiteConfig(conversation);
   if (!suiteConfig) throw new Error("不支持的套图类型");
   const formData = new FormData();
@@ -5429,10 +5746,15 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
   formData.append("suiteCount", String(suiteConfig.count));
   formData.append("suiteCountry", conversation.suiteCountry || "KR");
   formData.append("useDirector", "true");
-  const directorReference = (conversation.referenceImages || []).find((reference) => reference.file);
-  if (directorReference?.file) {
-    formData.append("reference0", directorReference.file, directorReference.name || "product-reference.jpg");
-  }
+  const directorReferences = (conversation.referenceImages || []).filter((reference) => reference.file).slice(0, 16);
+  directorReferences.forEach((reference, index) => {
+    formData.append(`reference${index}`, reference.file, reference.name || `reference-${index + 1}.jpg`);
+  });
+  formData.append("referenceBindings", JSON.stringify(directorReferences.map((reference, index) => ({
+    index: index + 1,
+    filename: reference.name || `reference-${index + 1}.jpg`,
+    role: aiImageReferenceRoleKey(reference, index),
+  }))));
   conversation.status = "planning";
   conversation.director = { source: "pending", status: "running", cacheHit: false, stage: "cache", stageIndex: 0, message: "正在读取产品分析缓存" };
   setAiImageDirectorStage(conversation, 0, "正在读取产品分析缓存");
@@ -5593,9 +5915,35 @@ function summarizeAiImageSuiteReview(conversation, overrides = {}) {
   return conversation.review;
 }
 
+function aiImageSuiteUsesGeneratedStyleAnchor(conversation = {}) {
+  return conversation.suiteKey !== "jp-landing-page-25";
+}
+
+async function reportAiImageQualityTelemetry(conversation, results = []) {
+  const entries = (results || []).map((result) => {
+    const material = (conversation.materials || []).find((item) => Number(item.suitePage) === Number(result.page));
+    return {
+      nodeId: material?.nodeId || material?.remoteNodeId || "",
+      score: Number(result.score || 0),
+      passed: Boolean(result.passed),
+      suiteKey: conversation.suiteKey || "",
+      page: Number(result.page || 0),
+    };
+  }).filter((entry) => entry.nodeId);
+  if (!entries.length) return;
+  try {
+    await api("/api/sku-board/ai-image-quality-telemetry", {
+      method: "POST",
+      body: JSON.stringify({ entries }),
+    });
+  } catch (error) {
+    console.warn("Unable to report image quality telemetry", error);
+  }
+}
+
 async function reviewAiImageSuitePageNumbers(conversation, pageNumbers = [], attempt = 1) {
-  const productReference = (conversation.referenceImages || []).find((reference) => reference.file);
-  if (!productReference?.file || !pageNumbers.length) return { reviewed: false, results: [], status: "skipped" };
+  const productReferences = aiImageSuiteGenerationReferences(conversation).slice(0, 12);
+  if (!productReferences.length || !pageNumbers.length) return { reviewed: false, results: [], status: "skipped" };
   const allResults = [];
   let threshold = Number(state.aiImages.director?.reviewThreshold || 78);
   const batches = [];
@@ -5627,7 +5975,9 @@ async function reviewAiImageSuitePageNumbers(conversation, pageNumbers = [], att
     formData.append("suiteBrief", conversation.userIntent || "");
     formData.append("suitePlan", JSON.stringify(conversation.suitePages || []));
     formData.append("pageIndexes", JSON.stringify(batchPages));
-    formData.append("reference0", productReference.file, productReference.name || "product-reference.jpg");
+    productReferences.forEach((reference, index) => {
+      formData.append(`reference${index}`, reference.file, reference.name || `product-reference-${index + 1}.jpg`);
+    });
     generatedFiles.forEach((file, index) => formData.append(`generated${index}`, file, file.name));
     const payload = await api("/api/sku-board/ai-image-suite-review", {
       method: "POST",
@@ -5661,6 +6011,7 @@ async function reviewAiImageSuitePageNumbers(conversation, pageNumbers = [], att
     return { reviewed: false, results: allResults, status: stoppedPayload.status || "warning", warning: stoppedPayload.warning || stoppedPayload.message || "" };
   }
   allResults.sort((a, b) => Number(a.page) - Number(b.page));
+  await reportAiImageQualityTelemetry(conversation, allResults);
   return { reviewed: true, results: allResults, status: "ok", threshold };
 }
 
@@ -5679,36 +6030,50 @@ function aiImageSuiteReferenceRoleScore(roleKey, pagePlanText = "") {
     .reduce((score, keyword) => score + (pagePlanText.includes(keyword) ? 1 : 0), 0);
 }
 
-function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
+function aiImageSuiteGenerationReferences(conversation = {}) {
   const references = normalizeAiImageReferenceRoles(
     (conversation.referenceImages || []).filter((reference) => reference.file),
   );
-  if (references.length <= AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT) return references;
+  if (conversation.suiteKey !== "jp-landing-page-25") return references;
+  return references.filter((reference, index) => AI_IMAGE_JP_GENERATION_REFERENCE_ROLES.has(aiImageReferenceRoleKey(reference, index)));
+}
 
+function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
+  const references = aiImageSuiteGenerationReferences(conversation);
+  const japaneseLanding = conversation.suiteKey === "jp-landing-page-25";
   const products = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "product");
   const productSources = products.length ? products : references.slice(0, 1);
+  const personSources = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "person");
+  const pagePlan = conversation.suitePages?.[page - 1] || {};
+  const hasHuman = pagePlan.hasHuman !== false;
   const selected = [];
   const add = (reference) => {
     if (reference && !selected.includes(reference)) selected.push(reference);
   };
 
-  if (page === 1) {
+  if (japaneseLanding && Number(page) === 24) {
+    productSources.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT).forEach(add);
+    return selected;
+  }
+  if (japaneseLanding) {
+    add(productSources[(Math.max(1, Number(page)) - 1) % Math.max(1, productSources.length)]);
+    if (japaneseLanding && hasHuman) add(personSources[0]);
+  } else if (references.length <= AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT) {
+    return references;
+  } else if (page === 1) {
     productSources.slice(0, 4).forEach(add);
     const supplements = references.filter((reference) => !selected.includes(reference));
     const preferred = supplements.find((reference) => ["styleSet", "layout"].includes(reference.role))
       || supplements[0];
     add(preferred);
     return selected.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT);
+  } else {
+    add(productSources[(Math.max(1, Number(page)) - 1) % productSources.length]);
   }
 
-  add(productSources[(Math.max(1, Number(page)) - 1) % productSources.length]);
-  const pagePlanText = JSON.stringify(conversation.suitePages?.[page - 1] || {}).toLowerCase();
+  const pagePlanText = JSON.stringify(pagePlan).toLowerCase();
   const supplemental = references
-    .map((reference, index) => ({
-      reference,
-      role: reference.role,
-      index,
-    }))
+    .map((reference, index) => ({ reference, role: reference.role, index }))
     .filter((item) => item.role !== "product" && !selected.includes(item.reference));
   supplemental.sort((left, right) => {
     const scoreDifference = aiImageSuiteReferenceRoleScore(right.role, pagePlanText)
@@ -5718,7 +6083,10 @@ function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
     return ((left.index - pageOffset + references.length) % references.length)
       - ((right.index - pageOffset + references.length) % references.length);
   });
-  add(supplemental[0]?.reference);
+  supplemental
+    .filter((item) => item.role !== "person" || hasHuman)
+    .slice(0, Math.max(0, AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT - selected.length))
+    .forEach((item) => add(item.reference));
   return selected.slice(0, AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT);
 }
 
@@ -5754,13 +6122,17 @@ function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, 
   formData.append("suiteBrief", effectiveIntent);
   formData.append("suitePlan", JSON.stringify(conversation.suitePages || []));
   formData.append("suitePageIndexes", JSON.stringify([page]));
+  if (page === 1 && aiImageGenerationProfile(conversation).key !== "fast" && !reviewInstruction && !editSource?.file) {
+    formData.append("heroAB", "true");
+  }
   if (reviewInstruction) formData.append("suiteReviewInstruction", reviewInstruction);
-  const activeStyleAnchor = editSource?.file ? null : styleAnchor;
+  const activeStyleAnchor = editSource?.file || !aiImageSuiteUsesGeneratedStyleAnchor(conversation) ? null : styleAnchor;
   const productReferenceIndexes = references
     .map((reference, index) => ({ reference, index: index + 1, role: aiImageReferenceRoleKey(reference, index) }))
     .filter((item) => item.role === "product")
     .map((item) => item.index);
   formData.append("productReferenceIndexes", JSON.stringify(productReferenceIndexes));
+  formData.append("referenceBindings", JSON.stringify(aiImageReferenceBindings(references)));
   formData.append("referenceUploadCount", String(references.length + (activeStyleAnchor?.file && page !== 1 ? 1 : 0) + (editSource?.file ? 1 : 0)));
   references.forEach((reference, index) => {
     formData.append(`reference${index}`, reference.file, reference.name);
@@ -5952,7 +6324,9 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
       }];
     })),
   };
-  let styleAnchor = await aiImageSuiteStyleAnchorFile(conversation);
+  let styleAnchor = aiImageSuiteUsesGeneratedStyleAnchor(conversation)
+    ? await aiImageSuiteStyleAnchorFile(conversation)
+    : null;
   updateAiImageSuiteProgress(conversation, progress, button);
 
   const runPage = async (page, options = {}) => {
@@ -6093,7 +6467,9 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
     if (orderedPages.includes(1) && (!hasHero() || forcedPageSet.has(1))) {
       await runPage(1, { editSource: pageEditSources.get(1) || null });
     }
-    styleAnchor = await aiImageSuiteStyleAnchorFile(conversation);
+    styleAnchor = aiImageSuiteUsesGeneratedStyleAnchor(conversation)
+      ? await aiImageSuiteStyleAnchorFile(conversation)
+      : null;
     await runPageBatch(orderedPages.filter((page) => page !== 1));
   };
 
@@ -6451,7 +6827,7 @@ async function generateAiImage(event) {
     ? `正在补生成第 ${retryPageIndexes.join("、")} ${suiteConfig.unit}`
     : suiteConfig
     ? `正在通过远端账号池分批生成 ${suiteConfig.label}（${suiteConfig.count}${suiteConfig.unit}）`
-    : "正在调用 chatgpt2api";
+    : `正在调用 ${aiImageProviderLabel(conversation.model || "gpt-image-2")}`;
   const startedAt = performance.now();
   try {
     const references = conversation.referenceImages || [];
@@ -6484,6 +6860,7 @@ async function generateAiImage(event) {
       formData.append("skillVersion", conversation.skillVersion);
       formData.append("lockLevel", conversation.lockLevel);
       formData.append("templateKey", conversation.templateKey || "");
+      formData.append("useDirector", state.aiImages.director?.enabled && state.aiImages.director?.openImagePromptsEnabled !== false ? "true" : "false");
       formData.append("codHookType", conversation.codHookType || "hook");
       formData.append("suiteCountry", conversation.suiteCountry || "KR");
       formData.append("productReferenceIndexes", JSON.stringify(productReferenceIndexes));
@@ -6517,6 +6894,7 @@ async function generateAiImage(event) {
           skillVersion: conversation.skillVersion,
           lockLevel: conversation.lockLevel,
           templateKey: conversation.templateKey || "",
+          useDirector: Boolean(state.aiImages.director?.enabled && state.aiImages.director?.openImagePromptsEnabled !== false),
           codHookType: conversation.codHookType || "hook",
           suiteCountry: conversation.suiteCountry || "KR",
           suiteKey: conversation.suiteKey || "",
@@ -6756,7 +7134,7 @@ async function deleteAiImageMaterial(index = 0) {
   const conversation = aiImageActiveConversation();
   const material = conversation?.materials?.[Number(index)];
   if (!conversation || !material) return;
-  if (!window.confirm(`确定删除这张图片吗？\n${material.suiteTitle || material.name || material.id}\n远端 chatgpt2api 中的原图也会删除。`)) return;
+  if (!window.confirm(`确定删除这张图片吗？\n${material.suiteTitle || material.name || material.id}\n远端 ${material.provider === "acore" ? "Giikin Acore" : "ChatGPT2API"} 中的原图也会删除。`)) return;
   const result = await deleteAiImageMaterials([material]);
   if (!result.deletedIds.length) throw new Error(result.errors[0]?.message || "图片删除失败");
   removeAiImageMaterialsFromConversation(conversation, result.deletedIds);
@@ -6836,13 +7214,14 @@ function renderAdLaunchForm() {
   $("#ad-launch-optimization").innerHTML = mapOptions(options.optimizations || { LINK_CLICKS: "Link Clicks" }, $("#ad-launch-optimization")?.value || "LINK_CLICKS");
   $("#ad-launch-conversion-event").innerHTML = mapOptions(options.conversionEvents || { PURCHASE: "Purchase" }, $("#ad-launch-conversion-event")?.value || "PURCHASE");
   $("#ad-launch-ai-model").innerHTML = (options.aiImage?.models || ["gpt-image-2", "codex-gpt-image-2"])
-    .map((model) => `<option value="${esc(model)}" ${model === ($("#ad-launch-ai-model")?.value || options.aiImage?.model || "gpt-image-2") ? "selected" : ""}>${esc(model)}</option>`)
+    .map((model) => `<option value="${esc(model)}" ${model === ($("#ad-launch-ai-model")?.value || options.aiImage?.model || "gpt-image-2") ? "selected" : ""}>${esc(aiImageModelLabel(model))}</option>`)
     .join("");
   $("#ad-launch-ai-size").innerHTML = (options.aiImage?.sizes || ["1024x1024", "1024x1536", "1536x1024"])
     .map((size) => `<option value="${esc(size)}" ${size === ($("#ad-launch-ai-size")?.value || "1024x1024") ? "selected" : ""}>${esc(size)}</option>`)
     .join("");
+  const adLaunchProvider = aiImageProviderLabel($("#ad-launch-ai-model")?.value || options.aiImage?.model || "gpt-image-2");
   $("#ad-launch-ai-status").textContent = options.aiImage?.enabled
-    ? `已连接 chatgpt2api${Number(options.aiImage?.nodeCount || 1) > 1 ? ` · ${options.aiImage.nodeCount} 个服务节点并行` : ""}`
+    ? `已连接 ${adLaunchProvider}${Number(options.aiImage?.nodeCount || 1) > 1 ? ` · ${options.aiImage.nodeCount} 个服务节点` : ""}`
     : "未配置生图服务";
   $("#ad-launch-countries").value = $("#ad-launch-countries").value || options.defaults?.country || "JP";
   $("#ad-launch-daily-budget").value = $("#ad-launch-daily-budget").value || options.defaults?.dailyBudget || 10;
@@ -7122,7 +7501,7 @@ async function generateAdLaunchAiImage() {
   const original = button.textContent;
   button.disabled = true;
   button.textContent = "生成中...";
-  $("#ad-launch-ai-status").textContent = "正在调用 chatgpt2api";
+  $("#ad-launch-ai-status").textContent = `正在调用 ${aiImageProviderLabel($("#ad-launch-ai-model").value || "gpt-image-2")}`;
   try {
     const payload = await api("/api/sku-board/ad-launch-ai-image", {
       method: "POST",
@@ -8720,6 +9099,13 @@ function setFilter(key, value) {
 
 function setActiveView(view) {
   state.view = view || "board";
+  document.body.dataset.activeView = state.view;
+  const aiWorkspaceActive = state.view === "aiImages";
+  const brandEyebrow = document.querySelector(".brand-lockup .eyebrow");
+  const brandTitle = document.querySelector(".brand-lockup h1");
+  if (brandEyebrow) brandEyebrow.textContent = aiWorkspaceActive ? "SOSOVE / AI Creative" : "SOSOVE / SKU Board";
+  if (brandTitle) brandTitle.textContent = aiWorkspaceActive ? "AI 创意工坊" : "主推品作战看板";
+  document.title = aiWorkspaceActive ? "SOSOVE AI 创意工坊" : "SOSOVE 主推品作战看板";
   document.querySelectorAll("[data-view]").forEach((button) => {
     const active = button.dataset.view === state.view;
     button.classList.toggle("active", active);
@@ -8776,7 +9162,7 @@ function setActiveView(view) {
   if (state.view === "aiImages") {
     if (state.auth.user) {
       Promise.all([
-        loadAdLaunches(false),
+        loadAiImageConfig(true),
         isAdmin() && !state.aiImages.director?.loaded ? loadAiDirectorSettings(true) : Promise.resolve(null),
         !state.aiImages.health?.checkedAt ? loadAiImageHealth(true) : Promise.resolve(null),
       ])
@@ -9032,7 +9418,7 @@ function bindEvents() {
   });
   $("#ai-image-upload-btn").addEventListener("click", () => $("#ai-image-reference-file").click());
   $("#ai-image-reference-file").addEventListener("change", (event) => {
-    addAiImageReferences(event.target.files || []);
+    addAiImageReferences(event.target.files || [], { role: aiImagePrimaryUploadReferenceRole() });
     event.target.value = "";
   });
   $("#ai-image-model-upload-btn")?.addEventListener("click", () => {
@@ -9046,6 +9432,19 @@ function bindEvents() {
   });
   $("#ai-image-model-reference-file")?.addEventListener("change", (event) => {
     addAiImageReferences(event.target.files || [], { role: "person" });
+    event.target.value = "";
+  });
+  $("#ai-image-usage-upload-btn")?.addEventListener("click", () => {
+    const conversation = ensureAiImageConversation();
+    const hasProduct = (conversation.referenceImages || []).some((reference, index) => aiImageReferenceRoleKey(reference, index) === "product");
+    if (!hasProduct) {
+      showToast("请先上传产品白底图，再上传当前商品的模特上身图");
+      return;
+    }
+    $("#ai-image-usage-reference-file").click();
+  });
+  $("#ai-image-usage-reference-file")?.addEventListener("change", (event) => {
+    addAiImageReferences(event.target.files || [], { role: "usage" });
     event.target.value = "";
   });
   $("#ai-image-style-set-upload-btn")?.addEventListener("click", () => {
@@ -9094,7 +9493,7 @@ function bindEvents() {
   });
   $("#ai-director-save-btn").addEventListener("click", () => saveAiDirectorSettings(false));
   $("#ai-director-test-btn").addEventListener("click", () => testAiDirectorConnection());
-  ["#ai-director-base-url", "#ai-director-model", "#ai-director-timeout", "#ai-director-api-key", "#ai-director-enabled", "#ai-director-vision", "#ai-director-review-enabled", "#ai-director-review-threshold"].forEach((selector) => {
+  ["#ai-director-base-url", "#ai-director-model", "#ai-director-timeout", "#ai-director-api-key", "#ai-director-enabled", "#ai-director-vision", "#ai-director-open-prompts", "#ai-director-review-enabled", "#ai-director-review-threshold"].forEach((selector) => {
     const field = $(selector);
     const eventName = field?.type === "checkbox" || field?.tagName === "SELECT" ? "change" : "input";
     field?.addEventListener(eventName, () => {
@@ -9206,6 +9605,10 @@ function bindEvents() {
   $("#ai-image-template-strip").addEventListener("click", (event) => {
     const templateButton = event.target.closest("[data-ai-template]");
     if (templateButton) applyAiImageTemplate(templateButton.dataset.aiTemplate);
+  });
+  $("#ai-image-quick-entry").addEventListener("click", (event) => {
+    const quickButton = event.target.closest("[data-ai-quick-template]");
+    if (quickButton) startAiImageQuickWorkflow(quickButton.dataset.aiQuickTemplate);
   });
   $("#ai-image-mode-strip").addEventListener("click", (event) => {
     const modeButton = event.target.closest("[data-ai-mode]");
