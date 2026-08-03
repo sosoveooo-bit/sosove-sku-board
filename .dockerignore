@@ -9,4 +9,6 @@ __pycache__/
 .env.*
 !/.env.example
 data/
+!open-image-prompts/data/
+!open-image-prompts/data/public-corpus.json
 .pytest_cache/
