@@ -187,6 +187,7 @@ const AI_IMAGE_SUITE_REVIEW_WORKER_COUNT = 2;
 const AI_IMAGE_SUITE_REVIEW_MAX_RETRIES = 1;
 const AI_IMAGE_JP_GENERATION_REFERENCE_ROLES = new Set(["product", "detail", "usage", "person"]);
 const AI_IMAGE_REFERENCE_ROLES = [
+  { key: "auto", label: "AI自动识别", instruction: "Inspect this reference during suite planning and classify its role before generation. Preserve every observable product fact and use the image only for the classified evidence." },
   { key: "product", label: "主商品", instruction: "Use as the exact product identity source." },
   { key: "detail", label: "产品细节", instruction: "Use only for observable construction, texture and detail evidence." },
   { key: "usage", label: "使用方式", instruction: "Use only for the natural operation, wearing or usage action." },
@@ -226,11 +227,11 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "页",
     label: "日本产品落地页 25图",
     planTitle: "日本产品落地页 25图品牌导演脚本",
-    planHint: "创意总监模式：先成像、三层读图、加载日本市场调研，再为固定10张主图+15张详情图生成逐页摄影brief与人物硬约束",
+    planHint: "创意总监模式：完整继承全部卖点、背书与限制项，先成像、三层读图，再为固定10张主图+15张详情图生成25个唯一摄影brief",
     templateKey: "landing",
-    planVersion: "director-v24-company-photography-density",
+    planVersion: "director-v26-source-complete",
     marketResearchVersion: "jp-market-research-2026-07-30-v1",
-    promptPlaceholder: "填写产品名称、全部颜色/规格、3个核心卖点、5个子卖点和特殊要求；系统会分析全部商品图、模特图与版式图并生成固定25张日本落地页",
+    promptPlaceholder: "填写产品名称、全部颜色/规格、全部卖点、权威背书和特殊要求；系统会逐项保留原意、分析全部参考图并生成固定25张日本落地页",
     resultClass: "landing",
     anchorPrefix: "landing-page",
     sizeLocked: true,
@@ -302,7 +303,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "COD国家落地页 30图导演脚本",
     planHint: "按参考落地页逻辑生成一图一卖点、一图一效果的 8 张主图与 22 张详情图",
     templateKey: "codKorea",
-    planVersion: "cod-country-v18-all-optimization",
+    planVersion: "cod-country-v19-source-authority-dedup",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点和特殊要求；系统会结合产品图按所选国家生成8张主图与22张详情图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-landing",
@@ -377,6 +378,8 @@ let aiImageAccountRefreshPromise = null;
 let aiImageRecoveryTimer = null;
 let aiImageGenerationAbortController = null;
 let aiImageGenerationStartedAt = 0;
+const AI_IMAGE_SUITE_RECOVERY_DELAYS_MS = [8000, 15000, 30000];
+const AI_IMAGE_SUITE_RECOVERY_MAX_ATTEMPTS = 10;
 const AI_IMAGE_MODES = [
   { key: "text", label: "文生图", hint: "文字创作" },
   { key: "edit", label: "参考图翻新", hint: "锁定商品" },
@@ -1787,13 +1790,17 @@ async function loadAiImageConfig(silent = false) {
     };
     const sharedDirector = payload.aiImage?.director;
     if (sharedDirector && typeof sharedDirector === "object") {
-      state.aiImages.director = {
-        ...(state.aiImages.director || {}),
-        ...sharedDirector,
-        loaded: isAdmin() ? Boolean(state.aiImages.director?.loaded) : true,
-        loading: false,
-        formDirty: false,
-      };
+      const currentDirector = state.aiImages.director || {};
+      const preserveEditorState = isAdmin() && Boolean(currentDirector.formDirty);
+      state.aiImages.director = preserveEditorState
+        ? { ...currentDirector, loading: false }
+        : {
+            ...currentDirector,
+            ...sharedDirector,
+            loaded: isAdmin() ? Boolean(currentDirector.loaded) : true,
+            loading: false,
+            formDirty: false,
+          };
     }
     state.aiImages.configLoaded = Boolean(payload.aiImage);
     state.aiImages.configLoading = false;
@@ -2579,9 +2586,45 @@ function aiImageHealthLabel(status) {
 function aiImageHealthTone(status) {
   if (status === "ok") return "ok";
   if (status === "warning") return "warning";
+  if (status === "ready") return "ok";
+  if (status === "no_quota" || status === "online_unknown") return "warning";
+  if (status === "gateway_error") return "error";
   if (status === "timeout" || status === "error") return "error";
   if (status === "checking") return "checking";
   return "unknown";
+}
+
+function aiImageNodeHealthStatus(node = {}, checking = false) {
+  if (checking) return "checking";
+  const baseStatus = String(node.status || "unknown").toLowerCase();
+  const httpStatus = Number(node.httpStatus || 0);
+  const total = Number(node.accountPoolTotal || 0);
+  const ready = Number(node.accountPoolReady || 0);
+  if (httpStatus >= 500) return "gateway_error";
+  if (total > 0 && ready === 0) return "no_quota";
+  if (["timeout", "error", "disabled"].includes(baseStatus)) return baseStatus;
+  if ((httpStatus >= 200 && httpStatus < 400) || ["ok", "warning"].includes(baseStatus)) {
+    return ready > 0 ? "ready" : "online_unknown";
+  }
+  return baseStatus;
+}
+
+function aiImageNodeHealthLabel(status) {
+  return {
+    ready: "可生图",
+    no_quota: "无可用额度",
+    gateway_error: "网关异常",
+    online_unknown: "在线·账号待确认",
+  }[status] || aiImageHealthLabel(status);
+}
+
+function aiImageNodeHealthMessage(node = {}, status = "unknown") {
+  return {
+    ready: "接口、模型和账号池均可用，可以参与生图。",
+    no_quota: "服务可以连接，但账号池当前没有可用额度；暂不分配新任务。",
+    gateway_error: "上游返回 HTTP 5xx，当前节点暂不参与生图。",
+    online_unknown: "接口在线，账号池尚未确认；再次检测后会更新可用状态。",
+  }[status] || node.message || "点击右侧按钮检测当前节点。";
 }
 
 function renderAiImageNodeList(health = {}) {
@@ -2602,7 +2645,7 @@ function renderAiImageNodeList(health = {}) {
     ${sourceNodes.map((node, index) => {
       const nodeId = node.id || `node-${index + 1}`;
       const nodeChecking = Boolean(health.loading && (fullCheck || health.nodeLoadingId === nodeId));
-      const status = nodeChecking ? "checking" : (node.status || "unknown");
+      const status = aiImageNodeHealthStatus(node, nodeChecking);
       const total = Number(node.accountPoolTotal || 0);
       const ready = Number(node.accountPoolReady || 0);
       const models = Array.isArray(node.models) ? node.models.filter(Boolean) : [];
@@ -2615,7 +2658,7 @@ function renderAiImageNodeList(health = {}) {
           <div class="ai-image-node-main">
             <div class="ai-image-node-title">
               <strong>${esc(node.name || `生图节点 ${index + 1}`)}</strong>
-              <span>${esc(aiImageHealthLabel(status))}</span>
+              <span>${esc(aiImageNodeHealthLabel(status))}</span>
             </div>
             <code title="${esc(address)}">${esc(address)}</code>
             <small>${esc(httpMeta)} · ${esc(Number(node.latencyMs || 0))}ms · ${esc(timeMeta)}</small>
@@ -2624,7 +2667,7 @@ function renderAiImageNodeList(health = {}) {
               <span>模型 <b>${esc(models.length ? models.slice(0, 3).join(" · ") : "待查询")}</b></span>
               <span>生成表现 <b>${Number(generation.attempts || 0) ? `${esc(generation.successRate || 0)}% · ${esc(formatAiImageDuration(generation.averageLatencyMs || 0))}` : "待统计"}</b></span>
             </div>
-            <p>${esc(nodeChecking ? "正在查询任务通道、模型和账号池状态..." : (node.message || "点击右侧按钮检测当前节点。"))}</p>
+            <p>${esc(nodeChecking ? "正在查询任务通道、模型和账号池状态..." : aiImageNodeHealthMessage(node, status))}</p>
           </div>
           <button class="mini-btn" type="button" data-ai-image-node-check="${esc(nodeId)}" ${health.loading ? "disabled" : ""}>${nodeChecking ? "检测中..." : "检测节点"}</button>
         </article>
@@ -2777,17 +2820,24 @@ async function loadAiDirectorSettings(silent = false) {
   renderAiDirectorSettings();
   try {
     const payload = await api("/api/sku-board/ai-director-settings");
-    const director = mergeAiDirectorState({
-      ...(payload.director || {}),
-      status: "unknown",
-      message: "",
-      formDirty: false,
-    });
+    const editorIsDirty = Boolean(state.aiImages.director?.formDirty);
+    const director = editorIsDirty
+      ? mergeAiDirectorState({ loaded: true, loading: false })
+      : mergeAiDirectorState({
+          ...(payload.director || {}),
+          status: "unknown",
+          message: "",
+          formDirty: false,
+        });
     renderAiDirectorSettings();
-    if (!silent) showToast(director.configured ? "AI 导演配置已加载" : "AI 导演尚未配置");
+    if (!silent) showToast(editorIsDirty ? "检测到未保存修改，已保留当前表单" : director.configured ? "AI 导演配置已加载" : "AI 导演尚未配置");
     return director;
   } catch (error) {
-    mergeAiDirectorState({ status: "error", message: error.message, formDirty: false });
+    if (state.aiImages.director?.formDirty) {
+      mergeAiDirectorState({ loaded: true, loading: false });
+    } else {
+      mergeAiDirectorState({ status: "error", message: error.message, formDirty: false });
+    }
     renderAiDirectorSettings();
     if (!silent) showToast(error.message);
     return null;
@@ -2826,7 +2876,7 @@ async function saveAiDirectorSettings(silent = false) {
       ...(payload.director || {}),
       saving: false,
       status: "ok",
-      message: "AI 导演配置已保存",
+      message: `AI 导演配置已生效：${payload.director?.model || "当前模型"}${payload.director?.baseUrl ? ` · ${payload.director.baseUrl}` : ""}`,
       formDirty: false,
     });
     // Refresh the shared runtime returned by /ai-image-config as well. This
@@ -2834,7 +2884,7 @@ async function saveAiDirectorSettings(silent = false) {
     // on the same model chain immediately after a website save.
     await loadAiImageConfig(true);
     renderAiDirectorSettings();
-    if (!silent) showToast("AI 导演配置已保存");
+    if (!silent) showToast(director.message);
     return director;
   } catch (error) {
     state.aiImages.director = { ...(state.aiImages.director || {}), saving: false, status: "error", message: error.message };
@@ -2893,6 +2943,8 @@ async function recoverRecentAiImageSuite(silent = false, runId = "") {
   try {
     const activeConversation = aiImageActiveConversation();
     const suiteRunId = runId || activeConversation?.suiteRunId || "";
+    const previousRecoverySummary = activeConversation?.remoteSummary || {};
+    const recoveryAttempt = silent ? Number(previousRecoverySummary.recoveryAttempt || 0) : 0;
     const knownPages = (activeConversation?.materials || []).map((material) => Number(material.suitePage || 0)).filter(Boolean);
     const payload = await api("/api/sku-board/ai-image-recover", {
       method: "POST",
@@ -2934,7 +2986,12 @@ async function recoverRecentAiImageSuite(silent = false, runId = "") {
     conversation.suiteRunId = payload.suiteRunId || suiteRunId || conversation.suiteRunId || "";
     conversation.suitePlanVersion = payload.suitePlanVersion || conversation.suitePlanVersion || suiteConfig.planVersion;
     conversation.suitePages = conversation.suitePages?.length === suiteConfig.count ? conversation.suitePages : (payload.suitePages || []);
-    conversation.remoteSummary = payload.suiteSummary || {};
+    conversation.remoteSummary = {
+      ...(payload.suiteSummary || {}),
+      recoveryAttempt,
+      recoveryState: silent ? (previousRecoverySummary.recoveryState || "recovering") : "manual",
+      recoveryNextAt: "",
+    };
     conversation.mode = "edit";
     conversation.templateKey = suiteConfig.templateKey;
     conversation.lockLevel = "exact";
@@ -2979,13 +3036,67 @@ function scheduleAiImageSuiteRecovery(conversation = {}) {
     aiImageRecoveryTimer = null;
   }
   const summary = conversation.remoteSummary || {};
-  if (!state.auth.user || !aiImageSuiteActive(conversation) || !conversation.suiteRunId || !Number(summary.running || 0)) return;
+  if (!state.auth.user || !aiImageSuiteActive(conversation) || !conversation.suiteRunId) return;
+  const suiteConfig = aiImageSuiteConfig(conversation);
+  const total = Number(suiteConfig?.count || conversation.suiteCount || conversation.count || 0);
+  const succeeded = Number(summary.succeeded || conversation.materials?.length || 0);
+  const running = Number(summary.running || 0);
+  const failed = Number(summary.failed || 0);
+  if (total > 0 && succeeded >= total) {
+    summary.recoveryState = "complete";
+    summary.recoveryNextAt = "";
+    summary.recoveryMessage = "套图已完整，无需继续同步。";
+    return;
+  }
+  if (failed > 0 && running <= 0) {
+    summary.recoveryState = "failed";
+    summary.recoveryNextAt = "";
+    summary.recoveryMessage = "远端任务已结束且存在失败页，请使用“补齐缺失”重新生成。";
+    syncAiImageStateFromConversation(conversation);
+    renderAiImageResults();
+    return;
+  }
+  if (!Number(summary.partial || 0) && running <= 0) return;
+  const attempt = Math.max(0, Number(summary.recoveryAttempt || 0));
+  if (attempt >= AI_IMAGE_SUITE_RECOVERY_MAX_ATTEMPTS) {
+    summary.recoveryState = "exhausted";
+    summary.recoveryNextAt = "";
+    summary.recoveryMessage = `已自动同步 ${AI_IMAGE_SUITE_RECOVERY_MAX_ATTEMPTS} 次，仍有页面未返回；可手动再次检查或补齐缺失页。`;
+    syncAiImageStateFromConversation(conversation);
+    renderAiImageResults();
+    return;
+  }
   const scheduledRunId = conversation.suiteRunId;
+  const delay = AI_IMAGE_SUITE_RECOVERY_DELAYS_MS[Math.min(attempt, AI_IMAGE_SUITE_RECOVERY_DELAYS_MS.length - 1)];
+  summary.recoveryState = "scheduled";
+  summary.recoveryNextAt = new Date(Date.now() + delay).toISOString();
+  summary.recoveryMessage = `后台将在 ${Math.round(delay / 1000)} 秒后自动同步（第 ${attempt + 1}/${AI_IMAGE_SUITE_RECOVERY_MAX_ATTEMPTS} 次）。`;
+  syncAiImageStateFromConversation(conversation);
+  renderAiImageResults();
   aiImageRecoveryTimer = window.setTimeout(() => {
     const activeConversation = aiImageActiveConversation();
     if (activeConversation?.suiteRunId !== scheduledRunId || !state.auth.user) return;
-    recoverRecentAiImageSuite(true, scheduledRunId).catch(() => {});
-  }, 8000);
+    const activeSummary = activeConversation.remoteSummary || {};
+    activeSummary.recoveryAttempt = Math.max(0, Number(activeSummary.recoveryAttempt || 0)) + 1;
+    activeSummary.recoveryState = "recovering";
+    activeSummary.recoveryNextAt = "";
+    activeSummary.recoveryMessage = `正在自动同步套图（第 ${activeSummary.recoveryAttempt}/${AI_IMAGE_SUITE_RECOVERY_MAX_ATTEMPTS} 次）。`;
+    syncAiImageStateFromConversation(activeConversation);
+    renderAiImageResults();
+    recoverRecentAiImageSuite(true, scheduledRunId).catch(() => {
+      const latestConversation = aiImageActiveConversation();
+      if (latestConversation?.suiteRunId === scheduledRunId && state.auth.user) {
+        latestConversation.remoteSummary = {
+          ...(latestConversation.remoteSummary || {}),
+          recoveryState: "retrying",
+          recoveryMessage: "本次同步请求异常，将按退避间隔再次尝试。",
+        };
+        syncAiImageStateFromConversation(latestConversation);
+        renderAiImageResults();
+        scheduleAiImageSuiteRecovery(latestConversation);
+      }
+    });
+  }, delay);
 }
 
 async function resumePersistedAiImageSuite() {
@@ -4099,6 +4210,8 @@ function setAiImageSuiteCount(count = 22) {
 }
 
 function aiImageDefaultReferenceRole(index = 0) {
+  const conversation = ensureAiImageConversation();
+  if (aiImageSuiteActive(conversation)) return index === 0 ? "product" : "auto";
   return ["product", "detail", "scene", "person"][index] || "layout";
 }
 
@@ -4169,8 +4282,41 @@ function normalizeAiImageReferenceRoles(references = []) {
   return references.map((reference, index) => ({
     ...reference,
     role: aiImageReferenceRoleKey(reference, index),
+    roleSource: String(reference.roleSource || (String(reference.role || "").trim() === "auto" ? "auto" : "manual")),
     keywords: String(reference.keywords || "").trim().slice(0, 240),
   }));
+}
+
+function applyAiImageResolvedReferenceBindings(conversation, bindings = []) {
+  const resolved = Array.isArray(bindings) ? bindings : [];
+  if (!resolved.length || !Array.isArray(conversation?.referenceImages)) return false;
+  const byIndex = new Map(
+    resolved
+      .filter((binding) => Number(binding?.index) > 0)
+      .map((binding) => [Number(binding.index), binding]),
+  );
+  let changed = false;
+  conversation.referenceImages = conversation.referenceImages.map((reference, index) => {
+    const binding = byIndex.get(index + 1);
+    if (!binding) return reference;
+    const currentRole = String(reference.role || "").trim();
+    const isManual = String(reference.roleSource || "").trim() === "manual";
+    if (isManual && currentRole && currentRole !== "auto") return reference;
+    const nextRole = AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === binding.role)
+      ? binding.role
+      : currentRole || aiImageDefaultReferenceRole(index);
+    const nextSource = String(binding.roleSource || (nextRole === "auto" ? "auto" : "ai-director"));
+    if (currentRole !== nextRole || String(reference.roleSource || "") !== nextSource) changed = true;
+    return { ...reference, role: nextRole, roleSource: nextSource };
+  });
+  if (!changed) return false;
+  conversation.referenceImages = normalizeAiImageReferenceRoles(conversation.referenceImages);
+  rebuildAiImagePromptFromSkill(conversation, { force: true });
+  conversation.updatedAt = new Date().toISOString();
+  syncAiImageStateFromConversation(conversation);
+  renderAiImageForm();
+  renderAiImageResults();
+  return true;
 }
 
 function setAiImageReferenceRole(id, roleKey) {
@@ -4178,6 +4324,7 @@ function setAiImageReferenceRole(id, roleKey) {
   const referenceIndex = (conversation.referenceImages || []).findIndex((reference) => reference.id === id);
   if (referenceIndex < 1 || !AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === roleKey)) return;
   conversation.referenceImages[referenceIndex].role = roleKey;
+  conversation.referenceImages[referenceIndex].roleSource = roleKey === "auto" ? "auto" : "manual";
   conversation.referenceImages = normalizeAiImageReferenceRoles(conversation.referenceImages);
   rebuildAiImagePromptFromSkill(conversation, { force: true });
   conversation.updatedAt = new Date().toISOString();
@@ -4207,6 +4354,7 @@ function renderAiImageReferences() {
   const mask = conversation.maskImage || null;
   const mode = conversation.mode || "text";
   const virtualTryOnActive = conversation.templateKey === "virtualTryOn";
+  const suiteActive = aiImageSuiteActive(conversation);
   strip.hidden = !references.length && !mask;
   if (!references.length && !mask) {
     strip.innerHTML = "";
@@ -4219,6 +4367,8 @@ function renderAiImageReferences() {
     </div>
     ${mode !== "inpaint" ? `<p class="ai-image-reference-guide">${esc(virtualTryOnActive
       ? "搭配顺序：上传商品/服装图和人物图，再把其余图片分别设为包袋、帽子、鞋履、首饰或场景参考。系统按文件名逐件替换，人物参考锁定脸部与身材；提示词可要求完整全身、换场景或只改某件配饰。固定输出 1 张连续场景图，不生成宫格。"
+      : suiteActive
+      ? "直接批量上传全部产品图、颜色款、细节图、使用方法、模特、场景、包装和排版参考即可。AI导演会先逐张识别用途，再规划整套分镜；标签只在识别有误时用于人工纠正。"
       : "其他产品的成套页面请选择“系列风格参考”，系统只提取配色、标题层级、信息密度、模块形状和呈现效果；商品、人物、文字、Logo 与数据不会作为当前产品内容。")}</p>` : ""}
     <div class="ai-image-reference-list">
       ${references.map((item, index) => {
@@ -4229,9 +4379,18 @@ function renderAiImageReferences() {
           <b>${esc(mode === "inpaint" ? "原图" : aiImageReferenceRoleLabel(roleKey))}</b>
           <span>${esc(item.name || "参考图")}</span>
           ${mode !== "inpaint" ? `
-            <select data-ai-reference-role="${esc(item.id)}" aria-label="${esc(item.name || `参考图 ${index + 1}`)}的用途" ${index === 0 ? "disabled" : ""}>
-              ${AI_IMAGE_REFERENCE_ROLES.map((role) => `<option value="${esc(role.key)}" ${role.key === roleKey ? "selected" : ""}>${esc(role.label)}</option>`).join("")}
-            </select>
+            ${suiteActive && index > 0 ? `
+              <details class="ai-image-reference-correction">
+                <summary>${esc(roleKey === "auto" ? "AI自动识别 · 可选纠正" : `已识别：${aiImageReferenceRoleLabel(roleKey)} · 可纠正`)}</summary>
+                <select data-ai-reference-role="${esc(item.id)}" aria-label="${esc(item.name || `参考图 ${index + 1}`)}的用途">
+                  ${AI_IMAGE_REFERENCE_ROLES.map((role) => `<option value="${esc(role.key)}" ${role.key === roleKey ? "selected" : ""}>${esc(role.label)}</option>`).join("")}
+                </select>
+              </details>
+            ` : `
+              <select data-ai-reference-role="${esc(item.id)}" aria-label="${esc(item.name || `参考图 ${index + 1}`)}的用途" ${index === 0 ? "disabled" : ""}>
+                ${AI_IMAGE_REFERENCE_ROLES.map((role) => `<option value="${esc(role.key)}" ${role.key === roleKey ? "selected" : ""}>${esc(role.label)}</option>`).join("")}
+              </select>
+            `}
             ${(["scene", "person", "bag", "hat", "shoes", "jewelry", "accessory", "package", "layout", "styleSet"].includes(roleKey)) ? `
               <input type="text" value="${esc(item.keywords || "")}" data-ai-reference-keywords="${esc(item.id)}" maxlength="240" placeholder="${esc(aiImageReferenceKeywordPlaceholder(roleKey))}" aria-label="${esc(aiImageReferenceRoleLabel(roleKey))}关键词" />
               <small class="ai-image-reference-keyword-hint">${esc(aiImageReferenceKeywordHint(roleKey))}</small>
@@ -4274,6 +4433,11 @@ function addAiImageReferences(files = [], options = {}) {
   }
   selected.slice(0, room).forEach((file) => {
     const index = current.length;
+    const requestedRoleIsValid = requestedRole && AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === requestedRole);
+    const suitePrimaryUpload = aiImageSuiteActive(conversation) && requestedRole === "product";
+    const assignedRole = requestedRoleIsValid && !(suitePrimaryUpload && index > 0)
+      ? requestedRole
+      : aiImageDefaultReferenceRole(index);
     current.push({
       id: `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       file,
@@ -4281,9 +4445,8 @@ function addAiImageReferences(files = [], options = {}) {
       size: file.size,
       type: file.type,
       previewDataUrl: URL.createObjectURL(file),
-      role: requestedRole && AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === requestedRole)
-        ? requestedRole
-        : aiImageDefaultReferenceRole(index),
+      role: assignedRole,
+      roleSource: assignedRole === "auto" ? "auto" : (requestedRoleIsValid ? "manual" : "default"),
       keywords: "",
     });
   });
@@ -4686,7 +4849,7 @@ function renderAiImageDirectorMonitor(conversation = {}) {
     return mapping.product && mapping.layout && mapping.copy !== undefined && mapping.realism;
   }).length;
   const moduleBlueprintPages = (conversation.suitePages || []).filter((page) => (
-    Array.isArray(page.companyModulePlan) && page.companyModulePlan.length >= 4
+    Array.isArray(page.companyModulePlan) && page.companyModulePlan.length >= 2
   ));
   const companyModuleCount = moduleBlueprintPages.reduce((total, page) => total + page.companyModulePlan.length, 0);
   const referenceAnalysisCount = ["product", "layout", "informationArchitecture"]
@@ -4697,6 +4860,12 @@ function renderAiImageDirectorMonitor(conversation = {}) {
       && visual.spatialPlan && visual.modulePlan && Array.isArray(visual.riskControls);
   }).length;
   const humanPages = (conversation.suitePages || []).filter((page) => page.hasHuman === true).length;
+  const generationReferences = aiImageSuiteGenerationReferences(conversation);
+  const generationReferenceCounts = generationReferences.reduce((counts, reference, index) => {
+    const role = aiImageReferenceRoleKey(reference, index);
+    counts[role] = Number(counts[role] || 0) + 1;
+    return counts;
+  }, {});
   const marketResearchVersion = marketResearchRun.version || suiteConfig.marketResearchVersion || "";
   const generationProfile = aiImageGenerationProfile(conversation);
   const directorTone = ["model", "cache"].includes(directorRun.source)
@@ -4784,6 +4953,12 @@ function renderAiImageDirectorMonitor(conversation = {}) {
         hint: "每张分别记录产品事实、排版骨架、信息架构、用途与禁止迁移项",
       },
       {
+        tone: generationReferences.length ? "ready" : "warning",
+        label: "生图参考路由",
+        value: `${generationReferences.length} 张可送达 · 商品${Number(generationReferenceCounts.product || 0)} / 细节${Number(generationReferenceCounts.detail || 0)} / 上身${Number(generationReferenceCounts.usage || 0)} / 人物${Number(generationReferenceCounts.person || 0)}`,
+        hint: "第1/12/25页使用完整商品色源；人物页复用同一身份；细节与场景页按证据角色补图",
+      },
+      {
         tone: productDnaColors.length ? "ready" : planReady ? "warning" : "waiting",
         label: "产品视觉 DNA",
         value: productDnaColors.length ? productDnaColors.join(" / ") : "等待提取产品色彩基因",
@@ -4808,7 +4983,7 @@ function renderAiImageDirectorMonitor(conversation = {}) {
         hint: "每个模块明确 Visual / Content / Position / Weight / Container",
       },
       {
-        tone: suiteConfig.planVersion === "director-v24-company-photography-density" ? "ready" : "waiting",
+        tone: suiteConfig.planVersion === "director-v26-source-complete" ? "ready" : "waiting",
         label: "公司式短 Prompt 执行",
         value: "正向成片 Brief · 单页 ≤ 7800 字符",
         hint: "先写具体场景与当前卖点，再写模块施工图；移除重复规则和整套卖点干扰",
@@ -4834,11 +5009,11 @@ function renderAiImageDirectorMonitor(conversation = {}) {
       {
         tone: planReady ? "ready" : "waiting",
         label: "密度与防翻车",
-        value: planReady ? "首图2模块 · 普通页最多3模块 · 专用页结构锁定" : "等待结构编排",
+        value: planReady ? "普通页2-3模块 · 专用页2-5模块 · 25种分镜锁定" : "等待结构编排",
         hint: "同页模块只证明同一卖点；少大准日文、简单手势、真实肤质",
       },
       {
-        tone: humanPages === 24 ? "ready" : planReady ? "warning" : "waiting",
+        tone: humanPages === 18 ? "ready" : planReady ? "warning" : "waiting",
         label: "人物页硬约束",
         value: planReady ? `${humanPages}/25 页已声明 has_human` : "等待识别人物页",
         hint: "单模特、40代日本女性、真实毛孔、简单手势与自然解剖",
@@ -4984,11 +5159,13 @@ function renderAiImageRecoveryBlock(conversation = {}) {
   const failed = Number(summary.failed || 0);
   const missingPages = aiImageMissingSuitePages(conversation);
   const message = summary.message || `已恢复 ${succeeded}/${suiteCount} ${suiteUnit}；${running} ${suiteUnit}仍在生成，${failed} ${suiteUnit}失败`;
+  const recoveryMessage = summary.recoveryMessage || "";
   return `
     <div class="ai-image-alert partial">
       <div>
         <strong>远端套图同步结果</strong>
         <p>${esc(message)}</p>
+        ${recoveryMessage ? `<small class="ai-image-recovery-note">${esc(recoveryMessage)}</small>` : ""}
         <div class="ai-image-recovery-stats">
           <span>已显示 ${succeeded}</span>
           <span>生成中 ${running}</span>
@@ -5820,6 +5997,9 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
     renderAiImageResults();
     throw new Error(`${suiteConfig.planTitle}生成不完整，请重试`);
   }
+  applyAiImageResolvedReferenceBindings(conversation, payload.resolvedReferenceBindings || []);
+  prompt = conversation.prompt || prompt;
+  conversation.referenceRoleMode = payload.referenceRoleMode || conversation.referenceRoleMode || "automatic";
   conversation.suiteKey = payload.suiteKey || conversation.suiteKey;
   conversation.suiteCount = Number(payload.suiteCount || suiteConfig.count);
   conversation.count = conversation.suiteCount;
@@ -5916,7 +6096,7 @@ function summarizeAiImageSuiteReview(conversation, overrides = {}) {
 }
 
 function aiImageSuiteUsesGeneratedStyleAnchor(conversation = {}) {
-  return conversation.suiteKey !== "jp-landing-page-25";
+  return !["jp-landing-page-25", "cod-country-landing-30"].includes(conversation.suiteKey);
 }
 
 async function reportAiImageQualityTelemetry(conversation, results = []) {
@@ -6041,23 +6221,65 @@ function aiImageSuiteGenerationReferences(conversation = {}) {
 function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
   const references = aiImageSuiteGenerationReferences(conversation);
   const japaneseLanding = conversation.suiteKey === "jp-landing-page-25";
+  const countryCod = conversation.suiteKey === "cod-country-landing-30";
   const products = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "product");
   const productSources = products.length ? products : references.slice(0, 1);
   const personSources = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "person");
   const pagePlan = conversation.suitePages?.[page - 1] || {};
   const hasHuman = pagePlan.hasHuman !== false;
+  const primaryReferenceIndex = Number(pagePlan.primaryVariantReferenceIndex || 0);
+  const primaryProductSource = primaryReferenceIndex > 0
+    && aiImageReferenceRoleKey(references[primaryReferenceIndex - 1], primaryReferenceIndex - 1) === "product"
+    ? references[primaryReferenceIndex - 1]
+    : null;
   const selected = [];
   const add = (reference) => {
     if (reference && !selected.includes(reference)) selected.push(reference);
   };
 
-  if (japaneseLanding && Number(page) === 24) {
-    productSources.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT).forEach(add);
-    return selected;
-  }
-  if (japaneseLanding) {
+  if (countryCod) {
+    const pagePlanText = JSON.stringify(pagePlan).toLowerCase();
+    const requiresFullRange = Number(page) === 1
+      || /完整配色|产品阵容|complete documented product range|complete range/.test(pagePlanText);
+    if (requiresFullRange) {
+      productSources.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT).forEach(add);
+      const detailProof = references.find((reference, index) => aiImageReferenceRoleKey(reference, index) === "detail");
+      add(detailProof);
+      return selected.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT);
+    }
+
     add(productSources[(Math.max(1, Number(page)) - 1) % Math.max(1, productSources.length)]);
-    if (japaneseLanding && hasHuman) add(personSources[0]);
+    const supplemental = references
+      .map((reference, index) => ({ reference, role: aiImageReferenceRoleKey(reference, index), index }))
+      .filter((item) => item.role !== "product" && !selected.includes(item.reference));
+    const authorityPage = /权威背书|權威背書|认证|認証|専門家|专家|耐久|食品衛生|bpa|ユニバーサル/.test(pagePlanText);
+    if (authorityPage) {
+      add(supplemental.find((item) => item.role === "detail")?.reference);
+      return selected.slice(0, 2);
+    }
+    supplemental.sort((left, right) => {
+      const scoreDifference = aiImageSuiteReferenceRoleScore(right.role, pagePlanText)
+        - aiImageSuiteReferenceRoleScore(left.role, pagePlanText);
+      if (scoreDifference) return scoreDifference;
+      const pageOffset = Math.max(0, Number(page) - 2);
+      return ((left.index - pageOffset + references.length) % references.length)
+        - ((right.index - pageOffset + references.length) % references.length);
+    });
+    const supplementalLimit = String(pagePlan.contentDensity || "").toLowerCase() === "structured" ? 2 : 1;
+    supplemental
+      .filter((item) => item.role !== "person" || hasHuman)
+      .slice(0, supplementalLimit)
+      .forEach((item) => add(item.reference));
+    return selected.slice(0, 1 + supplementalLimit);
+  }
+
+  if (japaneseLanding && [1, 12, 25].includes(Number(page))) {
+    productSources.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT).forEach(add);
+    if (hasHuman) add(personSources[0]);
+  }
+  if (japaneseLanding && !selected.length) {
+    add(primaryProductSource || productSources[(Math.max(1, Number(page)) - 1) % Math.max(1, productSources.length)]);
+    if (hasHuman) add(personSources[0]);
   } else if (references.length <= AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT) {
     return references;
   } else if (page === 1) {
@@ -6758,6 +6980,7 @@ async function generateAiImage(event) {
     $("#ai-image-status").textContent = `正在生成${suiteConfig.planTitle}，不消耗生图额度`;
     try {
       await prepareAiImageSuitePlan(conversation, prompt, effectiveIntent);
+      prompt = conversation.prompt || prompt;
     } catch (error) {
       if (isAiImageGenerationAborted(error)) {
         conversation.status = "cancelled";

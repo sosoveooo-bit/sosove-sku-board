@@ -1,0 +1,9 @@
+[Unit]
+Description=Prune expired SOSOVE SKU Board image cache
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sosove/sosove-sku-board
+EnvironmentFile=/opt/sosove/sosove-sku-board/.env
+ExecStart=/opt/sosove/sosove-sku-board/.venv/bin/python -c "from sku_board.backend import prune_ai_image_output_files; print(prune_ai_image_output_files(force=True))"

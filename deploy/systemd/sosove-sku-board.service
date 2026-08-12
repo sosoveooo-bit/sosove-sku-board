@@ -1,0 +1,18 @@
+[Unit]
+Description=SOSOVE SKU Board
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sosove/sosove-sku-board
+EnvironmentFile=/opt/sosove/sosove-sku-board/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/sosove/sosove-sku-board/.venv/bin/python -m sku_board.server --host 0.0.0.0 --port 8793
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

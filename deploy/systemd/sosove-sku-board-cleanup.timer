@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly SOSOVE SKU Board image-cache cleanup
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=sosove-sku-board-cleanup.service
+
+[Install]
+WantedBy=timers.target

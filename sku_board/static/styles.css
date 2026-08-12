@@ -5802,6 +5802,30 @@ input {
   opacity: 1;
 }
 
+.ai-image-reference-correction {
+  min-width: 0;
+}
+
+.ai-image-reference-correction summary {
+  overflow: hidden;
+  padding: 6px 7px;
+  border: 1px solid #d9e8df;
+  border-radius: 6px;
+  background: #f3faf6;
+  color: #347462;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.4;
+  list-style-position: inside;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-image-reference-correction[open] summary {
+  margin-bottom: 5px;
+}
+
 .ai-image-reference-card b {
   position: absolute;
   left: 4px;
