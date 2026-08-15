@@ -2006,7 +2006,9 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(pages[0]["supportingDetail"], "长时间使用更轻松")
         self.assertIn("[AI-selected content budget — highest layout priority] Density: MINIMAL", prompts[0])
         self.assertIn("[Primary message — visible priority] 轻量握持", prompts[0])
-        self.assertNotIn("第二个无关子卖点不要塞入本页", prompts[0])
+        self.assertIn("第二个无关子卖点不要塞入本页", pages[0]["sourcePointVerbatim"])
+        self.assertIn("第二个无关子卖点不要塞入本页", prompts[0])
+        self.assertNotIn("第二个无关子卖点不要塞入本页", pages[0]["supportingDetail"])
         self.assertNotIn("two to four compact supporting callouts", "\n".join(prompts))
 
     def test_ai_content_budget_keeps_only_locked_structured_page_exceptions(self) -> None:
@@ -2337,6 +2339,51 @@ class AiImageSuiteTests(unittest.TestCase):
 
         self.assertIn("await loadAiImageConfig(true);", app_source[save_start:save_end])
         self.assertIn("await loadAiImageConfig(true);", app_source[plan_start:plan_end])
+
+    def test_open_image_prompts_auto_selects_ready_parent_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outer = Path(temp_dir) / "workspace"
+            package_root = outer / "panel" / "sku_board"
+            incomplete = outer / "panel" / "open-image-prompts"
+            complete = outer / "open-image-prompts"
+            package_root.mkdir(parents=True)
+            for root in (incomplete, complete):
+                script = root / "skills" / "img-gen-prompts" / "scripts" / "oip.py"
+                script.parent.mkdir(parents=True)
+                script.write_text("# fixture\n", encoding="utf-8")
+                manifest = root / "data" / "public-corpus.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(
+                    json.dumps({"dataset_version": "fixture-v1", "taxonomy_version": "oip-visual-v2"}),
+                    encoding="utf-8",
+                )
+            (complete / "db").mkdir()
+            (complete / "db" / "prompts.db.gz").write_bytes(b"fixture")
+
+            with patch.dict(os.environ, {"OPEN_IMAGE_PROMPTS_ROOT": ""}, clear=False), patch.object(
+                backend,
+                "ROOT_DIR",
+                package_root,
+            ), patch.object(
+                backend,
+                "OPEN_IMAGE_PROMPTS_DEFAULT_ROOT",
+                incomplete,
+            ):
+                selected = backend.open_image_prompts_root()
+                status = backend.open_image_prompts_status()
+
+        self.assertEqual(selected, complete.resolve())
+        self.assertTrue(status["installed"])
+        self.assertTrue(status["ready"])
+        self.assertTrue(status["archiveReady"])
+
+    def test_open_image_prompts_explicit_root_stays_highest_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            configured = Path(temp_dir) / "configured-oip"
+            with patch.dict(os.environ, {"OPEN_IMAGE_PROMPTS_ROOT": str(configured)}, clear=False):
+                selected = backend.open_image_prompts_root()
+
+        self.assertEqual(selected, configured.resolve())
 
     def test_open_image_prompts_local_search_keeps_source_prompt_out_of_director_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3935,11 +3982,11 @@ LED电量显示
         template = next(item for item in skill["templates"] if item["key"] == "landing")
         app_text = (Path(backend.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertEqual(skill["version"], "3.10.0")
+        self.assertEqual(skill["version"], "3.11.0")
         self.assertEqual(template["suiteKey"], "jp-landing-page-25")
         self.assertEqual(template["count"], 25)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_SUITE_PLAN_VERSION)
-        self.assertEqual(template["planVersion"], "director-v26-source-complete")
+        self.assertEqual(template["planVersion"], "director-v27-verbatim-source")
         self.assertIn('"jp-landing-page-25"', app_text)
         self.assertIn('label: "日本产品落地页 25图"', app_text)
         self.assertIn("三层参考分析", app_text)
@@ -4352,7 +4399,7 @@ Type-C充电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "amazonAplus")
 
-        self.assertEqual(skill["version"], "3.10.0")
+        self.assertEqual(skill["version"], "3.11.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_AMAZON_APLUS_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_AMAZON_APLUS_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -4451,7 +4498,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "rakutenSuite")
 
-        self.assertEqual(skill["version"], "3.10.0")
+        self.assertEqual(skill["version"], "3.11.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_RAKUTEN_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_RAKUTEN_PLAN_VERSION)
         self.assertEqual(template["count"], 9)
@@ -4673,6 +4720,75 @@ USB供电
         self.assertIn("Render one short, prominent", app_source)
         self.assertIn("[COD hook text policy — highest text priority]", app_source)
 
+    def test_generation_request_keeps_prompt_content_beyond_legacy_3000_limit(self) -> None:
+        marker = "MIDDLE_SOURCE_REQUIREMENT_KEPT"
+        source = "前段要求" * 700 + marker + "后段要求" * 700
+
+        normalized_prompt, *_rest = backend.normalize_ai_image_request_fields(
+            {"prompt": source, "model": "gpt-image-2", "size": "750x1000", "count": 1}
+        )
+
+        self.assertEqual(normalized_prompt, source)
+        self.assertIn(marker, normalized_prompt)
+        self.assertGreater(backend.AI_IMAGE_PROVIDER_PROMPT_LIMIT, 3000)
+
+    def test_cod_hook_keeps_the_middle_of_a_long_user_brief(self) -> None:
+        marker = "EXACT_MIDDLE_SELLING_POINT_85_PERCENT"
+        source = "开头产品要求" * 500 + marker + "结尾排除要求" * 500
+
+        compiled = backend.compile_ai_image_cod_hook_text_prompt(
+            {"suiteBrief": source, "suiteCountry": "JP", "codHookType": "effect"},
+            source,
+            "750x1000",
+        )
+
+        self.assertIn(marker, compiled)
+        self.assertGreater(len(compiled), 3600)
+        self.assertLessEqual(len(compiled), backend.AI_IMAGE_PROVIDER_PROMPT_LIMIT)
+
+    def test_long_source_point_verbatim_survives_plan_and_final_prompts(self) -> None:
+        marker = "尾部关键要求：保持85%数字、目标用户与正确使用方法"
+        description = "完整来源说明。" + "这一段属于同一个卖点并用于证明画面与文案一致。" * 120 + marker
+        brief = f"""以下是我的卖点及需求：
+1. 【省力开盖的精确卖点】{description}
+
+不出现价格，不能出现动画，日本本土化。"""
+        base_prompt = "[Product] 多功能拧盖器，严格依据上传产品图。"
+
+        cod_pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            country="JP",
+            count=8,
+        )
+        normalized_pages = backend.normalize_ai_image_suite_plan(cod_pages, 8)
+        cod_prompts, _ = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            plan=normalized_pages,
+            country="JP",
+            suite_count=8,
+        )
+        jp_prompts, jp_pages = backend.build_ai_image_suite_prompts(
+            "[Product] 日系宽松棉麻连衣裙，严格依据上传服装图。",
+            brief,
+            "1500x2000",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            suite_count=25,
+        )
+
+        self.assertIn(marker, cod_pages[0]["sourcePointVerbatim"])
+        self.assertIn(marker, normalized_pages[0]["sourcePointVerbatim"])
+        self.assertIn(marker, cod_prompts[0])
+        self.assertTrue(any(marker in prompt for prompt in jp_prompts))
+        self.assertTrue(any(marker in page.get("sourcePointVerbatim", "") for page in jp_pages))
+        self.assertIn("[VERBATIM USER SOURCE CONTRACT", cod_prompts[0])
+        self.assertTrue(any("[VERBATIM USER SOURCE CONTRACT" in prompt for prompt in jp_prompts))
+
     def test_cod_country_plan_endpoint_uses_country_configuration(self) -> None:
         payload = backend.plan_ai_image_suite(
             {
@@ -4697,7 +4813,7 @@ USB供电
         skill = backend.ai_image_skill_config()
         template = next(item for item in skill["templates"] if item["key"] == "codKorea")
 
-        self.assertEqual(skill["version"], "3.10.0")
+        self.assertEqual(skill["version"], "3.11.0")
         self.assertEqual(template["suiteKey"], backend.AI_IMAGE_COD_SUITE_KEY)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_COD_KR_PLAN_VERSION)
         self.assertEqual(template["count"], 30)
@@ -4762,6 +4878,102 @@ USB供电
                 self.assertEqual(profile["visibleLanguage"], visible_language)
                 self.assertIn(f'{{ value: "{code}", label: "{label}", language: "{visible_language}" }}', app_source)
                 self.assertIn(f"use {prompt_language} only", language_lock)
+
+    def test_us_and_uk_are_distinct_english_cod_markets(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('value: "US"', app_source)
+        self.assertIn('label: "美国"', app_source)
+        self.assertIn('value: "GB"', app_source)
+        self.assertIn('label: "英国"', app_source)
+        self.assertIn('language: "英语"', app_source)
+        self.assertEqual(backend.normalize_ai_image_cod_country("USA"), "US")
+        self.assertEqual(backend.normalize_ai_image_cod_country("UK"), "GB")
+        self.assertEqual(backend.ai_image_cod_country_profile("US")["visibleLanguage"], "英语")
+        self.assertEqual(backend.ai_image_cod_country_profile("GB")["visibleLanguage"], "英语")
+
+        us_first = backend.ai_image_cod_market_localization("US", 1)
+        us_second = backend.ai_image_cod_market_localization("US", 2)
+        gb_first = backend.ai_image_cod_market_localization("GB", 1)
+        self.assertIn("White American adult", us_first["casting"])
+        self.assertIn("Black American adult", us_second["casting"])
+        self.assertIn("American English", us_first["instruction"])
+        self.assertIn("White British adult", gb_first["casting"])
+        self.assertIn("British English", gb_first["instruction"])
+        self.assertNotEqual(us_first["scene"], gb_first["scene"])
+
+    def test_us_and_uk_localization_reaches_all_three_cod_generators(self) -> None:
+        product = "[Product] Exact household jar opener from the supplied reference."
+        brief = "主卖点：省时省力、抓握稳定。目标用户：45岁女性。"
+        market_expectations = {
+            "US": ("American English used in the United States", "White American adult", "Black American adult", "open-plan kitchen"),
+            "GB": ("British English used in the United Kingdom", "White British adult", "Black British adult", "compact fitted kitchen"),
+        }
+
+        for code, (language, first_cast, second_cast, scene_cue) in market_expectations.items():
+            with self.subTest(country=code):
+                country_prompts, country_pages = backend.build_ai_image_suite_prompts(
+                    product,
+                    brief,
+                    "750x1000",
+                    suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+                    country=code,
+                    suite_count=8,
+                )
+                detail_prompts, detail_pages = backend.build_ai_image_suite_prompts(
+                    product,
+                    brief,
+                    "750x1000",
+                    suite_key=backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
+                    country=code,
+                    suite_count=12,
+                )
+                hook_prompt = backend.compile_ai_image_cod_hook_text_prompt(
+                    {
+                        "suiteBrief": brief,
+                        "suiteCountry": code,
+                        "codHookType": "hook",
+                    },
+                    "",
+                    "750x1000",
+                )
+
+                self.assertTrue(all(page["country"] == code for page in country_pages))
+                self.assertTrue(all(page["country"] == code for page in detail_pages))
+                self.assertIn("[Selected-market identity lock", country_prompts[0])
+                self.assertIn("[Selected-market identity lock", detail_prompts[0])
+                self.assertIn("[Selected-market identity lock", hook_prompt)
+                self.assertIn(language, country_prompts[0])
+                self.assertIn(language, detail_prompts[0])
+                self.assertIn(first_cast, country_prompts[0])
+                self.assertIn(second_cast, country_prompts[1])
+                self.assertIn(scene_cue, country_prompts[0])
+                self.assertNotEqual(country_pages[0]["pose"], country_pages[1]["pose"])
+                self.assertNotEqual(country_pages[0]["scene"], country_pages[1]["scene"])
+                director_messages = backend.build_ai_director_messages(
+                    country_pages,
+                    product,
+                    brief,
+                    backend.AI_IMAGE_COD_SUITE_KEY,
+                    code,
+                    None,
+                    False,
+                    reference_image_count=0,
+                )
+                director_text = director_messages[1]["content"]
+                self.assertIn(language, director_text)
+                self.assertNotIn("specific mature Japanese casting", director_text)
+                self.assertNotIn("Japanese font tone, information density and space allocation", director_text)
+
+    def test_us_and_uk_visible_copy_uses_regional_english_conventions(self) -> None:
+        us_lock = backend.ai_image_visible_language_lock(backend.AI_IMAGE_COD_SUITE_KEY, "", "US")
+        gb_lock = backend.ai_image_visible_language_lock(backend.AI_IMAGE_COD_SUITE_KEY, "", "UK")
+
+        self.assertIn("American English used in the United States", us_lock)
+        self.assertIn("British English used in the United Kingdom", gb_lock)
+        us_cache_key = backend.ai_director_analysis_cache_key("[Product] mug", "省力", backend.AI_IMAGE_COD_SUITE_KEY, None, "model", suite_country="US")
+        gb_cache_key = backend.ai_director_analysis_cache_key("[Product] mug", "省力", backend.AI_IMAGE_COD_SUITE_KEY, None, "model", suite_country="GB")
+        self.assertNotEqual(us_cache_key, gb_cache_key)
 
     def test_suite_task_id_supports_cod_page_thirty(self) -> None:
         task_id = "sosove-a1b2c3d4e5f6-p30-r112233-a1"

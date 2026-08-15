@@ -54,7 +54,7 @@ META_AD_ANALYSIS_SCRIPT = ROOT_DIR / "skills" / "tiktok-ads-analysis" / "scripts
 SESSION_FILE = DATA_DIR / "auth_sessions.json"
 META_CREDENTIAL_FILE = DATA_DIR / "meta_credentials.json"
 META_CREDENTIAL_KEY_FILE = DATA_DIR / "meta_credentials.key"
-AI_DIRECTOR_CACHE_VERSION = 8
+AI_DIRECTOR_CACHE_VERSION = 9
 AI_IMAGE_JOB_STORE_VERSION = 2
 META_CREDENTIAL_STORE_VERSION = 1
 META_OAUTH_STATE_TTL_SECONDS = 15 * 60
@@ -5068,7 +5068,25 @@ def open_image_prompts_root() -> Path:
         OPEN_IMAGE_PROMPTS_DEFAULT_ROOT,
         ROOT_DIR.parent.parent / "open-image-prompts",
     ]
-    return next((candidate.resolve() for candidate in candidates if candidate.exists()), candidates[0].resolve())
+
+    def readiness_score(candidate: Path) -> tuple[int, int, int, int]:
+        resolved = candidate.expanduser().resolve()
+        script_ready = (resolved / "skills" / "img-gen-prompts" / "scripts" / "oip.py").is_file()
+        dataset_ready = (
+            (resolved / "db" / "prompts.db.gz").is_file()
+            or (resolved / ".oip" / "runtime" / "prompts.db").is_file()
+        )
+        manifest_ready = (resolved / "data" / "public-corpus.json").is_file()
+        # Dataset availability is the decisive signal: a source checkout with
+        # scripts but without the archive/database is installed yet unusable.
+        return (
+            int(script_ready and dataset_ready and manifest_ready),
+            int(dataset_ready),
+            int(script_ready and manifest_ready),
+            int(resolved.exists()),
+        )
+
+    return max((candidate.expanduser().resolve() for candidate in candidates), key=readiness_score)
 
 
 def open_image_prompts_status() -> dict[str, Any]:
@@ -6756,11 +6774,15 @@ AI_IMAGE_AMAZON_APLUS_SUITE_KEY = "amazon-jp-aplus-9"
 AI_IMAGE_SUITE_KEY = AI_IMAGE_LANDING_SUITE_KEY
 AI_IMAGE_SUITE_COUNT = 25
 AI_IMAGE_SUITE_SIZE = "1500x2000"
-AI_IMAGE_SUITE_BRIEF_LIMIT = 24000
-AI_IMAGE_DIRECTOR_BRIEF_LIMIT = 24000
-AI_IMAGE_SUITE_PLAN_VERSION = "director-v26-source-complete"
-AI_IMAGE_PROVIDER_PROMPT_LIMIT = 24000
-AI_IMAGE_JP_COMPANY_PROMPT_LIMIT = 11000
+AI_IMAGE_SUITE_BRIEF_LIMIT = 64000
+AI_IMAGE_DIRECTOR_BRIEF_LIMIT = 48000
+AI_IMAGE_SUITE_PLAN_VERSION = "director-v27-verbatim-source"
+AI_IMAGE_PROVIDER_PROMPT_LIMIT = 64000
+AI_IMAGE_JP_COMPANY_PROMPT_LIMIT = AI_IMAGE_PROVIDER_PROMPT_LIMIT
+AI_IMAGE_SOURCE_TITLE_LIMIT = 1200
+AI_IMAGE_SOURCE_DESCRIPTION_LIMIT = 6000
+AI_IMAGE_SOURCE_VERBATIM_LIMIT = 8000
+AI_IMAGE_SUITE_SOURCE_POINT_LIMIT = 40
 AI_IMAGE_JP_MARKET_RESEARCH = {
     "market": "JP",
     "version": "jp-market-research-2026-07-30-v1",
@@ -6815,11 +6837,11 @@ AI_IMAGE_COD_KR_SUITE_KEY = AI_IMAGE_COD_SUITE_KEY
 AI_IMAGE_COD_KR_COUNT = 30
 AI_IMAGE_COD_COUNT_OPTIONS = (8, 12, 16, 20, 24, 30)
 AI_IMAGE_COD_KR_SIZE = "750x1000"
-AI_IMAGE_COD_KR_PLAN_VERSION = "cod-country-v19-source-authority-dedup"
+AI_IMAGE_COD_KR_PLAN_VERSION = "cod-country-v20-verbatim-source"
 AI_IMAGE_COD_DETAIL_COUNT = 22
 AI_IMAGE_COD_DETAIL_COUNT_OPTIONS = (12, 16, 20, 22)
 AI_IMAGE_COD_HOOK_STRIP_SIZES = {"750x150", "750x100"}
-AI_IMAGE_COD_DETAIL_PLAN_VERSION = "cod-detail-v13-all-optimization"
+AI_IMAGE_COD_DETAIL_PLAN_VERSION = "cod-detail-v14-verbatim-source"
 AI_IMAGE_COD_COUNTRY_SUITE_KEYS = {
     AI_IMAGE_COD_SUITE_KEY,
     AI_IMAGE_COD_DETAIL_SUITE_KEY,
@@ -6919,6 +6941,61 @@ AI_IMAGE_COD_COUNTRY_PROFILES = {
         "scene": "Tokyo homes, commuter spaces, neighborhood streets and category-appropriate Japanese daily-life environments",
         "model": "natural Japanese consumers with relaxed catalogue poses and locally familiar styling",
         "platforms": "Rakuten, Amazon Japan, Yahoo Shopping",
+    },
+    "US": {
+        "code": "US",
+        "label": "美国",
+        "language": "American English used in the United States",
+        "visibleLanguage": "英语",
+        "marketStyle": "confident United States direct-response ecommerce design with a clear benefit hierarchy, large truthful product evidence, relatable lifestyle photography and polished but approachable commercial styling",
+        "palette": "warm white, soft stone, denim blue and charcoal with restrained red, cobalt or golden-yellow conversion accents",
+        "scene": "contemporary United States homes, open-plan kitchens, apartments, home offices, workplaces, everyday retail spaces and category-appropriate American daily-life environments",
+        "model": "credible United States consumers whose age, gender and role match the product audience, with natural skin texture, contemporary American grooming, practical local clothing, relaxed body language and an unforced expression",
+        "platforms": "Amazon.com, Walmart, Target, eBay, Etsy",
+        "copyConvention": "Use idiomatic American English and American spelling such as color, favorite, center and organize; do not use British spelling or British retail phrasing.",
+        "castingRoster": (
+            "a White American adult with contemporary region-neutral grooming",
+            "a Black American adult with contemporary region-neutral grooming",
+            "a Latino American adult with contemporary region-neutral grooming",
+            "an East Asian American adult with contemporary region-neutral grooming",
+            "a South Asian American adult with contemporary region-neutral grooming",
+            "a multiracial American adult with contemporary region-neutral grooming",
+        ),
+        "sceneRoster": (
+            "a lived-in contemporary American home or open-plan kitchen",
+            "a bright United States apartment or practical home-office setting",
+            "a believable suburban home, porch, laundry or garage zone when category-appropriate",
+            "a modern American workplace, everyday retail or service environment",
+            "a neighborhood sidewalk, casual cafe or community setting without landmarks or flags",
+        ),
+        "avoidCues": "Do not default to an East-Asian-only cast, Japanese or Korean beauty styling, K-pop grooming, British domestic architecture, flag costumes, landmark pastiche, plastic skin or a generic stock-photo grin.",
+    },
+    "GB": {
+        "code": "GB",
+        "label": "英国",
+        "language": "British English used in the United Kingdom",
+        "visibleLanguage": "英语",
+        "marketStyle": "polished United Kingdom ecommerce design with restrained confidence, clear product proof, editorial lifestyle photography, measured typography and practical premium merchandising",
+        "palette": "soft ivory, warm gray, deep navy and muted sage with restrained burgundy, cobalt or ochre accents",
+        "scene": "contemporary United Kingdom homes, compact fitted kitchens, flats, offices, high-street cafes, neighbourhood settings and category-appropriate British daily-life environments",
+        "model": "credible United Kingdom consumers whose age, gender and role match the product audience, with natural skin texture, understated British grooming, practical local clothing, relaxed posture and a reserved natural expression",
+        "platforms": "Amazon.co.uk, Argos, John Lewis, Marks and Spencer, eBay UK",
+        "copyConvention": "Use idiomatic British English and British spelling such as colour, favourite, centre and organise; do not use American spelling or American retail phrasing.",
+        "castingRoster": (
+            "a White British adult with understated contemporary grooming",
+            "a Black British adult with understated contemporary grooming",
+            "a British South Asian adult with understated contemporary grooming",
+            "an East Asian British adult with understated contemporary grooming",
+            "a mixed-heritage British adult with understated contemporary grooming",
+        ),
+        "sceneRoster": (
+            "a lived-in British terraced or semi-detached home with a compact fitted kitchen",
+            "a contemporary UK flat, sitting room or practical home-office setting",
+            "a believable British workplace or understated professional interior",
+            "a high-street cafe, neighbourhood shop or everyday service setting",
+            "a small garden, patio or local residential setting under soft natural daylight",
+        ),
+        "avoidCues": "Do not default to an East-Asian-only cast, Japanese or Korean beauty styling, K-pop grooming, oversized American suburban interiors, US diner or campus styling, flag costumes, landmark pastiche, plastic skin or an exaggerated stock-photo smile.",
     },
     "DE": {
         "code": "DE",
@@ -7827,6 +7904,7 @@ AI_IMAGE_SUITE_PLAN_FIELDS = (
     "supportingDetail",
     "inspirationArchetype",
     "marketResearchVersion",
+    "marketLocalization",
     "focusSlot",
     "productTruthSummary",
     "localizedSellingPointTitle",
@@ -7835,6 +7913,7 @@ AI_IMAGE_SUITE_PLAN_FIELDS = (
     "sourcePointIndex",
     "sourcePointKind",
     "sourcePointType",
+    "sourcePointVerbatim",
     "contentFingerprint",
 )
 
@@ -8031,13 +8110,48 @@ def normalize_ai_image_suite_key(value: Any) -> str:
     return aliases.get(key, "")
 
 
+AI_IMAGE_COD_COUNTRY_ALIASES = {
+    "UK": "GB",
+    "GBR": "GB",
+    "USA": "US",
+}
+
+
 def normalize_ai_image_cod_country(value: Any, default: str = "KR") -> str:
     country = limited_text(value, default, 8).upper()
+    country = AI_IMAGE_COD_COUNTRY_ALIASES.get(country, country)
     return country if country in AI_IMAGE_COD_COUNTRY_PROFILES else default
 
 
-def ai_image_cod_country_profile(value: Any = "KR") -> dict[str, str]:
+def ai_image_cod_country_profile(value: Any = "KR") -> dict[str, Any]:
     return AI_IMAGE_COD_COUNTRY_PROFILES[normalize_ai_image_cod_country(value)]
+
+
+def ai_image_cod_market_localization(value: Any, page: Any = 1) -> dict[str, str]:
+    """Return a concrete per-page culture, casting and copy lock for English markets."""
+
+    profile = ai_image_cod_country_profile(value)
+    casting_roster = tuple(profile.get("castingRoster") or ())
+    scene_roster = tuple(profile.get("sceneRoster") or ())
+    if not casting_roster and not scene_roster and not profile.get("copyConvention"):
+        return {"casting": "", "scene": "", "instruction": ""}
+    page_index = max(1, int(number(page, 1))) - 1
+    casting = text(casting_roster[page_index % len(casting_roster)]) if casting_roster else ""
+    scene = text(scene_roster[page_index % len(scene_roster)]) if scene_roster else ""
+    instruction = " ".join(
+        part
+        for part in (
+            f"[Selected-market identity lock — highest localization priority] This artwork is specifically for {profile['label']} ({profile['code']}), not a generic English-language or generic Western market.",
+            "Any age, gender, ethnicity, occupation, person identity or scene explicitly requested by the user remains binding and overrides the default casting slot below.",
+            f"When a person appears and the user did not specify those attributes, cast {casting}; keep the product audience's requested age and gender." if casting else "",
+            f"Use {scene} when it fits the product category; otherwise use an equally credible everyday setting from the same country." if scene else "",
+            text(profile.get("copyConvention")),
+            text(profile.get("avoidCues")),
+            "Across a multi-image set, rotate the supplied local identities, actions, camera distances and environments instead of repeating one face, pose or room. Do not combine several demographic identities into one person and do not add flags, stereotypes or famous landmarks merely to signal nationality.",
+        )
+        if part
+    )
+    return {"casting": casting, "scene": scene, "instruction": instruction}
 
 
 def ai_image_suite_config(value: Any = AI_IMAGE_SUITE_KEY) -> dict[str, Any]:
@@ -8136,6 +8250,26 @@ def clean_ai_image_suite_text(value: Any, limit: int = 600) -> str:
     return limited_text(re.sub(r"\s+", " ", text(value)).strip(" ：:。;；-"), "", limit)
 
 
+def normalize_ai_image_source_contract_text(value: Any, limit: int = AI_IMAGE_SOURCE_VERBATIM_LIMIT) -> str:
+    """Keep user punctuation and source order for a page-bound content contract."""
+    source = re.sub(r"\r\n?", "\n", text(value)).strip()
+    lines = [re.sub(r"[\t ]+", " ", line).strip() for line in source.splitlines()]
+    return limited_text("\n".join(line for line in lines if line), "", limit)
+
+
+def ai_image_source_point_verbatim(title_value: Any, description_value: Any = "") -> str:
+    title_source = normalize_ai_image_source_contract_text(title_value, AI_IMAGE_SOURCE_TITLE_LIMIT)
+    description_source = normalize_ai_image_source_contract_text(
+        description_value,
+        AI_IMAGE_SOURCE_DESCRIPTION_LIMIT,
+    )
+    return limited_text(
+        "\n".join(part for part in (title_source, description_source) if part),
+        "",
+        AI_IMAGE_SOURCE_VERBATIM_LIMIT,
+    )
+
+
 def extract_ai_image_suite_points(brief: str) -> list[dict[str, str]]:
     source = text(brief)
     points: list[dict[str, str]] = []
@@ -8148,8 +8282,9 @@ def extract_ai_image_suite_points(brief: str) -> list[dict[str, str]]:
         *,
         source_type: str = "selling_point",
     ) -> None:
-        title_value = clean_ai_image_suite_text(title_value, 180)
-        description_value = clean_ai_image_suite_text(description_value, 520)
+        source_verbatim = ai_image_source_point_verbatim(title_value, description_value)
+        title_value = clean_ai_image_suite_text(title_value, AI_IMAGE_SOURCE_TITLE_LIMIT)
+        description_value = clean_ai_image_suite_text(description_value, AI_IMAGE_SOURCE_DESCRIPTION_LIMIT)
         if not title_value and not description_value:
             return
         title_value = title_value or ("商品细节" if kind == "detail" else "核心卖点")
@@ -8162,6 +8297,7 @@ def extract_ai_image_suite_points(brief: str) -> list[dict[str, str]]:
                 "kind": kind,
                 "title": title_value,
                 "description": description_value,
+                "sourceVerbatim": source_verbatim,
                 "sourceType": clean_ai_image_suite_text(source_type, 40) or "selling_point",
             }
         )
@@ -8341,13 +8477,13 @@ def extract_ai_image_suite_points(brief: str) -> list[dict[str, str]]:
     )
     if structured_match:
         structured_points = [
-            clean_ai_image_suite_text(item, 180)
+            clean_ai_image_suite_text(item, AI_IMAGE_SOURCE_TITLE_LIMIT)
             for item in re.split(r"[;；\n]+", structured_match.group(1))
-            if clean_ai_image_suite_text(item, 180)
+            if clean_ai_image_suite_text(item, AI_IMAGE_SOURCE_TITLE_LIMIT)
         ]
         for index, item in enumerate(structured_points):
             add_point("main" if index < 3 else "detail", item)
-    return points[:20]
+    return points[:AI_IMAGE_SUITE_SOURCE_POINT_LIMIT]
 
 
 def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -8364,9 +8500,10 @@ def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[d
         *,
         source_provided: bool = True,
         source_type: str = "selling_point",
+        source_verbatim: Any = "",
     ) -> None:
-        title_value = clean_ai_image_suite_text(value, 220)
-        description_value = clean_ai_image_suite_text(description, 520)
+        title_value = clean_ai_image_suite_text(value, AI_IMAGE_SOURCE_TITLE_LIMIT)
+        description_value = clean_ai_image_suite_text(description, AI_IMAGE_SOURCE_DESCRIPTION_LIMIT)
         if not title_value:
             return
         key = title_value.lower()
@@ -8379,6 +8516,8 @@ def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[d
                 "kind": kind,
                 "title": title_value,
                 "description": description_value,
+                "sourceVerbatim": normalize_ai_image_source_contract_text(source_verbatim)
+                or ai_image_source_point_verbatim(value, description),
                 "sourceProvided": source_provided,
                 "sourceType": clean_ai_image_suite_text(source_type, 40) or "selling_point",
             }
@@ -8386,9 +8525,9 @@ def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[d
 
     for item in extracted:
         item_kind = text(item.get("kind"), "main")
-        item_title = clean_ai_image_suite_text(item.get("title"), 360)
+        item_title = clean_ai_image_suite_text(item.get("title"), AI_IMAGE_SOURCE_TITLE_LIMIT)
         split_titles = [
-            clean_ai_image_suite_text(part, 220).strip(" 、，,。；;|/")
+            clean_ai_image_suite_text(part, AI_IMAGE_SOURCE_TITLE_LIMIT).strip(" 、，,。；;|/")
             for part in re.split(r"\s*(?:、|；|;|\||/)\s*", item_title)
         ]
         if len([part for part in split_titles if part]) > 1:
@@ -8398,6 +8537,7 @@ def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[d
                     split_title,
                     item.get("description"),
                     source_type=text(item.get("sourceType"), "selling_point"),
+                    source_verbatim=ai_image_source_point_verbatim(split_title, item.get("description")),
                 )
         else:
             add(
@@ -8405,6 +8545,7 @@ def extract_ai_image_cod_kr_points(base_prompt: str, brief: str) -> tuple[list[d
                 item_title,
                 item.get("description"),
                 source_type=text(item.get("sourceType"), "selling_point"),
+                source_verbatim=item.get("sourceVerbatim"),
             )
 
     current_kind = ""
@@ -9938,6 +10079,7 @@ def build_ai_image_cod_country_plan(
     pages: list[dict[str, Any]] = []
     for index, (recipe, focus) in enumerate(zip(recipes, focuses[:suite_count]), start=1):
         layout = AI_IMAGE_COD_COUNTRY_LAYOUTS[recipe["layout"]]
+        market_localization = ai_image_cod_market_localization(profile["code"], index)
         visual_treatment = AI_IMAGE_COD_VISUAL_TREATMENTS[(index - 1) % len(AI_IMAGE_COD_VISUAL_TREATMENTS)]
         impact_treatment = AI_IMAGE_COD_IMPACT_TREATMENTS[(index - 1) % len(AI_IMAGE_COD_IMPACT_TREATMENTS)]
         reference_page_type = {
@@ -9959,8 +10101,9 @@ def build_ai_image_cod_country_plan(
                 "focusTitle": focus_title,
                 "focusDescription": focus_description,
                 "evidence": recipe["evidence"],
-                "scene": f"{profile['scene']}。{layout['scene']}",
-                "pose": f"{profile['model']}。{layout['pose']}",
+                "scene": "。".join(part for part in (profile["scene"], market_localization["scene"], layout["scene"]) if part),
+                "pose": "。".join(part for part in (profile["model"], market_localization["casting"], layout["pose"]) if part),
+                "marketLocalization": market_localization["instruction"],
                 "composition": layout["composition"],
                 "headline": ai_image_cod_page_headline(focus_title, profile, index),
                 "size": canvas_size,
@@ -10519,6 +10662,7 @@ def build_ai_image_cod_detail_plan(
 
     pages: list[dict[str, Any]] = []
     for index, (spec, focus) in enumerate(specs[:suite_count], start=1):
+        market_localization = ai_image_cod_market_localization(profile["code"], index)
         focus_title = clean_ai_image_suite_text(focus.get("title"), 220)
         focus_description = clean_ai_image_suite_text(focus.get("description"), 600)
         focus_text = f"{focus_title}。{focus_description}" if focus_description else focus_title
@@ -10541,8 +10685,9 @@ def build_ai_image_cod_detail_plan(
                 "focusTitle": focus_title,
                 "focusDescription": focus_description,
                 "evidence": spec["evidence"],
-                "scene": f"{profile['scene']}。{spec['scene']}",
-                "pose": f"{profile['model']}。{spec['pose']}",
+                "scene": "。".join(part for part in (profile["scene"], market_localization["scene"], spec["scene"]) if part),
+                "pose": "。".join(part for part in (profile["model"], market_localization["casting"], spec["pose"]) if part),
+                "marketLocalization": market_localization["instruction"],
                 "composition": spec["composition"],
                 "headline": headline or f"{profile['label']}本土化 · {focus_title}",
                 "size": canvas_size,
@@ -10582,32 +10727,35 @@ def build_ai_image_suite_plan(
 ) -> list[dict[str, Any]]:
     resolved_suite_key = normalize_ai_image_suite_key(suite_key) or AI_IMAGE_LANDING_SUITE_KEY
     if resolved_suite_key == AI_IMAGE_LANDING_SUITE_KEY:
-        return build_ai_image_jp_product_landing_plan(
+        pages = build_ai_image_jp_product_landing_plan(
             base_prompt,
             brief,
             size,
             normalize_ai_image_suite_count(resolved_suite_key, count),
         )
+        return lock_ai_image_cod_source_point_coverage(pages, base_prompt, brief, resolved_suite_key)
     if resolved_suite_key == AI_IMAGE_AMAZON_APLUS_SUITE_KEY:
         return build_ai_image_amazon_aplus_plan(base_prompt, brief, size)
     if resolved_suite_key == AI_IMAGE_RAKUTEN_SUITE_KEY:
         return build_ai_image_rakuten_plan(base_prompt, brief, size)
     if resolved_suite_key == AI_IMAGE_COD_SUITE_KEY:
-        return build_ai_image_cod_country_plan(
+        pages = build_ai_image_cod_country_plan(
             base_prompt,
             brief,
             size,
             country,
             normalize_ai_image_suite_count(resolved_suite_key, count),
         )
+        return lock_ai_image_cod_source_point_coverage(pages, base_prompt, brief, resolved_suite_key)
     if resolved_suite_key == AI_IMAGE_COD_DETAIL_SUITE_KEY:
-        return build_ai_image_cod_detail_plan(
+        pages = build_ai_image_cod_detail_plan(
             base_prompt,
             brief,
             size,
             country,
             normalize_ai_image_suite_count(resolved_suite_key, count),
         )
+        return lock_ai_image_cod_source_point_coverage(pages, base_prompt, brief, resolved_suite_key)
     canvas_size = size if re.fullmatch(r"\d{3,4}x\d{3,4}", text(size)) else AI_IMAGE_SUITE_SIZE
     extracted = extract_ai_image_suite_points(brief)
     if not extracted:
@@ -10700,8 +10848,21 @@ def normalize_ai_image_suite_plan(value: Any, suite_count: int = AI_IMAGE_SUITE_
             continue
         normalized: dict[str, Any] = {"page": page}
         for field in AI_IMAGE_SUITE_PLAN_FIELDS:
-            limit = 1000 if field in {"variantDirective", "sceneAngleDirective"} else 700 if field in {"objective", "focus", "focusDescription", "evidence", "scene", "pose", "poseFingerprint", "composition", "visualTreatment", "impactTreatment", "sellingPoint", "displayEffect"} else 220
-            normalized_value = limited_text(re.sub(r"\s+", " ", text(item.get(field))).strip(), "", limit)
+            if field == "sourcePointVerbatim":
+                normalized_value = normalize_ai_image_source_contract_text(item.get(field))
+            else:
+                limit = (
+                    AI_IMAGE_SOURCE_DESCRIPTION_LIMIT
+                    if field in {"focus", "focusDescription", "sellingPoint"}
+                    else 2400
+                    if field in {"objective", "evidence", "scene", "pose", "poseFingerprint", "composition", "visualTreatment", "impactTreatment", "displayEffect"}
+                    else 1600
+                    if field in {"variantDirective", "sceneAngleDirective", "marketLocalization"}
+                    else AI_IMAGE_SOURCE_TITLE_LIMIT
+                    if field in {"title", "focusTitle", "headline"}
+                    else 220
+                )
+                normalized_value = limited_text(re.sub(r"\s+", " ", text(item.get(field))).strip(), "", limit)
             if field in item or normalized_value:
                 normalized[field] = normalized_value
         copy_labels = [
@@ -10856,14 +11017,15 @@ def extract_ai_image_jp_source_points(base_prompt: str, brief: str) -> list[dict
     extracted = extract_ai_image_suite_points(brief) or extract_ai_image_suite_points(base_prompt)
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in extracted[:20]:
-        description_value = clean_ai_image_suite_text(item.get("description"), 600)
-        raw_title = clean_ai_image_suite_text(item.get("title"), 360)
+    for item in extracted[:AI_IMAGE_SUITE_SOURCE_POINT_LIMIT]:
+        description_value = clean_ai_image_suite_text(item.get("description"), AI_IMAGE_SOURCE_DESCRIPTION_LIMIT)
+        raw_title = clean_ai_image_suite_text(item.get("title"), AI_IMAGE_SOURCE_TITLE_LIMIT)
         title_values = [
-            clean_ai_image_suite_text(part, 220).strip(" 、，,。；;|/")
+            clean_ai_image_suite_text(part, AI_IMAGE_SOURCE_TITLE_LIMIT).strip(" 、，,。；;|/")
             for part in re.split(r"\s*(?:、|；|;|\||/)\s*", raw_title)
         ]
-        if len([part for part in title_values if part]) <= 1:
+        multiple_titles = len([part for part in title_values if part]) > 1
+        if not multiple_titles:
             title_values = [raw_title]
         for title_value in (part for part in title_values if part):
             if title_value.lower() in seen:
@@ -10874,11 +11036,15 @@ def extract_ai_image_jp_source_points(base_prompt: str, brief: str) -> list[dict
                     "kind": "detail" if text(item.get("kind")) == "detail" else "main",
                     "title": title_value,
                     "description": description_value,
+                    "sourceVerbatim": ai_image_source_point_verbatim(title_value, description_value)
+                    if multiple_titles
+                    else normalize_ai_image_source_contract_text(item.get("sourceVerbatim"))
+                    or ai_image_source_point_verbatim(title_value, description_value),
                     "sourceProvided": True,
                     "sourceType": clean_ai_image_suite_text(item.get("sourceType"), 40) or "selling_point",
                 }
             )
-            if len(result) >= 20:
+            if len(result) >= AI_IMAGE_SUITE_SOURCE_POINT_LIMIT:
                 return result
     return result
 
@@ -10944,8 +11110,12 @@ def lock_ai_image_jp_source_point_coverage(
 
     for page_index, source_index, point in assignments:
         page = locked_pages[page_index]
-        title_value = clean_ai_image_suite_text(point.get("title"), 220)
-        description_value = clean_ai_image_suite_text(point.get("description"), 600)
+        title_value = clean_ai_image_suite_text(point.get("title"), AI_IMAGE_SOURCE_TITLE_LIMIT)
+        description_value = clean_ai_image_suite_text(point.get("description"), AI_IMAGE_SOURCE_DESCRIPTION_LIMIT)
+        source_verbatim = normalize_ai_image_source_contract_text(point.get("sourceVerbatim")) or ai_image_source_point_verbatim(
+            title_value,
+            description_value,
+        )
         authority_index = sum(
             1
             for _assigned_page, prior_index, prior_point in assignments
@@ -10973,6 +11143,7 @@ def lock_ai_image_jp_source_point_coverage(
             "sourcePointIndex": source_index,
             "sourcePointKind": text(point.get("kind"), "detail"),
             "sourcePointType": text(point.get("sourceType"), "selling_point"),
+            "sourcePointVerbatim": source_verbatim,
             "contentDensity": "focused",
             "sceneAngleDirective": (
                 f"[JP25 source route {source_index}/{len(source_points)}] {source_route} "
@@ -11115,14 +11286,14 @@ def ai_image_jp_source_point_coverage(
     source_points = extract_ai_image_jp_source_points(base_prompt, brief)
     locked_pages = lock_ai_image_jp_source_point_coverage(pages, base_prompt, brief)
     assigned_titles = {
-        clean_ai_image_suite_text(page.get("focusTitle"), 220).lower()
+        clean_ai_image_suite_text(page.get("focusTitle"), AI_IMAGE_SOURCE_TITLE_LIMIT).lower()
         for page in locked_pages
         if int(number(page.get("sourcePointIndex"), 0)) > 0
     }
     missing = [
-        clean_ai_image_suite_text(point.get("title"), 220)
+        clean_ai_image_suite_text(point.get("title"), AI_IMAGE_SOURCE_TITLE_LIMIT)
         for point in source_points
-        if clean_ai_image_suite_text(point.get("title"), 220).lower() not in assigned_titles
+        if clean_ai_image_suite_text(point.get("title"), AI_IMAGE_SOURCE_TITLE_LIMIT).lower() not in assigned_titles
     ]
     return {
         "total": len(source_points),
@@ -11170,8 +11341,8 @@ def lock_ai_image_cod_source_point_coverage(
     source_main_count = sum(1 for item in main_points if item.get("sourceProvided") is True)
     for point_index, page_index in enumerate(point_page_indexes[: len(source_points)]):
         point = source_points[point_index]
-        title = clean_ai_image_suite_text(point.get("title"), 220)
-        description = clean_ai_image_suite_text(point.get("description"), 600)
+        title = clean_ai_image_suite_text(point.get("title"), AI_IMAGE_SOURCE_TITLE_LIMIT)
+        description = clean_ai_image_suite_text(point.get("description"), AI_IMAGE_SOURCE_DESCRIPTION_LIMIT)
         if not title:
             continue
         page = locked_pages[page_index]
@@ -11182,6 +11353,10 @@ def lock_ai_image_cod_source_point_coverage(
         page["sourcePointIndex"] = point_index + 1
         page["sourcePointKind"] = "main" if point_index < source_main_count else "detail"
         page["sourcePointType"] = text(point.get("sourceType"), "selling_point")
+        page["sourcePointVerbatim"] = normalize_ai_image_source_contract_text(point.get("sourceVerbatim")) or ai_image_source_point_verbatim(
+            title,
+            description,
+        )
         if page["sourcePointType"] == "authority":
             authority_index = sum(
                 1
@@ -11243,7 +11418,7 @@ def ai_image_cod_source_point_coverage(
 def ai_image_cod_expressive_brief(value: Any, limit: int = AI_IMAGE_SUITE_BRIEF_LIMIT) -> str:
     """Keep COD selling-point semantics intact so visual direction does not lose the user's hook."""
     segments = [
-        clean_ai_image_suite_text(segment, 720)
+        clean_ai_image_suite_text(segment, AI_IMAGE_SOURCE_DESCRIPTION_LIMIT)
         for segment in re.split(r"(?<=[\r\n。；;])", text(value))
     ]
     return limited_text("\n".join(dict.fromkeys(segment for segment in segments if segment)), "", limit)
@@ -11302,7 +11477,7 @@ def compact_ai_image_suite_base_prompt(
                 )
                 if part
             )
-        brief_source = brief_transform(brief, 4200)
+        brief_source = brief_transform(brief, AI_IMAGE_SUITE_BRIEF_LIMIT)
         identity_source = re.split(
             r"(?:5\s*大?主卖点|主卖点\s*[（(]?\s*5|【?\s*主卖点\s*1|"
             r"(?:主卖点|核心卖点|卖点)\s*1\s*【|"
@@ -11430,14 +11605,35 @@ def ai_image_prompt_global_constraints(value: Any, limit: int = 3600, *, include
     return limited_text("；".join(part for part in [identity, *directives] if part), "", limit)
 
 
+def ai_image_verbatim_source_point_instruction(page: dict[str, Any]) -> str:
+    if int(number(page.get("sourcePointIndex"), 0)) <= 0:
+        return ""
+    source = normalize_ai_image_source_contract_text(page.get("sourcePointVerbatim"))
+    if not source:
+        source = ai_image_source_point_verbatim(
+            page.get("focusTitle"),
+            page.get("focusDescription"),
+        )
+    if not source:
+        return ""
+    return "\n".join(
+        (
+            "[VERBATIM USER SOURCE CONTRACT — highest page-content priority]",
+            source,
+            "[END VERBATIM USER SOURCE CONTRACT]",
+            "Keep every number, unit, target user, material, use method, comparison condition, authority theme and result semantically attached to this page. Translate only when the selected market requires it. The visual proof and concise visible copy must agree with this source; do not replace it with a generic benefit or another page's point.",
+        )
+    )
+
+
 def ai_image_user_prompt_page_contract(
     brief: str,
     page: dict[str, Any],
     suite_key: str = "",
     country: str = "",
 ) -> str:
-    focus_title = clean_ai_image_suite_text(page.get("focusTitle"), 220)
-    focus_description = clean_ai_image_suite_text(page.get("focusDescription"), 700)
+    focus_title = clean_ai_image_suite_text(page.get("focusTitle"), AI_IMAGE_SOURCE_TITLE_LIMIT)
+    focus_description = clean_ai_image_suite_text(page.get("focusDescription"), AI_IMAGE_SOURCE_DESCRIPTION_LIMIT)
     page_point = ai_image_page_primary_message(page)
     supporting_detail = ai_image_page_supporting_detail(page, page_point)
     if not page_point:
@@ -11472,6 +11668,7 @@ def ai_image_user_prompt_page_contract(
             + ("For this task, the reference-image fact-supremacy rule above is the explicit current product instruction and overrides only contradicted legacy product wording." if visual_fact_conflict else "")
         ),
         f"[Locked current-page source point] {page_point or focus_title or 'Follow this page role using only the current product brief.'}",
+        ai_image_verbatim_source_point_instruction(page),
         f"[Current-page supporting meaning] {supporting_detail}" if supporting_detail else "",
         (
             "[Page isolation] Render only the locked current-page point above. Do not import another page's selling point, claim, scene assignment or headline, and do not substitute a generic template benefit."
@@ -11903,6 +12100,10 @@ def build_ai_image_suite_prompts(
 
         if resolved_suite_key == AI_IMAGE_COD_DETAIL_SUITE_KEY:
             profile = ai_image_cod_country_profile(page.get("country") or country)
+            market_localization_rule = text(page.get("marketLocalization")) or ai_image_cod_market_localization(
+                profile["code"],
+                index,
+            )["instruction"]
             style_anchor_rule = (
                 f"[Detail style anchor] The final reference image is the approved image-1 {profile['label']} COD product and palette anchor. Preserve its product identity, photographic grade and core palette, but do not repeat its promotion badge, sales color-block density, composition or text on later pages."
                 if has_style_anchor and index != 1
@@ -11976,6 +12177,7 @@ def build_ai_image_suite_prompts(
                     layout_rule,
                     identity_rule,
                     f"[Localized headline instruction] Visible headline and labels must use {profile['language']} only. For Japan, use the approved headline exactly as written: 「{page['headline']}」. Chinese planning text is invisible internal guidance.",
+                    market_localization_rule,
                     f"[Evidence format] {page['evidence']}",
                     f"[Country-localized scene] {page['scene']}",
                     f"[Local model and action direction] {page['pose']}",
@@ -12004,6 +12206,10 @@ def build_ai_image_suite_prompts(
 
         if resolved_suite_key == AI_IMAGE_COD_SUITE_KEY:
             profile = ai_image_cod_country_profile(page.get("country") or country)
+            market_localization_rule = text(page.get("marketLocalization")) or ai_image_cod_market_localization(
+                profile["code"],
+                index,
+            )["instruction"]
             main_image_count = min(8, suite_count)
             detail_image_count = max(suite_count - main_image_count, 0)
             style_anchor_rule = (
@@ -12049,6 +12255,7 @@ def build_ai_image_suite_prompts(
                     f"[Required display effect] {display_effect}",
                     "[Focused advertorial density] Use one dominant headline, one dominant product/result visual and at most one directly supporting callout on ordinary pages. Keep the product or result larger than all copy combined. Only a locked structured archetype may use its required comparison panels, steps, feedback cards, verified fields or color variants; it may not add unrelated benefits. Do not use repeated equal-size cards, badge rows or inset collections.",
                     f"[Localized headline instruction] Visible headline and labels must use {profile['language']} only. For Japan, use the approved headline exactly as written: 「{page['headline']}」. The Chinese planning text remains invisible internal guidance and must never appear as artwork copy.",
+                    market_localization_rule,
                     f"[Evidence format] {page['evidence']}",
                     f"[Country-localized scene] {page['scene']}",
                     f"[Local model and action direction] {page['pose']}",
@@ -12370,9 +12577,9 @@ def normalize_ai_director_cache_context(value: Any) -> str:
     source = re.sub(r"\[Reference role map\][^\n]*", " ", text(value), flags=re.IGNORECASE)
     source = re.sub(r"\s+", " ", source).strip().lower()
     source = re.sub(r"\b(?:amazon|rakuten|cod|coupang|gmarket|shopline)\b", " ", source, flags=re.IGNORECASE)
-    source = re.sub(r"(?:亚马逊|乐天|落地页|日本站|韩国站|德国站|匈牙利站|波兰站|西班牙站|墨西哥站|法国站|捷克站|目标国家|目标市场|卖给(?:日本|韩国|德国|匈牙利|波兰|西班牙|墨西哥|法国|捷克|台湾|香港|泰国|越南|马来西亚|新加坡|菲律宾|印度尼西亚)|日本|韩国|德国|匈牙利|波兰|西班牙|墨西哥|法国|捷克|台湾|香港|泰国|越南|马来西亚|新加坡|菲律宾|印度尼西亚|日文|韩文|德文|德语|匈牙利语|波兰语|西班牙语|法语|捷克语|繁体中文|泰文|越南文|马来文|印尼文)", " ", source)
-    source = re.sub(r"\b(?:japanese|korean|german|hungarian|polish|spanish|french|czech|traditional chinese|thai|vietnamese|malay|indonesian|english)\b", " ", source, flags=re.IGNORECASE)
-    source = re.sub(r"\b(?:kr|jp|de|hu|pl|es|mx|fr|cz|tw|hk|th|vn|my|sg|ph|id)\b", " ", source, flags=re.IGNORECASE)
+    source = re.sub(r"(?:亚马逊|乐天|落地页|日本站|韩国站|美国站|英国站|德国站|匈牙利站|波兰站|西班牙站|墨西哥站|法国站|捷克站|目标国家|目标市场|卖给(?:日本|韩国|美国|英国|德国|匈牙利|波兰|西班牙|墨西哥|法国|捷克|台湾|香港|泰国|越南|马来西亚|新加坡|菲律宾|印度尼西亚)|日本|韩国|美国|英国|德国|匈牙利|波兰|西班牙|墨西哥|法国|捷克|台湾|香港|泰国|越南|马来西亚|新加坡|菲律宾|印度尼西亚|日文|韩文|英文|英语|美式英语|英式英语|德文|德语|匈牙利语|波兰语|西班牙语|法语|捷克语|繁体中文|泰文|越南文|马来文|印尼文)", " ", source)
+    source = re.sub(r"\b(?:japanese|korean|german|hungarian|polish|spanish|french|czech|traditional chinese|thai|vietnamese|malay|indonesian|american english|british english|united states|united kingdom|english)\b", " ", source, flags=re.IGNORECASE)
+    source = re.sub(r"\b(?:kr|jp|us|gb|uk|de|hu|pl|es|mx|fr|cz|tw|hk|th|vn|my|sg|ph|id)\b", " ", source, flags=re.IGNORECASE)
     source = re.sub(r"\b\d{3,4}\s*[x×]\s*\d{3,4}\b", " ", source, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", source).strip()
 
@@ -12392,12 +12599,13 @@ def ai_director_analysis_cache_key(
     normalized_context = normalize_ai_director_cache_context(f"{product_context}\n{brief}")
     image_digest = hashlib.sha256(reference_image[1]).hexdigest() if reference_image and reference_image[1] else "no-image"
     scoped_blueprint = bool(text(page_signature) or text(inspiration_signature))
+    scoped_market = bool(text(suite_country))
     key_payload = json.dumps(
         {
             "version": AI_DIRECTOR_CACHE_VERSION,
             "model": limited_text(model, "", 120).lower(),
-            "suiteKey": normalize_ai_image_suite_key(suite_key) if scoped_blueprint else "product-analysis",
-            "suiteCountry": normalize_ai_image_cod_country(suite_country) if scoped_blueprint and suite_country else "",
+            "suiteKey": normalize_ai_image_suite_key(suite_key) if scoped_blueprint or scoped_market else "product-analysis",
+            "suiteCountry": normalize_ai_image_cod_country(suite_country) if scoped_market else "",
             "pageSignature": limited_text(page_signature, "", 160),
             "inspirationSignature": limited_text(inspiration_signature, "", 240),
             "imageSha256": image_digest,
@@ -13172,7 +13380,7 @@ def sanitize_ai_image_suite_visual_fact_conflicts(
 
 def ai_director_requirement_is_product_invariant(value: str) -> bool:
     return not re.search(
-        r"(?:amazon|rakuten|cod|coupang|gmarket|亚马逊|乐天|目标国家|目标市场|日本|韩国|德国|匈牙利|波兰|西班牙|墨西哥|法国|捷克|台湾|香港|泰国|越南|马来西亚|新加坡|菲律宾|印度尼西亚|日文|韩文|德文|德语|匈牙利语|波兰语|西班牙语|法语|捷克语|繁体中文|\d{3,4}\s*[x×]\s*\d{3,4})",
+        r"(?:amazon|rakuten|cod|coupang|gmarket|亚马逊|乐天|目标国家|目标市场|日本|韩国|美国|英国|德国|匈牙利|波兰|西班牙|墨西哥|法国|捷克|台湾|香港|泰国|越南|马来西亚|新加坡|菲律宾|印度尼西亚|日文|韩文|英文|英语|美式英语|英式英语|德文|德语|匈牙利语|波兰语|西班牙语|法语|捷克语|繁体中文|\d{3,4}\s*[x×]\s*\d{3,4})",
         value,
         re.IGNORECASE,
     )
@@ -13973,7 +14181,7 @@ def ai_image_jp_company_execution_prompt(
     product_prompt: str,
     suite_count: int,
 ) -> str:
-    """Compile the short positive-first prompt used by the company-style JP flow."""
+    """Compile the positive-first prompt used by the company-style JP flow."""
     page_value = dict(page)
     text_policy = text(page_value.get("textPolicy"), "requested").lower()
     if text_policy == "none":
@@ -13992,14 +14200,18 @@ def ai_image_jp_company_execution_prompt(
     ]
     focus_title = clean_ai_image_suite_text(
         page_value.get("localizedSellingPointTitle") or page_value.get("focusTitle"),
-        180,
+        AI_IMAGE_SOURCE_TITLE_LIMIT,
     )
-    focus_description = clean_ai_image_suite_text(page_value.get("focusDescription"), 360)
+    focus_description = clean_ai_image_suite_text(
+        page_value.get("focusDescription"),
+        AI_IMAGE_SOURCE_DESCRIPTION_LIMIT,
+    )
     support_copy = focus_description if re.search(r"[ぁ-んァ-ヶー]", focus_description) and focus_description != headline else ""
     evidence = clean_ai_image_suite_text(
         page_value.get("directorSellingPointEvidence") or page_value.get("evidence"),
-        320,
+        1600,
     )
+    source_contract = ai_image_verbatim_source_point_instruction(page_value)
     visual = normalize_ai_director_visual_enhancement(page_value.get("visualEnhancement"))
     logic = normalize_ai_image_company_creative_logic(page_value.get("companyCreativeLogic"))
     dimensions = logic.get("fiveDimensions") if isinstance(logic.get("fiveDimensions"), dict) else {}
@@ -14031,7 +14243,7 @@ def ai_image_jp_company_execution_prompt(
             visible_copy = (
                 "[JP25 source-complete copy lock — highest text priority] "
                 + source_headline_rule
-                + (f" Keep the complete supplied authority meaning in one compact Japanese proof line: 「{focus_description}」." if source_point_type == "authority" and focus_description else "")
+                + (" Keep the complete supplied authority meaning semantically faithful in one concise Japanese proof line; preserve every supplied number, unit and named theme from the verbatim source contract." if source_point_type == "authority" and focus_description else "")
                 + ". No filler copy, weaker paraphrase or unrelated slogan."
             )
         else:
@@ -14119,7 +14331,8 @@ def ai_image_jp_company_execution_prompt(
             if source_point_index > 0
             else ""
         ),
-        f"[Locked current-page source point] {focus_title}. {clean_ai_image_suite_text(focus_description, 220)}",
+        source_contract,
+        f"[Locked current-page source point] {focus_title}. {clean_ai_image_suite_text(focus_description, 1800)}",
         ai_image_jp_company_suite_visual_bible(page_value, suite_count),
         ai_image_jp_company_content_boundary(page_value),
         module_contract,
@@ -14709,6 +14922,9 @@ def build_ai_director_jp25_compact_analysis_messages(
             "Return only this JSON shape: " + response_schema + ". Do not return a pages array in this first pass.",
         ]
     )
+    if "country_profile" in locals() and country_profile:
+        user_text = user_text.replace("Japanese font tone, information density and space allocation", director_font_instruction)
+        user_text = user_text.replace("Japanese wording", "localized wording")
     user_content: Any = user_text
     if vision_enabled and reference_image:
         user_content = [
@@ -14741,10 +14957,51 @@ def build_ai_director_messages(
     suite_config = ai_image_suite_config(suite_key)
     suite_count = len(base_pages) or int(suite_config["count"])
     suite_label = ai_image_suite_label(suite_key, suite_count)
+    country_profile = (
+        ai_image_cod_country_profile(suite_country)
+        if suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS
+        else {}
+    )
     target_language = (
-        ai_image_cod_country_profile(suite_country).get("visibleLanguage", "目标国家本地语言")
+        country_profile.get("visibleLanguage", "目标国家本地语言")
         if suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS
         else "日文"
+    )
+    target_market_profile = (
+        json.dumps(
+            {
+                key: country_profile.get(key)
+                for key in (
+                    "code",
+                    "label",
+                    "language",
+                    "marketStyle",
+                    "scene",
+                    "model",
+                    "copyConvention",
+                    "castingRoster",
+                    "sceneRoster",
+                    "avoidCues",
+                )
+                if country_profile.get(key)
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if country_profile
+        else ""
+    )
+    director_copy_language = country_profile.get("language", "Japanese") if country_profile else "Japanese"
+    director_copy_placeholder = f"concise natural {director_copy_language} artwork copy" if country_profile else "自然な日本語"
+    director_people_instruction = (
+        f"Use simple hands, the selected-market casting lock ({country_profile.get('model', '')}) and natural skin texture."
+        if country_profile
+        else "Use simple hands, specific mature Japanese casting and natural skin texture."
+    )
+    director_font_instruction = (
+        f"{director_copy_language} font tone, information density and space allocation"
+        if country_profile
+        else "Japanese font tone, information density and space allocation"
     )
     creative_director_suite = (
         normalize_ai_image_suite_key(suite_key) == AI_IMAGE_LANDING_SUITE_KEY
@@ -14861,6 +15118,7 @@ def build_ai_director_messages(
                     else {}
                 ),
                 "hasHuman": ai_image_page_has_human(page),
+                "marketLocalization": clean_ai_image_suite_text(page.get("marketLocalization"), 1000),
             }
             for page in production_pages
         ]
@@ -14887,6 +15145,7 @@ def build_ai_director_messages(
                 "supportingDetail": ai_image_page_supporting_detail(page, ai_image_page_primary_message(page)),
                 "creativePrevisualization": normalize_ai_director_visual_enhancement(page.get("visualEnhancement")),
                 "hasHuman": ai_image_page_has_human(page),
+                "marketLocalization": clean_ai_image_suite_text(page.get("marketLocalization"), 1000),
                 "marketResearchVersion": limited_text(page.get("marketResearchVersion"), "", 80),
             }
             for page in production_pages
@@ -14959,9 +15218,9 @@ def build_ai_director_messages(
     page_analysis_instruction = (
         f"For this {suite_count}-page JP25 suite, the first pass performs product/reference analysis while preserving the complete source contract. Do not expand all {suite_count} pages in the response. Return every supplied source point in source order across mainSellingPoints and secondarySellingPoints, up to five main and fifteen secondary records; do not collapse, merge, shorten away, neutralize or substitute any supplied selling point or authority statement. Keep already supplied Japanese titles and translate other titles into concise natural Japanese without changing numbers, units, targets or meaning. Return one concrete photographer-visible evidenceDirection for each source point. Keep productSummary under 70 words, each referenceAnalysis field under 55 words, every referenceBreakdown field under 18 words, globalRequirements concise, and inspiration craft subordinate to the locked page contract. The local planner owns all 25 page assignments and a separate batched creative pass refines camera, light and composition only."
         if batched_director_suite and source_complete_jp25
-        else f"For this {suite_count}-page suite, this first pass performs product/reference analysis only. Do not expand all {suite_count} pages in the response. Return exactly three main and five secondary selling points whenever the supplied product supports them. Preserve every user-provided selling point verbatim in meaning and source order; otherwise derive only visually confirmed product points. Write each title as concise natural Japanese artwork copy, each description under 22 words, two or three short Japanese copyLabels, and one concrete evidenceDirection that a photographer can show. Keep productSummary under 70 words, each referenceAnalysis field under 55 words, every referenceBreakdown field under 18 words, globalRequirements to six short items, each fact-audit list to six short items, every inspirationBlueprint string under 22 words and riskControls to three items. The existing local planner owns page count and role order; a separate batched creative pass will refine small page groups with the analysis returned here."
+        else f"For this {suite_count}-page suite, this first pass performs product/reference analysis only. Do not expand all {suite_count} pages in the response. Return exactly three main and five secondary selling points whenever the supplied product supports them. Preserve every user-provided selling point verbatim in meaning and source order; otherwise derive only visually confirmed product points. Write each title as {director_copy_placeholder}, each description under 22 words, two or three short localized copyLabels, and one concrete evidenceDirection that a photographer can show. Keep productSummary under 70 words, each referenceAnalysis field under 55 words, every referenceBreakdown field under 18 words, globalRequirements to six short items, each fact-audit list to six short items, every inspirationBlueprint string under 22 words and riskControls to three items. The existing local planner owns page count and role order; a separate batched creative pass will refine small page groups with the analysis returned here."
         if batched_director_suite
-        else "For every page, visualize the complete finished photograph before writing any prompt language. Think like a real photographer creating a shooting brief: establish emotionAnchor and shotConcept first, then specify focal length and camera height, light direction and color temperature, percentage-based spatial allocation, exact material rendering, shared art direction and riskControls. One page owns one selling point. Brand pages use exactly one dominant photograph plus one integrated copy zone. Ordinary selling and deep-proof pages use one dominant photograph, one copy zone and at most one explicitly required proof inset. Only the locked comparison, 2x2 pain grid and verified size/color pages use their narrow structured layouts. Keep copy few, large and exact. Use simple hands, specific mature Japanese casting and natural skin texture. The local previsualization is the baseline; improve camera and light without adding content, changing product, scene category, action, wording or source selling-point meaning."
+        else f"For every page, visualize the complete finished photograph before writing any prompt language. Think like a real photographer creating a shooting brief: establish emotionAnchor and shotConcept first, then specify focal length and camera height, light direction and color temperature, percentage-based spatial allocation, exact material rendering, shared art direction and riskControls. One page owns one selling point. Brand pages use exactly one dominant photograph plus one integrated copy zone. Ordinary selling and deep-proof pages use one dominant photograph, one copy zone and at most one explicitly required proof inset. Only the locked comparison, 2x2 pain grid and verified size/color pages use their narrow structured layouts. Keep copy few, large and exact. {director_people_instruction} The local previsualization is the baseline; improve camera and light without adding content, changing product, scene category, action, wording or source selling-point meaning."
     )
     reference_breakdown_schema = '"referenceBreakdown":[{"index":1,"role":"product|detail|usage|person|scene|layout|styleset|package|other","product":"visible product/color/material/structure facts only","layout":"module geometry/font tone/density/spacing","informationArchitecture":"module count/hierarchy/evidence pattern","useAs":"product-lock|identity-only|layout-skeleton-only|art-direction-only|scene-blueprint-only|evidence-only","exclude":"attributes this reference must not transfer"}]'
     response_schema = (
@@ -14969,9 +15228,12 @@ def build_ai_director_messages(
         if batched_director_suite
         else f'{{"productSummary":"...","referenceAnalysis":{{"product":"...","layout":"...","informationArchitecture":"..."}},{reference_breakdown_schema},"productVisualDNA":{{"observableColors":["#RRGGBB"],"backgroundColor":"#RRGGBB","accentColor":"#RRGGBB","textColor":"#RRGGBB","shapeAnchors":["..."],"materialAnchors":["..."],"labelAnchors":["..."]}},"marketResearch":{{"version":"copy the supplied local profile version","directorObservations":"only product-specific application notes"}},"mainSellingPoints":[{{"title":"自然な日本語","description":"...","copyLabels":["...","..."],"evidenceDirection":"..."}}],"secondarySellingPoints":[{{"title":"自然な日本語","description":"...","copyLabels":["...","..."],"evidenceDirection":"..."}}],"globalRequirements":["..."],"factAudit":{{"provided":[{{"claim":"..."}}],"visible":[{{"claim":"..."}}],"inferred":[{{"claim":"..."}}],"blocked":[{{"claim":"...","category":"...","reason":"..."}}]}},"inspirationBlueprint":{{"emotionAnchor":"...","shotConcept":"...","camera":"...","lighting":"...","spatialPlan":"...","modulePlan":"...","composition":"...","materialRendering":"...","spatialDepth":"...","artDirection":"...","riskControls":["..."],"negativeConstraints":["..."]}},"pages":[{{"page":1,"focusTitle":"...","focusDescription":"...","evidenceDirection":"...","supportingDetail":"...","contentDensity":"minimal|focused|structured","visualEnhancement":{{"emotionAnchor":"...","shotConcept":"...","camera":"...","lighting":"...","spatialPlan":"...","modulePlan":"...","composition":"...","materialRendering":"...","spatialDepth":"...","artDirection":"...","riskControls":["..."],"negativeConstraints":["..."]}}}}]}}'
     )
+    if country_profile:
+        response_schema = response_schema.replace("自然な日本語", director_copy_placeholder)
     user_text = "\n".join(
         [
             f"Suite: {suite_label}; exact page count: {suite_count}; canvas: {suite_config['size']}; visible language: {target_language}.",
+            f"[Selected target-market profile — binding]\n{target_market_profile}" if target_market_profile else "",
             "[All-reference contact sheet] The attached image is a labelled contact sheet containing every uploaded reference. Inspect every numbered tile and use the prompt's Reference role map to separate exact product, detail, wearing/usage, person, scene, layout and style-set evidence." if reference_image and "contact-sheet" in text(reference_image[0]) else "",
             inspiration_note,
             product_context,
@@ -14992,6 +15254,13 @@ def build_ai_director_messages(
     user_content: Any = user_text
     if vision_enabled and reference_image:
         user_content = [
+            {"type": "text", "text": user_text},
+            {"type": "image_url", "image_url": {"url": ai_director_reference_data_url(reference_image)}},
+        ]
+    if "country_profile" in locals() and country_profile:
+        user_text = user_text.replace("Japanese font tone, information density and space allocation", director_font_instruction)
+        user_text = user_text.replace("Japanese wording", "localized wording")
+        user_content = user_text if not vision_enabled or not reference_image else [
             {"type": "text", "text": user_text},
             {"type": "image_url", "image_url": {"url": ai_director_reference_data_url(reference_image)}},
         ]
@@ -15126,10 +15395,10 @@ def refine_ai_image_suite_plan_with_director(
     cache_key = ai_director_analysis_cache_key(
         base_prompt,
         brief,
-        suite_key if blueprint_source_ids or creative_director_suite else "",
+        suite_key if blueprint_source_ids or creative_director_suite or suite_country else "",
         reference_image,
         text(settings.get("model")),
-        suite_country=suite_country if blueprint_source_ids else "",
+        suite_country=suite_country if suite_country else "",
         page_signature=page_signature,
         inspiration_signature=inspiration_signature,
     )
@@ -15501,7 +15770,9 @@ def build_ai_image_suite_review_messages(
             "supportingDetail": ai_image_page_supporting_detail(page, ai_image_page_primary_message(page)),
             "creativePrevisualization": normalize_ai_director_visual_enhancement(page.get("visualEnhancement")),
             "hasHuman": ai_image_page_has_human(page),
+            "marketLocalization": clean_ai_image_suite_text(page.get("marketLocalization"), 1000),
             "marketResearchVersion": limited_text(page.get("marketResearchVersion"), "", 80),
+            "sourcePointVerbatim": normalize_ai_image_source_contract_text(page.get("sourcePointVerbatim")),
         }
         for page in production_pages
     ]
@@ -15537,6 +15808,13 @@ def build_ai_image_suite_review_messages(
         )
     else:
         cod_review_rule = ""
+    review_profile = ai_image_cod_country_profile(suite_country) if expressive_cod else {}
+    if review_profile.get("copyConvention"):
+        cod_review_rule += (
+            f" For {review_profile['label']} ({review_profile['code']}), fail people-led images that use culturally generic, Japanese/Korean-default or wrong-country casting, grooming, body language or environments. "
+            "Respect any explicit user-specified person first; otherwise require the page's marketLocalization casting and scene slot. Across the submitted set, reject repeated identical faces, poses or rooms when different slots were assigned. "
+            f"Visible copy must follow this regional convention: {review_profile['copyConvention']} {review_profile.get('avoidCues', '')}"
+        )
     user_content: list[dict[str, Any]] = [
         {
             "type": "text",
@@ -15619,7 +15897,7 @@ def review_ai_image_suite(fields: dict[str, Any], files: dict[str, Any], actor: 
     reference_images = [read_ai_image_upload(item, "产品参考图") for item in reference_items]
     reference_image = ai_director_reference_contact_sheet(reference_images) or reference_images[0]
     generated_images = [read_ai_image_upload(item, "待质检成图") for item in generated_items]
-    prompt = limited_text(fields.get("prompt"), "", 3000)
+    prompt = limited_text(fields.get("prompt"), "", AI_IMAGE_PROVIDER_PROMPT_LIMIT)
     brief = limited_text(fields.get("suiteBrief"), "", AI_IMAGE_SUITE_BRIEF_LIMIT)
     suite_plan = normalize_ai_image_suite_plan(fields.get("suitePlan"), suite_count)
     if not suite_plan:
@@ -15699,7 +15977,7 @@ def plan_ai_image_suite(
     suite_key = normalize_ai_image_suite_key(payload.get("suiteKey") or AI_IMAGE_SUITE_KEY)
     if not suite_key:
         raise ValueError("不支持的落地页套图类型")
-    prompt = limited_text(payload.get("prompt"), "", 3000)
+    prompt = limited_text(payload.get("prompt"), "", AI_IMAGE_PROVIDER_PROMPT_LIMIT)
     brief = limited_text(payload.get("suiteBrief"), "", AI_IMAGE_SUITE_BRIEF_LIMIT)
     if not prompt and not brief:
         raise ValueError("请先填写商品卖点或创作需求")
@@ -17198,7 +17476,7 @@ def _dispatch_images_via_chatgpt2api_tasks(
 
 
 def normalize_ai_image_request_fields(payload: dict[str, Any]) -> tuple[str, str, str, str, int, int, int]:
-    prompt = limited_text(payload.get("prompt"), "", 3000)
+    prompt = limited_text(payload.get("prompt"), "", AI_IMAGE_PROVIDER_PROMPT_LIMIT)
     if not prompt:
         raise ValueError("请先填写图片提示词")
     model = limited_text(payload.get("model"), os.environ.get("CHATGPT2API_IMAGE_MODEL", "gpt-image-2"), 80)
@@ -17233,16 +17511,6 @@ def ai_image_structured_prompt_section(value: Any, heading: str) -> str:
     return text(match.group(1)).strip() if match else ""
 
 
-def compact_ai_image_prompt_excerpt(value: Any, limit: int = 1800) -> str:
-    """Keep the beginning and final constraints of a long single-image brief."""
-    source = re.sub(r"\r\n?", "\n", text(value)).strip()
-    if len(source) <= limit:
-        return source
-    tail_size = min(520, max(260, limit // 3))
-    head_size = max(1, limit - tail_size - 24)
-    return f"{source[:head_size].rstrip()}\n……\n{source[-tail_size:].lstrip()}"
-
-
 def compile_ai_image_cod_hook_text_prompt(payload: dict[str, Any], original_prompt: str, size: str) -> str:
     """Turn the verbose browser contract into a direct render prompt.
 
@@ -17257,7 +17525,7 @@ def compile_ai_image_cod_hook_text_prompt(payload: dict[str, Any], original_prom
         user_brief = ai_image_structured_prompt_section(original_prompt, "Current user prompt")
     if not user_brief:
         user_brief = original_prompt
-    user_brief = compact_ai_image_prompt_excerpt(user_brief, 1800)
+    user_brief = limited_text(user_brief, "", AI_IMAGE_SUITE_BRIEF_LIMIT)
 
     country = normalize_ai_image_cod_country(payload.get("suiteCountry"), "KR")
     profile = ai_image_cod_country_profile(country)
@@ -17290,12 +17558,13 @@ def compile_ai_image_cod_hook_text_prompt(payload: dict[str, Any], original_prom
         f"用户原始提示词（最高优先级）：{user_brief}",
         f"{canvas}。",
         f"目标市场：{profile['label']}。画面人物、场景、审美和电商视觉符合当地；所有可见文案只能使用{profile['visibleLanguage']}。用户未要求文案时不要自行添加文字。",
+        ai_image_cod_market_localization(profile["code"], 1)["instruction"],
         f"创意类型：{direction}",
         f"产品信息：{product_context}" if product_context else "严格按用户原始提示词识别并呈现真实主体，不要替换成模板里的其他品类。",
         "输出一张完整独立的成图，只保留一个主视觉和一个连续场景；主体完整清晰，材质写实，结构、颜色、比例、使用方式与用户描述一致，光影和构图达到商业成片质量。",
         "不要拼图、宫格、分屏、卡片墙、平台界面、白色外边、随机文字、虚构功能、Logo、水印、签名、二维码或服务名称。现在直接生成图片。",
     ]
-    return limited_text("\n".join(lines), "", 3600)
+    return limited_text("\n".join(lines), "", AI_IMAGE_PROVIDER_PROMPT_LIMIT)
 
 
 def normalize_ai_image_mode(value: Any, default: str = "text") -> str:
