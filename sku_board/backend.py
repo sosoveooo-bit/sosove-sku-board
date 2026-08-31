@@ -32,6 +32,47 @@ from cryptography.fernet import Fernet, InvalidToken
 from shopline_monitor.backend import ShoplineClient, load_local_env_files
 
 
+def _load_sku_board_env_files() -> None:
+    """Load the canonical panel environment when the package is launched directly.
+
+    The desktop launcher historically injected the workspace ``.env`` before
+    starting the server.  Running ``python -m sku_board.server`` from the
+    maintained sub-project bypasses that launcher, however, which made the
+    panel silently fall back to the single legacy node.  Look for the local
+    project file first and then the workspace-level file used by the launcher;
+    never overwrite variables supplied by the process or launcher.
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    candidates = (
+        project_root / ".env",
+        project_root.parent / ".env",
+        Path.cwd() / ".env",
+    )
+    seen: set[Path] = set()
+    for path in candidates:
+        path = path.resolve()
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            clean = line.strip()
+            if not clean or clean.startswith("#") or "=" not in clean:
+                continue
+            key, value = clean.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            os.environ[key] = value.strip().strip('"').strip("'")
+
+
+# Resolve the maintained SKU Board environment before the shared Shopline
+# loader examines the current working directory.  This keeps a stale `.env`
+# from an old checkout from masking the canonical node pool.
+_load_sku_board_env_files()
 load_local_env_files()
 
 
