@@ -7217,7 +7217,10 @@ AI_IMAGE_COD_SUITE_KEY = "cod-country-landing-30"
 AI_IMAGE_COD_DETAIL_SUITE_KEY = "cod-country-detail-12"
 AI_IMAGE_COD_KR_SUITE_KEY = AI_IMAGE_COD_SUITE_KEY
 AI_IMAGE_COD_KR_COUNT = 30
-AI_IMAGE_COD_COUNT_OPTIONS = (8, 12, 16, 20, 24, 30)
+# Keep the original quick presets and expose the 15-main + 22-detail company
+# layout as an explicit 37-image option.  Existing 30-image jobs remain
+# backwards compatible and continue to use the 8-main + 22-detail contract.
+AI_IMAGE_COD_COUNT_OPTIONS = (8, 12, 16, 20, 24, 30, 37)
 AI_IMAGE_COD_KR_SIZE = "750x1000"
 AI_IMAGE_COD_KR_PLAN_VERSION = "cod-country-v22-page-brief-director"
 AI_IMAGE_COD_DETAIL_COUNT = 22
@@ -7235,6 +7238,11 @@ AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS = {
     AI_IMAGE_LANDING_SUITE_KEY,
     AI_IMAGE_AMAZON_APLUS_SUITE_KEY,
     AI_IMAGE_RAKUTEN_SUITE_KEY,
+    # COD country landing/detail suites now expose the same company-style
+    # two-pass director controls in the panel.  Their content contract stays
+    # COD-specific; only the visual execution pass is shared.
+    AI_IMAGE_COD_SUITE_KEY,
+    AI_IMAGE_COD_DETAIL_SUITE_KEY,
 }
 AI_IMAGE_GENERIC_PRODUCT_SUITE_KEYS = {
     AI_IMAGE_LANDING_SUITE_KEY,
@@ -8363,6 +8371,16 @@ AI_IMAGE_COD_REFERENCE_PAGE_TYPES = (
     {"name": "使用方法页", "effect": "How-to page: three to five large static steps on a strong vertical or zigzag path, real hands, clear product states and one finished result."},
     {"name": "清洁收纳页", "effect": "Care and storage page: one large cleaning or maintenance action plus one real storage outcome, connected as one practical daily-care benefit rather than separate unrelated cards."},
     {"name": "产品信息收尾", "effect": "Information close: one large exact product portrait, confirmed material/function/use/specification zones and one full-width lifestyle or result strip. Fill the canvas and avoid generic trust badges."},
+    # Company-style 37-image COD extension (15 main + 22 detail).  These are
+    # deliberately different proof archetypes so the longer run does not
+    # recycle the 30-image tail or collapse back to a generic hero template.
+    {"name": "主卖点六聚焦", "effect": "Single-benefit spotlight six: make the sixth source point the only message, using a fresh local action, distinct camera height and one direct result proof."},
+    {"name": "主卖点七聚焦", "effect": "Single-benefit spotlight seven: show the seventh source point through a tactile product interaction and a clearly observable before-to-after state."},
+    {"name": "主卖点八聚焦", "effect": "Single-benefit spotlight eight: explain the eighth source point with a product-led mechanism view and one localized user context, without unrelated claims."},
+    {"name": "次卖点综合证明", "effect": "Secondary-point proof page: use one dominant exact product photograph and one compact evidence crop for the assigned secondary source theme."},
+    {"name": "多用户场景证明", "effect": "Multi-user proof page: show two distinct but truthful target-user contexts for the same assigned source theme, keeping product identity and operating method fixed."},
+    {"name": "耐久与维护证明", "effect": "Durability-and-care proof page: show only source-confirmed material, handling or maintenance evidence with no invented laboratory result or certification."},
+    {"name": "最终选择收束", "effect": "Final decision close: return to the exact product, one verified strongest result and a calm local context that resolves the final purchase question."},
 )
 AI_IMAGE_COD_COUNTRY_MAIN_SPECS = [
     {"role": "主图01 · 首屏主视觉", "objective": "建立产品识别、目标国家本土质感和最核心使用结果第一印象。", "evidence": "完整产品、真实使用状态、结果画面和三个以内核心功能标记。", "layout": "hero"},
@@ -10656,7 +10674,10 @@ def ai_image_cod_country_section_counts(brief: str, suite_count: int) -> tuple[i
     detail_count = int(next((item for item in (detail_match.groups() if detail_match else ()) if item), 0))
     if main_count > 0 and detail_count > 0 and main_count + detail_count == suite_count:
         return main_count, detail_count
-    default_main = min(8, suite_count)
+    # The company reference uses 15 main images followed by 22 detail images.
+    # Keep the established 8+22 layout for the default 30-image run, while a
+    # selected 37-image run adopts the company split automatically.
+    default_main = 15 if suite_count == 37 else min(8, suite_count)
     return default_main, max(0, suite_count - default_main)
 
 
@@ -10898,11 +10919,38 @@ def build_ai_image_cod_country_plan(
         usage_guide_focus,
         care_storage_focus,
         product_info,
-    ][:suite_count]
+    ]
+    # A 37-image company run needs seven additional page contracts beyond the
+    # legacy 30-image recipe list.  Fill only with deterministic, distinct
+    # archetype briefs; explicit user source points always stay at the front.
+    if len(focuses) < suite_count:
+        used_focus_titles = {
+            clean_ai_image_suite_text(item.get("title"), 220).lower()
+            for item in focuses
+            if clean_ai_image_suite_text(item.get("title"), 220)
+        }
+        for extension_index, reference_type in enumerate(
+            AI_IMAGE_COD_REFERENCE_PAGE_TYPES[len(focuses):suite_count],
+            start=len(focuses) + 1,
+        ):
+            title = clean_ai_image_suite_text(reference_type.get("name"), 220) or f"公司式第{extension_index}页证明"
+            if title.lower() in used_focus_titles:
+                title = f"{title} · 第{extension_index}页"
+            focuses.append(
+                {
+                    "title": title,
+                    "description": clean_ai_image_suite_text(reference_type.get("effect"), 600),
+                    "sourceProvided": False,
+                    "sourceType": "planner_support",
+                }
+            )
+            used_focus_titles.add(title.lower())
+    focuses = focuses[:suite_count]
     reference_layouts = (
         "hero", "usage", "local", "detail", "comparison", "info", "local", "info", "detail", "result",
         "local", "closing", "result", "usage", "detail", "usage", "local", "detail", "result", "usage",
         "detail", "detail", "usage", "info", "info", "local", "comparison", "info", "detail", "closing",
+        "hero", "usage", "detail", "local", "result", "info", "closing",
     )
     recipes = []
     authority_counter = 0
@@ -17040,10 +17088,25 @@ def build_ai_director_messages(
     if "country_profile" in locals() and country_profile:
         user_text = user_text.replace("Japanese font tone, information density and space allocation", director_font_instruction)
         user_text = user_text.replace("Japanese wording", "localized wording")
-        user_content = user_text if not vision_enabled or not reference_image else [
-            {"type": "text", "text": user_text},
-            {"type": "image_url", "image_url": {"url": ai_director_reference_data_url(reference_image)}},
-        ]
+        # Keep the full company-effect dual channel for COD as well.  The old
+        # country-localization rewrite rebuilt `user_content` with only the
+        # contact sheet, silently dropping the selected full-detail originals.
+        # Re-attach the same labelled originals after replacing the language
+        # wording so localization never weakens product/reference analysis.
+        if not vision_enabled or not reference_image:
+            user_content = user_text
+        else:
+            user_content = [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": ai_director_reference_data_url(reference_image)}},
+            ]
+            for index, original in key_reference_images or []:
+                user_content.extend(
+                    [
+                        {"type": "text", "text": f"Full-detail original for labelled Image {index}: {limited_text(Path(original[0]).name, f'reference-{index}', 100)}"},
+                        {"type": "image_url", "image_url": {"url": ai_director_reference_data_url(original)}},
+                    ]
+                )
     return [
         {
             "role": "system",
@@ -17436,7 +17499,7 @@ def refine_ai_image_suite_plan_with_director(
                 os.environ.get("AI_DIRECTOR_JP25_SECOND_PASS_ENABLED"),
                 True,
             )
-        elif company_effect_suite:
+        elif company_effect_suite and not cod_company_director_suite:
             # Amazon A+ and Rakuten use the same company-style two-pass flow when
             # the user selects 公司效果, while retaining their own platform rules.
             two_pass_enabled = bool(company_effect_mode) and truthy(

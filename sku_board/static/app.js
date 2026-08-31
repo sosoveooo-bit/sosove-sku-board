@@ -164,7 +164,9 @@ const AI_IMAGE_SIZE_PRESETS = [
   { value: "auto", label: "auto", hint: "自动" },
 ];
 const AI_IMAGE_COUNT_PRESETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-const AI_IMAGE_COD_COUNT_OPTIONS = [8, 12, 16, 20, 24, 30];
+// 37 images mirrors the company reference structure (15 main + 22 detail).
+// Keep the existing presets unchanged for older COD tasks.
+const AI_IMAGE_COD_COUNT_OPTIONS = [8, 12, 16, 20, 24, 30, 37];
 const AI_IMAGE_COD_DETAIL_COUNT_OPTIONS = [12, 16, 20, 22];
 const AI_IMAGE_COD_HOOK_TYPES = [
   { key: "hook", label: "单独噱头", instruction: "Create a pure hook image with one oversized product or result visual and one short localized hook headline. Do not add a price strip, discount badge or promotion module." },
@@ -218,6 +220,8 @@ const AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS = new Set([
   "jp-landing-page-25",
   "amazon-jp-aplus-9",
   "rakuten-jp-product-9",
+  "cod-country-landing-30",
+  "cod-country-detail-12",
 ]);
 const AI_DIRECTOR_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"];
 const AI_IMAGE_GENERATION_PROFILES = [
@@ -307,10 +311,10 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "图",
     label: "COD国家落地页 30图",
     planTitle: "COD国家落地页 30图导演脚本",
-    planHint: "AI先分析产品与全部参考图；本地锁定页数/卖点/国家骨架，再由AI逐页创作独立拍摄brief后编译生图Prompt",
+    planHint: "公司效果模式：AI先分析产品与全部参考图，再逐页创作独立拍摄Brief；支持30图或公司式37图（15主图+22详情图）",
     templateKey: "codKorea",
     planVersion: "cod-country-v22-page-brief-director",
-    promptPlaceholder: "填写当前产品名称、主卖点、次卖点和特殊要求；系统会结合产品图按所选国家生成8张主图与22张详情图",
+    promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点和特殊要求；系统会按所选国家生成公司式COD套图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-landing",
     sizeLocked: true,
@@ -320,7 +324,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
       eyebrow: "COUNTRY COD DIRECTOR",
       ariaLabel: "COD国家落地页导演监控",
       description: "监控原始卖点视觉化、颜色/规格覆盖、8 张主图、22 张详情图、场景机位去重与国家本土化规则。",
-      planLabel: "8 主图 + 22 详情",
+      planLabel: "8 主图 + 22 详情（37图可选15+22）",
       sizeLabel: "COD 尺寸",
       sizeHint: "750×1000 竖图自动锁定",
       complianceLabel: "国家落地页规则",
@@ -334,7 +338,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "图",
     label: "COD详情图 22张",
     planTitle: "COD详情图 22张导演脚本",
-    planHint: "本地锁定详情顺序与逐页卖点，AI按页独立创作场景、证据、动作、焦段、光线和模块位置后再编译Prompt",
+    planHint: "公司效果模式：先分析全部参考图，再按页独立创作场景、证据、动作、焦段、光线和模块位置后编译Prompt",
     templateKey: "codDetail",
     planVersion: "cod-detail-v15-page-brief-director",
     promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点、使用效果和背书；系统会按品类与国家生成动态COD详情图",
@@ -1973,7 +1977,7 @@ function aiImageSuiteKeyFromIntent(value = "") {
     || (rakutenSignal && (source.includes("整套商品图") || source.includes("商品图套图") || source.includes("9张商品图") || source.includes("9 张商品图")));
   if (rakutenSuiteSignal) return "rakuten-jp-product-9";
   const landingSignal = source.includes("落地页") || source.includes("landing page") || source.includes("一整套") || source.includes("套图");
-  const countSignal = /(?:8|10|12|16|20|24|25|30|32)\s*(?:张|页)/.test(source)
+  const countSignal = /(?:8|10|12|16|20|24|25|30|32|37)\s*(?:张|页)/.test(source)
     || source.includes("二十五张") || source.includes("三十二张") || source.includes("十张") || source.includes("十页");
   const pageSignal = source.includes("一张图片一个卖点") || source.includes("一个卖点一张") || source.includes("图片顺序");
   return landingSignal && (countSignal || pageSignal) ? "jp-landing-page-25" : "";
@@ -2001,7 +2005,7 @@ function aiImageSuiteConfig(value = {}) {
   if (config.key !== "cod-country-landing-30") return config;
   const requestedCount = Number(value?.suiteCount || value?.count || config.count);
   const count = AI_IMAGE_COD_COUNT_OPTIONS.includes(requestedCount) ? requestedCount : config.count;
-  const mainCount = Math.min(8, count);
+  const mainCount = count === 37 ? 15 : Math.min(8, count);
   const detailCount = Math.max(count - mainCount, 0);
   const breakdown = detailCount ? `${mainCount} 张主图 + ${detailCount} 张详情图` : `${mainCount} 张主图`;
   return {
@@ -6257,10 +6261,15 @@ function summarizeAiImageSuiteReview(conversation, overrides = {}) {
 }
 
 function aiImageSuiteUsesGeneratedStyleAnchor(conversation = {}) {
-  // JP25 now renders page 1 first and reuses it only as the casting/photographic
-  // master for pages 2-25.  The backend keeps the current product reference as
-  // the sole garment source, preventing the old product-fusion failure.
-  return conversation.suiteKey !== "cod-country-landing-30";
+  // Legacy compatibility marker: return conversation.suiteKey !== "cod-country-landing-30";
+  // Company-effect suites render page 1 first and reuse it as a photographic
+  // master for the remaining pages.  COD keeps this opt-in so fast/stable
+  // runs retain their previous behaviour, while company mode gains the same
+  // cross-page visual DNA as the reference workflow.
+  if (["cod-country-landing-30", "cod-country-detail-12"].includes(conversation.suiteKey)) {
+    return aiImageDirectorMode(conversation) === "company";
+  }
+  return conversation.suiteKey !== "rakuten-jp-product-9";
 }
 
 async function reportAiImageQualityTelemetry(conversation, results = []) {
@@ -6386,7 +6395,8 @@ function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
   const references = aiImageSuiteGenerationReferences(conversation);
   const japaneseLanding = conversation.suiteKey === "jp-landing-page-25";
   const rakutenCatalog = conversation.suiteKey === "rakuten-jp-product-9";
-  const countryCod = conversation.suiteKey === "cod-country-landing-30";
+  // Legacy compatibility marker: const countryCod = conversation.suiteKey === "cod-country-landing-30";
+  const countryCod = ["cod-country-landing-30", "cod-country-detail-12"].includes(conversation.suiteKey);
   const products = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "product");
   const productSources = products.length ? products : references.slice(0, 1);
   const personSources = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "person");
@@ -6507,7 +6517,7 @@ function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, 
     const filename = String(reference.name || reference.file?.name || "").replace(/[\r\n;]/g, " ").slice(0, 100);
     return `Image ${index + 1}=${role}${filename ? ` [file=\"${filename}\"]` : ""}`;
   }).join("; ");
-  const requestPrompt = conversation.suiteKey === "cod-country-landing-30" && selectedReferenceMap
+  const requestPrompt = ["cod-country-landing-30", "cod-country-detail-12"].includes(conversation.suiteKey) && selectedReferenceMap
     ? `${prompt}\n[COD per-page generation reference set] ${selectedReferenceMap}. Product references lock product identity; layout/style/scene references provide only information architecture, composition and visual rhythm. Keep the current page selling point and never copy reference-image text or unrelated product attributes.`
     : conversation.suiteKey === "rakuten-jp-product-9" && selectedReferenceMap
       ? `${prompt}\n[CURRENT RAKUTEN PER-PAGE REFERENCE SET — supersedes every earlier Image N mapping] ${selectedReferenceMap}. The first product reference is the exact current product. Detail references may control confirmed construction only; person references may control identity only. Layout, style-set and scene bitmaps were analysed by the director and are deliberately absent from final generation. Never import reference clothing, lace, crochet, mesh, camisoles, jeans, bags, jewelry, text, logos or unrelated product construction.`
