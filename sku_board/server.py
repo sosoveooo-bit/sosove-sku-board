@@ -420,8 +420,15 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "请先登录"}, status=HTTPStatus.UNAUTHORIZED)
             return
         try:
-            content, content_type = read_ai_image_output(material_id, remote_url)
-            self.send_bytes(content, content_type)
+            parsed = urlparse(self.path)
+            query = {key: values[0] for key, values in parse_qs(parsed.query).items() if values}
+            thumbnail = query.get("thumbnail", "").strip().lower() in {"1", "true", "yes", "on"}
+            content, content_type = read_ai_image_output(material_id, remote_url, thumbnail=thumbnail)
+            self.send_bytes(
+                content,
+                content_type,
+                cache_control="private, max-age=86400, immutable",
+            )
         except ValueError as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.NOT_FOUND)
         except OSError as exc:
@@ -649,7 +656,12 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def send_common_headers(self, content_type: str = "application/json; charset=utf-8", cache: bool = False) -> None:
+    def send_common_headers(
+        self,
+        content_type: str = "application/json; charset=utf-8",
+        cache: bool = False,
+        cache_control: str = "",
+    ) -> None:
         self.send_header("Content-Type", content_type)
         allowed_origin = os.environ.get("SKU_BOARD_ALLOWED_ORIGIN", "").rstrip("/")
         request_origin = self.headers.get("Origin", "").rstrip("/")
@@ -658,7 +670,7 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Vary", "Origin")
-        self.send_header("Cache-Control", "public, max-age=300" if cache else "no-store")
+        self.send_header("Cache-Control", cache_control or ("public, max-age=300" if cache else "no-store"))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
 
@@ -693,9 +705,9 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def send_bytes(self, content: bytes, content_type: str) -> None:
+    def send_bytes(self, content: bytes, content_type: str, cache_control: str = "no-store") -> None:
         self.send_response(HTTPStatus.OK)
-        self.send_common_headers(content_type=content_type, cache=False)
+        self.send_common_headers(content_type=content_type, cache_control=cache_control)
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)

@@ -159,7 +159,7 @@ const AI_IMAGE_SIZE_PRESETS = [
   { value: "750x150", label: "750×150", hint: "COD促销横条" },
   { value: "750x100", label: "750×100", hint: "COD价格横条" },
   { value: "970x600", label: "970:600", hint: "Amazon A+" },
-  { value: "1200x1200", label: "1:1", hint: "乐天商品图" },
+  { value: "1500x1500", label: "1:1", hint: "乐天商品主图" },
   { value: "1500x2000", label: "3:4", hint: "落地页" },
   { value: "auto", label: "auto", hint: "自动" },
 ];
@@ -212,7 +212,13 @@ const AI_IMAGE_DIRECTOR_STAGES = [
 const AI_IMAGE_DIRECTOR_MODES = [
   { key: "fast", label: "极速生成", hint: "分析后直接出图" },
   { key: "review", label: "审核方案", hint: "确认分镜后出图" },
+  { key: "company", label: "公司效果", hint: "关键原图双通道 · 每页二次导演" },
 ];
+const AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS = new Set([
+  "jp-landing-page-25",
+  "amazon-jp-aplus-9",
+  "rakuten-jp-product-9",
+]);
 const AI_DIRECTOR_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"];
 const AI_IMAGE_GENERATION_PROFILES = [
   { key: "fast", label: "极速", hint: "最多8路智能并发 · 中质 · 跳过质检", workers: 8, perNode: 3, quality: "medium", review: "off", maxRetries: 1, autoRetryCycles: 1 },
@@ -227,9 +233,9 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "页",
     label: "日本产品落地页 25图",
     planTitle: "日本产品落地页 25图品牌导演脚本",
-    planHint: "创意总监模式：完整继承全部卖点、背书与限制项，先成像、三层读图，再为固定10张主图+15张详情图生成25个唯一摄影brief",
+    planHint: "公司效果模式：联系图+关键原图双通道，完整继承卖点与限制；先生成第1页摄影母版，再以人物/光影锚定生成其余24页服装精细摄影brief",
     templateKey: "landing",
-    planVersion: "director-v27-verbatim-source",
+    planVersion: "director-v30-fine-fashion-photo",
     marketResearchVersion: "jp-market-research-2026-07-30-v1",
     promptPlaceholder: "填写产品名称、全部颜色/规格、全部卖点、权威背书和特殊要求；系统会逐项保留原意、分析全部参考图并生成固定25张日本落地页",
     resultClass: "landing",
@@ -253,9 +259,9 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "图",
     label: "Amazon日本站 A+ 9图",
     planTitle: "Amazon A+ 9图导演脚本",
-    planHint: "根据当前产品动态生成横版卖点、结构、场景、规格与维护模块",
+    planHint: "公司效果模式：先分析产品与参考图，再为9个A+模块逐页创作独立摄影Brief；保留Linkfox编译、横版安全区与后期日文排版",
     templateKey: "amazonAplus",
-    planVersion: "amazon-aplus-v7-all-optimization",
+    planVersion: "amazon-aplus-v8-quality-optimization",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点、规格和特殊要求；系统会动态生成 9 张 Amazon日本站 A+ 模块图",
     resultClass: "amazon",
     anchorPrefix: "amazon-aplus",
@@ -263,7 +269,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     monitor: {
       eyebrow: "AMAZON A+ DIRECTOR",
       ariaLabel: "Amazon A+ 导演监控",
-      description: "监控 9 模块完整度、视觉一致性与 Amazon A+ 生成规则。",
+      description: "监控 9 模块完整度、服装结构一致性、无字底图、真实日文排版与 Amazon A+ 生成规则。",
       sizeLabel: "A+ 尺寸",
       sizeHint: "横版画布自动锁定",
       complianceLabel: "A+ 合规规则",
@@ -273,25 +279,25 @@ const AI_IMAGE_SUITE_CONFIGS = {
   "rakuten-jp-product-9": {
     key: "rakuten-jp-product-9",
     count: 9,
-    size: "1200x1200",
+    size: "1500x1500",
     unit: "图",
     label: "乐天日本站 9图",
-    planTitle: "乐天日本站 9图导演脚本",
-    planHint: "根据当前产品动态生成方图卖点、结构、场景、规格与维护内容",
+    planTitle: "乐天日本站 9图干净目录脚本",
+    planHint: "公司效果模式：先分析产品与参考图，再为9张图逐页创作独立摄影Brief；保留无字、无边框、单连续照片与镜头去重",
     templateKey: "rakutenSuite",
-    planVersion: "rakuten-director-v6-all-optimization",
-    promptPlaceholder: "填写当前产品名称、主卖点、次卖点、规格和特殊要求；系统会动态生成 9 张乐天日本站商品图",
+    planVersion: "rakuten-fashion-commerce-v10-textfree-1500",
+    promptPlaceholder: "填写当前产品名称、主卖点、次卖点、规格和特殊要求；系统会分析参考图并生成 9 张无字服装摄影图（1 张首图、6 张卖点图、2 张材质/颜色图）",
     resultClass: "rakuten",
     anchorPrefix: "rakuten-product",
     sizeLocked: true,
     monitor: {
       eyebrow: "RAKUTEN JP DIRECTOR",
       ariaLabel: "乐天日本站导演监控",
-      description: "监控 9 张商品图完整度、视觉一致性与乐天内容规则。",
+      description: "监控 9 张无字乐天服装图完整度、首图清晰度、卖点覆盖、产品一致性与镜头去重。",
       sizeLabel: "乐天尺寸",
-      sizeHint: "1200×1200 方图自动锁定",
+      sizeHint: "1500×1500 方图自动锁定",
       complianceLabel: "乐天内容规则",
-      complianceHint: "禁虚假价格、排名与乐天 UI",
+      complianceHint: "9 张图片全部无文字、无标题、无卡片边框、无虚假价格排名与乐天 UI",
     },
   },
   "cod-country-landing-30": {
@@ -301,9 +307,9 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "图",
     label: "COD国家落地页 30图",
     planTitle: "COD国家落地页 30图导演脚本",
-    planHint: "按参考落地页逻辑生成一图一卖点、一图一效果的 8 张主图与 22 张详情图",
+    planHint: "AI先分析产品与全部参考图；本地锁定页数/卖点/国家骨架，再由AI逐页创作独立拍摄brief后编译生图Prompt",
     templateKey: "codKorea",
-    planVersion: "cod-country-v20-verbatim-source",
+    planVersion: "cod-country-v22-page-brief-director",
     promptPlaceholder: "填写当前产品名称、主卖点、次卖点和特殊要求；系统会结合产品图按所选国家生成8张主图与22张详情图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-landing",
@@ -328,9 +334,9 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "图",
     label: "COD详情图 22张",
     planTitle: "COD详情图 22张导演脚本",
-    planHint: "促销→背书→痛点→全面海报→主卖点→次卖点→多角度/场景→好评→收尾",
+    planHint: "本地锁定详情顺序与逐页卖点，AI按页独立创作场景、证据、动作、焦段、光线和模块位置后再编译Prompt",
     templateKey: "codDetail",
-    planVersion: "cod-detail-v14-verbatim-source",
+    planVersion: "cod-detail-v15-page-brief-director",
     promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点、使用效果和背书；系统会按品类与国家生成动态COD详情图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-detail",
@@ -405,8 +411,8 @@ const AI_IMAGE_PROMPT_TEMPLATES = [
   { key: "virtualTryOn", label: "模特换装/搭配", size: "1024x1536", count: 1, mode: "compose" },
   { key: "poster", label: "Rakuten 单张海报", size: "1024x1536", count: 2 },
   { key: "landing", label: "日本产品落地页 25图", size: "1500x2000", count: 25, mode: "edit", suiteKey: "jp-landing-page-25" },
-  { key: "amazonAplus", label: "Amazon A+专区", size: "970x600", count: 9, mode: "edit", suiteKey: "amazon-jp-aplus-9" },
-  { key: "rakutenSuite", label: "乐天专区", size: "1200x1200", count: 9, mode: "edit", suiteKey: "rakuten-jp-product-9" },
+  { key: "amazonAplus", label: "Amazon A+专区", size: "970x600", count: 9, mode: "edit", suiteKey: "amazon-jp-aplus-9", promptSkill: "linkfox-aigc-imagegen-cloth", promptSkillLabel: "Linkfox 服饰 A+ Skill", promptSkillType: "STANDARD_APLUS", renderer: "chatgpt2api", rendererLabel: "ChatGPT2API", nativeRenderSize: "1536x1024", preciseTypography: true, uploadsReferences: false },
+  { key: "rakutenSuite", label: "乐天专区", size: "1500x1500", count: 9, mode: "edit", suiteKey: "rakuten-jp-product-9" },
   { key: "codKorea", label: "COD国家专区", size: "750x1000", count: 30, mode: "edit", suiteKey: "cod-country-landing-30" },
   { key: "codDetail", label: "COD详情图", size: "750x1000", count: 22, mode: "edit", suiteKey: "cod-country-detail-12" },
   { key: "codHook", label: "COD噱头生图", size: "750x1000", count: 1, mode: "text" },
@@ -1843,6 +1849,20 @@ function aiImageProviderLabel(model = "") {
   return aiImageModelProvider(model) === "acore" ? "Giikin Acore 公司生图" : "ChatGPT2API";
 }
 
+function aiImageTemplateConfig(templateKey = "") {
+  return aiImageTemplateOptions().find((item) => item.key === templateKey) || null;
+}
+
+function aiImageRendererLabel(conversation = {}) {
+  const template = aiImageTemplateConfig(conversation.templateKey || "");
+  return template?.rendererLabel || aiImageProviderLabel(conversation.model || state.aiImages.model || "gpt-image-2");
+}
+
+function aiImageLinkfoxRuntime() {
+  const runtime = aiImageOptions().aiImage?.linkfoxCloth;
+  return runtime && typeof runtime === "object" ? runtime : { installed: false, configured: false, enabled: true, ready: false };
+}
+
 function aiImageSkillConfig() {
   const skill = aiImageOptions().aiImage?.skill;
   return skill && typeof skill === "object" ? { ...AI_IMAGE_SKILL_FALLBACK, ...skill } : AI_IMAGE_SKILL_FALLBACK;
@@ -2041,7 +2061,7 @@ function aiImageCanvasInstruction(size = "1024x1024") {
     "750x150": "exact 750 by 150 pixel ultra-wide COD promotion strip whose background fills the complete width edge to edge; keep every foreground element fully inside an 18-pixel top-and-bottom safe zone, one horizontal reading line, no clipped text or product, no centered miniature banner and no unused side bands",
     "750x100": "exact 750 by 100 pixel ultra-wide COD price strip whose background fills the complete width edge to edge; keep every foreground element fully inside a 12-pixel top-and-bottom safe zone, one horizontal reading line, no clipped currency, price, quantity label, text or product, no centered miniature banner and no unused side bands",
     "970x600": "exact 970 by 600 pixel horizontal Amazon Japan A+ content asset",
-    "1200x1200": "exact 1200 by 1200 pixel square Rakuten Japan product-page image",
+    "1500x1500": "exact 1500 by 1500 pixel square Rakuten Japan product-page image",
     "1500x2000": "exact 1500 by 2000 pixel vertical 3:4 Japanese ecommerce landing-page canvas",
     auto: "choose the most effective ecommerce advertising canvas",
   };
@@ -2086,7 +2106,7 @@ function aiImageTemplateDirection(templateKey, productName, size = "") {
     poster: "information-rich Japanese Rakuten fashion poster, large model on the right with full product silhouette, designed advertising area on the left, layered editorial panels, color swatch blocks, size badge shapes and benefit callouts, warm light-gray paper texture, red and gold accent shapes, use intentional blank label areas instead of fake readable text",
     landing: "fixed 25-image Japanese mature-womenswear landing page, exact 1500x2000 full-bleed vertical assets, 10 main images followed by 15 detail images: brand hero, three core selling points, five secondary selling points, fair pain-point comparison, brand philosophy, 2x2 four-pain grid, solution, eight matching deep-proof pages, comprehensive comparison, material and craft, verified size plus complete real colors, and quality close; exact garment identity, Japanese women age 35-55, documentary daylight; hero pages use one photograph plus approved copy, ordinary pages use one photograph plus at most one planned proof inset, and only comparison, pain-grid and size/color pages use structured layouts",
     amazonAplus: "coordinated nine-module Amazon Japan A+ product content set, exact 970x600 horizontal assets, dynamic product-category analysis, product-first information hierarchy, restrained localized lifestyle or professional photography, structure, materials, use cases, specifications, compatibility and maintenance proof, generous safe margins, no prices, promotions, reviews, ratings, Amazon logos or interface elements",
-    rakutenSuite: "coordinated nine-image Rakuten Japan product-page set, exact 1200x1200 square assets, dynamic product-category analysis, strong mobile-thumbnail recognition, information-rich but disciplined Japanese marketplace layout, realistic localized lifestyle or professional photography, structure, materials, use cases, specifications and maintenance proof, no fabricated prices, rankings, reviews, Rakuten logos or interface elements",
+    rakutenSuite: "coordinated nine-image text-free Rakuten Japan apparel commerce set, exact 1500x1500 square assets: image 1 clean product-first thumbnail, images 2-7 one selling-point fashion photograph each, images 8-9 material and complete real-color proof; every image is photography only with no headline, subtitle, label, decorative lettering or reserved copy zone; exact current-product identity, pale cool-gray studio plus assigned uncluttered Japanese everyday scenes, broad soft daylight, realistic Japanese catalogue model, varied full-body/medium/side/activity/detail/product-only shots, one continuous photograph per image, no cards, panels, icons, labels, borders, imported reference clothing, prices, rankings, reviews, Rakuten logos or interface elements",
     codKorea: "coordinated country-targeted COD landing-page image suite with up to eight conversion-focused main images followed by product-specific detail images, exact 750x1000 full-bleed vertical assets, country-localized language, people, scenes, palette and ecommerce hierarchy, dynamic product-category analysis from the reference image and current prompt, pain-point comparisons, static steps and a final product-information image, no prices, animation, platform UI, fabricated data or white outer margins",
     codHook: "one standalone country-targeted COD hook image, exact 750x1000 full-bleed vertical asset, built directly from the user's single hook prompt and the uploaded product reference. Use one dominant product or result visual, a bold local-market visual hook, clear product-specific evidence, dramatic but believable perspective, strong contrast and localized people, scene and copy. Keep the hook focused on one point; do not turn it into a suite, contact sheet, generic poster or platform interface.",
     reels: "9:16 Reels cover, dynamic centered fashion pose, visual movement in fabric and hair, clear face and garment, strong top-middle focal point, generous safe areas for later title overlay, mobile-first composition",
@@ -3661,7 +3681,7 @@ function aiImageStatusText(options, conversation = {}) {
   if (conversation.status === "partial") return `${taskLabel}已显示 ${conversation.materials?.length || 0}/${suiteConfig?.count || conversation.count || 1} ${unit}`;
   if (conversation.status === "error") return "生成失败";
   return options.aiImage?.enabled
-    ? `已连接 ${aiImageProviderLabel(conversation.model || options.aiImage?.model || "gpt-image-2")}`
+    ? `已连接 ${aiImageRendererLabel(conversation)}`
     : "未配置生图服务";
 }
 
@@ -3794,12 +3814,27 @@ function aiImagePreflight(conversation) {
     { tone: conversation.productSku ? "ok" : "warning", label: conversation.productSku ? "已关联商品" : "未关联商品" },
     { tone: "ok", label: aiImageLockDisplay(conversation.lockLevel || "strict") },
   ];
+  let blocked = false;
   if (suiteActive) items.push({ tone: "ok", label: `${suiteConfig.count}${suiteConfig.unit}顺序已锁定 · ${suiteConfig.size}` });
+  const activeTemplate = aiImageTemplateConfig(conversation.templateKey || "");
+  if (activeTemplate?.promptSkill === "linkfox-aigc-imagegen-cloth") {
+    const runtime = aiImageLinkfoxRuntime();
+    const runtimeLabel = runtime.ready
+      ? `Linkfox A+ Skill 已加载 · ${runtime.type || activeTemplate.promptSkillType || "STANDARD_APLUS"}`
+      : !runtime.installed
+        ? "未安装 Linkfox 服饰 A+ Skill"
+        : "Linkfox 服饰 A+ Skill 已停用";
+    items.push({ tone: runtime.ready ? "ok" : "error", label: runtimeLabel });
+    items.push({ tone: "ok", label: `出图：ChatGPT2API · ${aiImageModelLabel(conversation.model || state.aiImages.model || "gpt-image-2")}` });
+    items.push({ tone: runtime.preciseTypography === false ? "warning" : "ok", label: runtime.preciseTypography === false ? "无字底图 · 日文排版已停用" : "无字底图 · 真实日文排版" });
+    items.push({ tone: "ok", label: `原生横图 ${runtime.nativeRenderSize || activeTemplate.nativeRenderSize || "1536x1024"} · 智能裁切 970×600` });
+    items.push({ tone: "ok", label: "参考图不会上传至 Linkfox" });
+    blocked = blocked || !runtime.ready;
+  }
   if (aiImageCodCountryActive(conversation)) {
     const country = aiImageCodCountryConfig(conversation.suiteCountry || "KR");
     items.push({ tone: "ok", label: `目标国家 ${country.label} · ${country.language}` });
   }
-  let blocked = false;
   if (conversation.templateKey === "virtualTryOn") {
     const productReady = references.some((reference, index) => reference.file && aiImageReferenceRoleKey(reference, index) === "product");
     const personReady = references.some((reference, index) => reference.file && aiImageReferenceRoleKey(reference, index) === "person");
@@ -3868,10 +3903,13 @@ function renderAiImageDirectorModes(conversation) {
     return;
   }
   const current = aiImageDirectorMode(conversation);
+  const availableModes = AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS.has(conversation.suiteKey)
+    ? AI_IMAGE_DIRECTOR_MODES
+    : AI_IMAGE_DIRECTOR_MODES.filter((mode) => mode.key !== "company");
   strip.innerHTML = `
     <span>导演流程</span>
     <div>
-      ${AI_IMAGE_DIRECTOR_MODES.map((mode) => `
+      ${availableModes.map((mode) => `
         <button class="${current === mode.key ? "active" : ""}" type="button" data-ai-director-mode="${esc(mode.key)}">
           <strong>${esc(mode.label)}</strong>
           <small>${esc(mode.hint)}</small>
@@ -3884,6 +3922,7 @@ function renderAiImageDirectorModes(conversation) {
 function setAiImageDirectorMode(modeKey = "fast") {
   if (!AI_IMAGE_DIRECTOR_MODES.some((mode) => mode.key === modeKey)) return;
   const conversation = ensureAiImageConversation();
+  if (modeKey === "company" && !AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS.has(conversation.suiteKey)) return;
   conversation.directorMode = modeKey;
   if (!(conversation.materials || []).length && Array.isArray(conversation.suitePages) && conversation.suitePages.length === aiImageSuiteCount(conversation)) {
     conversation.status = modeKey === "review" ? "planned" : "draft";
@@ -3994,6 +4033,7 @@ function aiImageSuitePlanSignature(conversation, prompt = "", intent = "") {
     country: conversation.suiteCountry || "KR",
     size: conversation.size || "",
     directorModel: state.aiImages.director?.model || "",
+    directorMode: aiImageDirectorMode(conversation),
     prompt: String(prompt || "").trim(),
     intent: String(intent || "").trim(),
     references,
@@ -4072,6 +4112,12 @@ function applyAiImageTemplate(templateKey) {
   if (template.mode) conversation.mode = template.mode;
   conversation.suiteKey = template.suiteKey || "";
   conversation.suiteCount = template.suiteKey ? template.count : 0;
+  if (AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS.has(conversation.suiteKey)) {
+    conversation.directorMode = "company";
+    conversation.generationProfile = "quality";
+  } else if (conversation.directorMode === "company") {
+    conversation.directorMode = "fast";
+  }
   if (aiImageCodCountryActive(conversation)) conversation.suiteCountry = conversation.suiteCountry || "KR";
   conversation.suitePlanVersion = "";
   conversation.suitePages = [];
@@ -4562,6 +4608,13 @@ function aiImageStoredPreviewUrl(material = {}) {
   return /^https?:\/\//i.test(previewUrl) ? previewUrl : "";
 }
 
+function aiImageThumbnailPreviewUrl(previewUrl = "") {
+  const value = String(previewUrl || "");
+  if (!value.startsWith("/api/sku-board/ai-image-output/")) return value;
+  if (/(?:\?|&)thumbnail=/.test(value)) return value;
+  return `${value}${value.includes("?") ? "&" : "?"}thumbnail=1`;
+}
+
 function aiImageReferenceBindings(references = []) {
   return (Array.isArray(references) ? references : []).map((reference, index) => ({
     index: index + 1,
@@ -4660,9 +4713,19 @@ function revokeAiImageReferenceUrls(conversation) {
 
 function aiImageErrorDiagnosis(message = "") {
   const lower = String(message || "").toLowerCase();
-  const activeModel = aiImageActiveConversation()?.model || state.aiImages.model || "gpt-image-2";
+  const activeConversation = aiImageActiveConversation() || {};
+  const activeModel = activeConversation.model || state.aiImages.model || "gpt-image-2";
   const providerLabel = aiImageProviderLabel(activeModel);
   const isAcore = aiImageModelProvider(activeModel) === "acore";
+  const usesLinkfoxPromptSkill = aiImageTemplateConfig(activeConversation.templateKey || "")?.promptSkill === "linkfox-aigc-imagegen-cloth";
+  if (usesLinkfoxPromptSkill && lower.includes("linkfox") && (lower.includes("未找到") || lower.includes("skill 已停用"))) {
+    return {
+      title: "Linkfox A+ Skill 不可用",
+      reason: "Amazon A+ 使用本地 Linkfox Skill 编排提示词，但当前没有找到 Skill 文件或该功能已停用。",
+      advice: ["确认已安装 linkfox-expert-aigc-imagegen-cloth", "重启 SKU Board 重新加载 Skill", "确认 LINKFOX_APLUS_ENABLED=true"],
+      actions: ["retry"],
+    };
+  }
   if (lower.includes("no available image quota") || lower.includes("image quota") || lower.includes("生图额度")) {
     return {
       title: "部分生图账号额度不足",
@@ -4771,7 +4834,9 @@ function renderAiImageDirectorMonitor(conversation = {}) {
   const countryConfig = aiImageCodCountryActive(conversation) ? aiImageCodCountryConfig(conversation.suiteCountry || "KR") : null;
   const detailSuite = suiteConfig.key === "cod-country-detail-12";
   const codExpressive = aiImageCodCountryActive(conversation);
+  const companyEffectSuite = AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS.has(suiteConfig.key);
   const jpCreativeDirector = suiteConfig.key === "jp-landing-page-25";
+  const codPageDirector = ["cod-country-landing-30", "cod-country-detail-12"].includes(suiteConfig.key);
   const monitorEyebrow = countryConfig ? `${countryConfig.value} COD${detailSuite ? " DETAIL" : ""} DIRECTOR` : monitorConfig.eyebrow;
   const monitorAriaLabel = countryConfig ? `COD${countryConfig.label}${detailSuite ? "详情图" : "落地页"}导演监控` : monitorConfig.ariaLabel;
   const monitorDescription = countryConfig
@@ -4932,6 +4997,41 @@ function renderAiImageDirectorMonitor(conversation = {}) {
       ? `标准策略：重点页按 ${Number(directorConfig.reviewThreshold || 78)} 分检查`
       : `成图后按 ${Number(directorConfig.reviewThreshold || 78)} 分检查`
     : generationProfile.review === "off" ? "极速策略：跳过成图质检" : "管理员已关闭";
+  const creativeStats = directorRun.creativePassStats || {};
+  const creativeRequestedPages = Math.max(1, Number(creativeStats.requestedPages || suiteConfig.count || 25));
+  const creativeRefinedPages = Math.max(
+    0,
+    Math.min(creativeRequestedPages, Number(creativeStats.refinedPages || 0)),
+  );
+  const creativePassComplete = Boolean(
+    directorRun.creativePassComplete
+      || creativeStats.complete
+      || creativeRefinedPages === creativeRequestedPages,
+  );
+  const companyEffectRunning = Boolean(directorRun.companyEffectMode && directorRun.status === "running");
+  const companyEffectValue = !directorRun.companyEffectMode
+    ? "当前使用稳定模式"
+    : companyEffectRunning
+    ? "正在执行逐页二次导演"
+    : creativePassComplete
+    ? `${creativeRequestedPages}页逐页二次导演已完成`
+    : creativeRefinedPages > 0
+    ? `${creativeRefinedPages}/${creativeRequestedPages}页远程优化，其余使用本地摄影预演`
+    : `远程导演异常，${creativeRequestedPages}页使用本地摄影预演`;
+  const companyEffectHint = !directorRun.companyEffectMode
+    ? "启用公司效果模式后执行逐页视觉导演"
+    : companyEffectRunning
+    ? "正在分批优化成片概念、焦段、光线、百分比分区与模块位置"
+    : creativePassComplete
+    ? creativeStats.splitRetryUsed
+      ? `上游波动已自动恢复，${creativeRequestedPages}页远程视觉蓝图均已完整接入最终Prompt`
+      : `${creativeRequestedPages}页远程视觉蓝图均已完整接入最终Prompt`
+    : directorRun.creativePassWarning
+      || (creativeRefinedPages > 0
+        ? "已接入成功页；其余页面使用本地摄影预演继续生图"
+        : `当前${creativeRequestedPages}页使用本地摄影预演继续生图`);
+  // Legacy JP25 wording retained in source for older monitor snapshots.
+  // 25页远程视觉蓝图均已完整接入最终Prompt
   const checks = [
     {
       tone: planReady ? "ready" : conversation.status === "generating" ? "active" : "waiting",
@@ -4949,7 +5049,40 @@ function renderAiImageDirectorMonitor(conversation = {}) {
         ? `${Number(directorRun.analysisCounts?.main || 0)} 主卖点 · ${Number(directorRun.analysisCounts?.secondary || 0)} 次卖点 · 0ms`
         : directorRun.warning || "模型失败时自动使用本地规则",
     },
-    ...(jpCreativeDirector ? [
+    ...(codPageDirector ? [
+      {
+        tone: directorRun.status === "running"
+          ? "active"
+          : creativePassComplete
+          ? "ready"
+          : creativeRefinedPages > 0
+          ? "warning"
+          : planReady
+          ? "warning"
+          : "waiting",
+        label: "逐页AI摄影 Brief",
+        value: directorRun.status === "running"
+          ? "正在逐页创作拍摄方案"
+          : creativePassComplete
+          ? `${creativeRequestedPages}/${creativeRequestedPages} 页已接入最终Prompt`
+          : creativeRefinedPages > 0
+          ? `${creativeRefinedPages}/${creativeRequestedPages} 页远程导演，其余本地预演`
+          : planReady
+          ? `${creativeRequestedPages} 页本地摄影预演已就绪`
+          : "等待产品与参考图分析",
+        hint: directorRun.creativePassWarning
+          || "本地只锁页数/卖点/国家/格式；AI逐页决定场景、证据、动作、焦段、光线、构图和模块位置",
+      },
+    ] : []),
+    ...(companyEffectSuite ? [
+      {
+        tone: directorRun.companyEffectMode && creativePassComplete ? "ready"
+          : companyEffectRunning ? "active"
+          : directorRun.companyEffectMode ? "warning" : "waiting",
+        label: "公司效果模式",
+        value: companyEffectValue,
+        hint: companyEffectHint,
+      },
       {
         tone: referenceAnalysisCount === 3 || planReady ? "ready" : "waiting",
         label: "三层参考分析",
@@ -4963,6 +5096,15 @@ function renderAiImageDirectorMonitor(conversation = {}) {
         label: "逐图三层解剖",
         value: `${referenceBreakdown.length}/${expectedReferenceAnalysisCount || conversation.referenceImages?.length || 0} 张参考图已逐张分析`,
         hint: "每张分别记录产品事实、排版骨架、信息架构、用途与禁止迁移项",
+      },
+      {
+        tone: Number(directorRun.dualChannelReferenceCount || 0) > 0 ? "ready"
+          : directorRun.companyEffectMode ? "warning" : "waiting",
+        label: "关键原图双通道",
+        value: Number(directorRun.dualChannelReferenceCount || 0) > 0
+          ? `联系图 + ${Number(directorRun.dualChannelReferenceCount)} 张关键原图`
+          : directorRun.companyEffectMode ? "当前素材仅使用联系图" : "公司效果模式启用后执行",
+        hint: "联系图读取整套骨架；关键原图补足版型、面料、使用动作与主风格细节",
       },
       {
         tone: generationReferences.length ? "ready" : "warning",
@@ -4995,10 +5137,12 @@ function renderAiImageDirectorMonitor(conversation = {}) {
         hint: "每个模块明确 Visual / Content / Position / Weight / Container",
       },
       {
-        tone: suiteConfig.planVersion === "director-v27-verbatim-source" ? "ready" : "waiting",
-        label: "逐字卖点 Prompt 执行",
-        value: "原文卖点合同 · 单页最高 64000 字符",
-        hint: "任务保留完整原文，每页只绑定对应卖点；数字、单位、对象、用法和背书主题进入最终提交Prompt",
+        tone: companyEffectSuite || suiteConfig.planVersion === "director-v30-fine-fashion-photo" ? "ready" : "waiting",
+        label: companyEffectSuite && !jpCreativeDirector ? "平台内容 Prompt 执行" : "逐字卖点 Prompt 执行",
+        value: companyEffectSuite && !jpCreativeDirector ? "模块内容合同 · 独立摄影 Brief" : "原文卖点合同 · 单页最高 64000 字符",
+        hint: companyEffectSuite && !jpCreativeDirector
+          ? "每页保留平台模块职责、产品证据与文案策略，再由二次导演单独编排镜头；不把页面改成通用模板"
+          : "任务保留完整原文，每页只绑定对应卖点；数字、单位、对象、用法和背书主题进入最终提交Prompt",
       },
       {
         tone: marketResearchVersion ? "ready" : "waiting",
@@ -5351,7 +5495,7 @@ function renderAiImageResults() {
   const suiteCount = suiteConfig?.count || Number(conversation.count || 1);
   const suiteCountryLabel = aiImageCodCountryActive(conversation) ? aiImageCodCountryConfig(conversation.suiteCountry || "KR").label : "";
   const modeLabel = suiteConfig ? `${suiteConfig.label}${suiteCountryLabel ? ` · ${suiteCountryLabel}` : ""}` : aiImageModeLabel(conversation.mode || "text");
-  const providerLabel = aiImageProviderLabel(conversation.model || state.aiImages.model || "gpt-image-2");
+  const providerLabel = aiImageRendererLabel(conversation);
   const unit = suiteConfig?.unit || "张";
   const promptBlock = prompt
     ? `
@@ -5420,6 +5564,7 @@ function renderAiImageResults() {
 
 function renderAiImageResultCard(material, index, conversation) {
   const preview = conversation.previewDataUrls?.[index] || material.previewDataUrl || material.previewUrl || "";
+  const gridPreview = aiImageThumbnailPreviewUrl(preview);
   const suiteActive = aiImageSuiteActive(conversation);
   const suiteConfig = aiImageSuiteConfig(conversation);
   const title = material.suiteTitle || material.name || `AI 图片 ${index + 1}`;
@@ -5453,7 +5598,7 @@ function renderAiImageResultCard(material, index, conversation) {
   return `
     <article class="ai-image-result-card ${isStrip ? "is-strip" : ""} ${aiReview ? (aiReview.passed ? "review-pass" : "review-fail") : ""}">
       <button class="ai-image-result-thumb" type="button" data-ai-preview-index="${index}" ${thumbAspect} ${preview ? "" : "disabled"}>
-        ${preview ? `<img src="${esc(preview)}" alt="${esc(title)}" loading="lazy" decoding="async" />` : `<span>图片已保存</span>`}
+        ${preview ? `<img src="${esc(gridPreview)}" data-original-src="${esc(preview)}" alt="${esc(title)}" loading="lazy" decoding="async" onerror="if(this.dataset.originalSrc){this.src=this.dataset.originalSrc;this.dataset.originalSrc='';}" />` : `<span>图片已保存</span>`}
       </button>
       <div class="ai-image-result-meta">
         <span>${esc(pageLabel)}</span>
@@ -5935,6 +6080,10 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
   formData.append("suiteCount", String(suiteConfig.count));
   formData.append("suiteCountry", conversation.suiteCountry || "KR");
   formData.append("useDirector", "true");
+  const companyEffectMode = AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS.has(conversation.suiteKey)
+    && aiImageDirectorMode(conversation) === "company";
+  formData.append("companyEffectMode", companyEffectMode ? "true" : "false");
+  formData.append("forceReanalyze", companyEffectMode ? "true" : "false");
   const directorReferences = (conversation.referenceImages || []).filter((reference) => reference.file).slice(0, 16);
   directorReferences.forEach((reference, index) => {
     formData.append(`reference${index}`, reference.file, reference.name || `reference-${index + 1}.jpg`);
@@ -6108,7 +6257,10 @@ function summarizeAiImageSuiteReview(conversation, overrides = {}) {
 }
 
 function aiImageSuiteUsesGeneratedStyleAnchor(conversation = {}) {
-  return !["jp-landing-page-25", "cod-country-landing-30"].includes(conversation.suiteKey);
+  // JP25 now renders page 1 first and reuses it only as the casting/photographic
+  // master for pages 2-25.  The backend keeps the current product reference as
+  // the sole garment source, preventing the old product-fusion failure.
+  return conversation.suiteKey !== "cod-country-landing-30";
 }
 
 async function reportAiImageQualityTelemetry(conversation, results = []) {
@@ -6226,18 +6378,20 @@ function aiImageSuiteGenerationReferences(conversation = {}) {
   const references = normalizeAiImageReferenceRoles(
     (conversation.referenceImages || []).filter((reference) => reference.file),
   );
-  if (conversation.suiteKey !== "jp-landing-page-25") return references;
+  if (!["jp-landing-page-25", "rakuten-jp-product-9"].includes(conversation.suiteKey)) return references;
   return references.filter((reference, index) => AI_IMAGE_JP_GENERATION_REFERENCE_ROLES.has(aiImageReferenceRoleKey(reference, index)));
 }
 
 function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
   const references = aiImageSuiteGenerationReferences(conversation);
   const japaneseLanding = conversation.suiteKey === "jp-landing-page-25";
+  const rakutenCatalog = conversation.suiteKey === "rakuten-jp-product-9";
   const countryCod = conversation.suiteKey === "cod-country-landing-30";
   const products = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "product");
   const productSources = products.length ? products : references.slice(0, 1);
   const personSources = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "person");
   const pagePlan = conversation.suitePages?.[page - 1] || {};
+  const pagePlanText = JSON.stringify(pagePlan).toLowerCase();
   const hasHuman = pagePlan.hasHuman !== false;
   const primaryReferenceIndex = Number(pagePlan.primaryVariantReferenceIndex || 0);
   const primaryProductSource = primaryReferenceIndex > 0
@@ -6254,9 +6408,16 @@ function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
     const requiresFullRange = Number(page) === 1
       || /完整配色|产品阵容|complete documented product range|complete range/.test(pagePlanText);
     if (requiresFullRange) {
-      productSources.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT).forEach(add);
-      const detailProof = references.find((reference, index) => aiImageReferenceRoleKey(reference, index) === "detail");
-      add(detailProof);
+      // Page 1 is the reference-derived visual system anchor.  Keep the
+      // product variants, then attach one or two analysed layout/style images
+      // so the generator can reproduce the richer information architecture
+      // instead of falling back to a sparse product plate.
+      productSources.slice(0, 4).forEach(add);
+      const layoutSources = references.filter((reference, index) => {
+        const role = aiImageReferenceRoleKey(reference, index);
+        return ["layout", "styleSet", "scene", "detail"].includes(role) && !selected.includes(reference);
+      });
+      layoutSources.slice(0, 2).forEach(add);
       return selected.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT);
     }
 
@@ -6277,7 +6438,10 @@ function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
       return ((left.index - pageOffset + references.length) % references.length)
         - ((right.index - pageOffset + references.length) % references.length);
     });
-    const supplementalLimit = String(pagePlan.contentDensity || "").toLowerCase() === "structured" ? 2 : 1;
+    const mainPage = Number(page) <= 8;
+    const supplementalLimit = mainPage
+      ? 2
+      : String(pagePlan.contentDensity || "").toLowerCase() === "structured" ? 2 : 1;
     supplemental
       .filter((item) => item.role !== "person" || hasHuman)
       .slice(0, supplementalLimit)
@@ -6285,27 +6449,37 @@ function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
     return selected.slice(0, 1 + supplementalLimit);
   }
 
-  if (japaneseLanding && [1, 12, 25].includes(Number(page))) {
-    productSources.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT).forEach(add);
+  if (rakutenCatalog) {
+    const detailSources = references.filter((reference, index) => aiImageReferenceRoleKey(reference, index) === "detail");
+    add(primaryProductSource || productSources[0] || references[0]);
+    if (Number(page) === 8) add(detailSources[0]);
+    if (Number(page) === 9) productSources.slice(0, 4).forEach(add);
     if (hasHuman) add(personSources[0]);
-  }
-  if (japaneseLanding && !selected.length) {
-    add(primaryProductSource || productSources[(Math.max(1, Number(page)) - 1) % Math.max(1, productSources.length)]);
-    if (hasHuman) add(personSources[0]);
-  } else if (references.length <= AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT) {
-    return references;
-  } else if (page === 1) {
-    productSources.slice(0, 4).forEach(add);
-    const supplements = references.filter((reference) => !selected.includes(reference));
-    const preferred = supplements.find((reference) => ["styleSet", "layout"].includes(reference.role))
-      || supplements[0];
-    add(preferred);
-    return selected.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT);
-  } else {
-    add(productSources[(Math.max(1, Number(page)) - 1) % productSources.length]);
+    return selected.slice(0, Number(page) === 9 ? 4 : 3);
   }
 
-  const pagePlanText = JSON.stringify(pagePlan).toLowerCase();
+  if (japaneseLanding) {
+    const fullRangePage = /完整配色|完整颜色|颜色与规格|尺寸与颜色|complete (?:colour|color|range)|color lineup|colour lineup/.test(pagePlanText);
+    if (fullRangePage) {
+      productSources.slice(0, 4).forEach(add);
+      if (hasHuman) add(personSources[0]);
+      return selected.slice(0, AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT);
+    }
+
+    // One primary product plus one role-relevant evidence image gives the
+    // renderer enough construction information without asking it to merge five
+    // different garments.  The generated page-1 master is appended separately.
+    add(primaryProductSource || productSources[0] || references[0]);
+    const evidenceSources = references
+      .map((reference, index) => ({ reference, role: aiImageReferenceRoleKey(reference, index) }))
+      .filter((item) => ["detail", "usage"].includes(item.role) && !selected.includes(item.reference));
+    evidenceSources.sort((left, right) =>
+      aiImageSuiteReferenceRoleScore(right.role, pagePlanText) - aiImageSuiteReferenceRoleScore(left.role, pagePlanText));
+    add(evidenceSources[0]?.reference);
+    if (hasHuman) add(personSources[0]);
+    return selected.slice(0, 3);
+  }
+
   const supplemental = references
     .map((reference, index) => ({ reference, role: reference.role, index }))
     .filter((item) => item.role !== "product" && !selected.includes(item.reference));
@@ -6328,17 +6502,26 @@ function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, 
   const formData = new FormData();
   const allReferences = (conversation.referenceImages || []).filter((reference) => reference.file);
   const references = editSource?.file ? [] : aiImageSuiteReferencesForPage(conversation, page);
-  const requestPrompt = references.length && references.length < allReferences.length
-    ? aiImageTemplatePrompt(conversation.templateKey || "main", aiImageProductBySku(conversation.productSku), true, {
-      mode: conversation.mode,
-      size: conversation.size,
-      userIntent: effectiveIntent,
-      lockLevel: conversation.lockLevel,
-      country: conversation.suiteCountry || "KR",
-      codHookType: conversation.codHookType || "hook",
-      referenceRoles: references,
-    })
-    : prompt;
+  const selectedReferenceMap = references.map((reference, index) => {
+    const role = aiImageReferenceRoleKey(reference, index);
+    const filename = String(reference.name || reference.file?.name || "").replace(/[\r\n;]/g, " ").slice(0, 100);
+    return `Image ${index + 1}=${role}${filename ? ` [file=\"${filename}\"]` : ""}`;
+  }).join("; ");
+  const requestPrompt = conversation.suiteKey === "cod-country-landing-30" && selectedReferenceMap
+    ? `${prompt}\n[COD per-page generation reference set] ${selectedReferenceMap}. Product references lock product identity; layout/style/scene references provide only information architecture, composition and visual rhythm. Keep the current page selling point and never copy reference-image text or unrelated product attributes.`
+    : conversation.suiteKey === "rakuten-jp-product-9" && selectedReferenceMap
+      ? `${prompt}\n[CURRENT RAKUTEN PER-PAGE REFERENCE SET — supersedes every earlier Image N mapping] ${selectedReferenceMap}. The first product reference is the exact current product. Detail references may control confirmed construction only; person references may control identity only. Layout, style-set and scene bitmaps were analysed by the director and are deliberately absent from final generation. Never import reference clothing, lace, crochet, mesh, camisoles, jeans, bags, jewelry, text, logos or unrelated product construction.`
+    : references.length && references.length < allReferences.length
+      ? aiImageTemplatePrompt(conversation.templateKey || "main", aiImageProductBySku(conversation.productSku), true, {
+        mode: conversation.mode,
+        size: conversation.size,
+        userIntent: effectiveIntent,
+        lockLevel: conversation.lockLevel,
+        country: conversation.suiteCountry || "KR",
+        codHookType: conversation.codHookType || "hook",
+        referenceRoles: references,
+      })
+      : prompt;
   formData.append("prompt", requestPrompt);
   formData.append("mode", "edit");
   formData.append("model", conversation.model);
@@ -6360,7 +6543,11 @@ function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, 
     formData.append("heroAB", "true");
   }
   if (reviewInstruction) formData.append("suiteReviewInstruction", reviewInstruction);
-  const activeStyleAnchor = editSource?.file || !aiImageSuiteUsesGeneratedStyleAnchor(conversation) ? null : styleAnchor;
+  const activeStyleAnchor = editSource?.file
+    || !aiImageSuiteUsesGeneratedStyleAnchor(conversation)
+    || conversation.suiteKey === "rakuten-jp-product-9"
+    ? null
+    : styleAnchor;
   const productReferenceIndexes = references
     .map((reference, index) => ({ reference, index: index + 1, role: aiImageReferenceRoleKey(reference, index) }))
     .filter((item) => item.role === "product")
@@ -7061,7 +7248,7 @@ async function generateAiImage(event) {
   $("#ai-image-status").textContent = retryMissingPages
     ? `正在补生成第 ${retryPageIndexes.join("、")} ${suiteConfig.unit}`
     : suiteConfig
-    ? `正在通过远端账号池分批生成 ${suiteConfig.label}（${suiteConfig.count}${suiteConfig.unit}）`
+    ? `正在通过 ${aiImageRendererLabel(conversation)} 分批生成 ${suiteConfig.label}（${suiteConfig.count}${suiteConfig.unit}）`
     : `正在调用 ${aiImageProviderLabel(conversation.model || "gpt-image-2")}`;
   const startedAt = performance.now();
   try {
