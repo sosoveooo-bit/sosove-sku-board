@@ -531,6 +531,78 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(result["winningNodeId"], "fast")
         self.assertEqual(result["hedgedNodeCount"], 2)
 
+    def test_jp25_single_page_progressively_tries_all_nodes_until_one_succeeds(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        nodes = [
+            {
+                "id": key,
+                "name": f"VPS {key.upper()}",
+                "baseUrl": f"https://{key}.example.com/v1",
+                "rootUrl": f"https://{key}.example.com",
+                "authKey": key,
+            }
+            for key in ("a", "b", "c", "d")
+        ]
+        attempted: list[str] = []
+
+        def fake_single(**kwargs):
+            node_id = kwargs["service_node"]["id"]
+            attempted.append(node_id)
+            if node_id != "d":
+                return {
+                    "outputs": [],
+                    "errors": [{"index": 0, "message": "Please retry later"}],
+                    "pending": [],
+                    "taskIds": [f"task-{node_id}"],
+                    "timedOut": False,
+                }
+            return {
+                "outputs": [{"index": 0, "taskId": "task-d", "image": (b"image", "image/png")}],
+                "errors": [],
+                "pending": [],
+                "taskIds": ["task-d"],
+                "timedOut": False,
+            }
+
+        with patch.dict(
+            os.environ,
+            {
+                "CHATGPT2API_HEDGE_NODE_COUNT": "2",
+                "CHATGPT2API_AFFINITY_FAILOVER_NODE_COUNT": "4",
+                "CHATGPT2API_HEDGE_DELAY_SECS": "0.05",
+            },
+            clear=False,
+        ), patch.object(
+            backend,
+            "chatgpt2api_service_nodes",
+            return_value=nodes,
+        ), patch.object(
+            backend,
+            "ai_image_affinity_node_index",
+            return_value=0,
+        ), patch.object(
+            backend,
+            "_generate_images_via_chatgpt2api_tasks_single",
+            side_effect=fake_single,
+        ) as generate:
+            result = backend.generate_images_via_chatgpt2api_tasks(
+                prompt="JP25 page one",
+                model="gpt-image-2",
+                size="1500x2000",
+                count=1,
+                prompts=["JP25 page one"],
+                page_indexes=[0],
+                allow_partial=True,
+                suite_run_id="suite-a1b2c3d4",
+                node_affinity_key="suite-a1b2c3d4",
+            )
+
+        self.assertEqual(generate.call_count, 4)
+        self.assertEqual(set(attempted), {"a", "b", "c", "d"})
+        self.assertEqual(result["winningNodeId"], "d")
+        self.assertEqual(result["failoverNodeCount"], 4)
+        self.assertTrue(all(backend.ai_image_node_runtime_stats(node["id"])["inFlight"] == 0 for node in nodes))
+
     def test_single_page_does_not_duplicate_a_fast_primary_request(self) -> None:
         backend.reset_ai_image_node_runtime_stats()
         nodes = [
@@ -708,6 +780,51 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(assignments, [0, 0, 0, 0])
         self.assertEqual(backend.ai_image_node_runtime_stats("slow")["healthStatus"], "timeout")
         self.assertTrue(backend.ai_image_node_runtime_stats("slow")["healthBlockedUntil"])
+
+    def test_provider_tool_failure_and_result_retrieval_are_retryable(self) -> None:
+        self.assertTrue(
+            backend.ai_image_retryable_error(
+                "The image generation tool encountered an error. Please try again."
+            )
+        )
+        self.assertTrue(
+            backend.ai_image_retryable_error(
+                "Image generation completed upstream but the result could not be retrieved."
+            )
+        )
+
+    def test_scheduler_does_not_reintroduce_dead_node_when_live_node_is_cooling(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        nodes = [
+            {"id": "dead", "name": "Dead", "weight": 1},
+            {"id": "live", "name": "Live", "weight": 1},
+        ]
+        backend.record_ai_image_node_health({"id": "dead", "status": "error", "accountPoolReady": 0})
+        backend.record_ai_image_node_health({"id": "live", "status": "ok", "accountPoolReady": 10})
+        backend.record_ai_image_node_runtime(nodes[1], success=False, latency_ms=500)
+        backend.record_ai_image_node_runtime(nodes[1], success=False, latency_ms=500)
+
+        assignments, _reserved = backend.reserve_ai_image_generation_nodes(nodes, [0])
+
+        self.assertEqual(assignments, [1])
+
+    def test_jp25_affinity_uses_cooling_live_node_before_dead_node(self) -> None:
+        backend.reset_ai_image_node_runtime_stats()
+        nodes = [{"id": key, "name": key.upper()} for key in ("a", "b", "c", "d")]
+        run_id = "deadbeef1234"
+        dead_index = backend.ai_image_affinity_node_index(nodes, run_id)
+        backend.record_ai_image_node_health({"id": nodes[dead_index]["id"], "status": "error"})
+        for index, node in enumerate(nodes):
+            if index == dead_index:
+                continue
+            backend.record_ai_image_node_health({"id": node["id"], "status": "ok", "accountPoolReady": 1})
+            backend.record_ai_image_node_runtime(node, success=False, latency_ms=500)
+            backend.record_ai_image_node_runtime(node, success=False, latency_ms=500)
+
+        selected = backend.ai_image_affinity_node_index(nodes, run_id)
+
+        self.assertNotEqual(selected, dead_index)
+        self.assertEqual(backend.ai_image_node_runtime_stats(nodes[selected]["id"])["healthStatus"], "ok")
 
     def test_jp25_node_affinity_is_stable_and_rotates_around_blocked_node(self) -> None:
         backend.reset_ai_image_node_runtime_stats()
@@ -1846,6 +1963,15 @@ class AiImageSuiteTests(unittest.TestCase):
                                         "camera": f"page-{page} 50mm eye-level",
                                         "lighting": "soft side daylight",
                                         "composition": "one dominant garment frame",
+                                        "companyPromptLayers": {
+                                            "taskAnchor": f"Create Japanese fashion page {page}.",
+                                            "emotionAnchor": "Quiet mature confidence.",
+                                            "visualNarrative": f"A finished page-{page} garment photograph with exact reference construction.",
+                                            "layoutAndCopy": "Product 65%; exact Japanese copy 25%; calm space 10%.",
+                                            "colorScheme": "Background #E5E8EF, text #2C2C2C, accent #C4A882.",
+                                            "styleDirection": "Japanese Rakuten documentary fashion editorial.",
+                                            "hardConstraints": "Freeze garment, Japanese copy, person realism and anatomy.",
+                                        },
                                     },
                                 }
                                 for page in range(start + 1, min(start + 6, 26))
@@ -1855,7 +1981,7 @@ class AiImageSuiteTests(unittest.TestCase):
                     100,
                 )
             )
-        with patch.dict(os.environ, {"AI_DIRECTOR_REFINEMENT_BATCH_SIZE": "5"}, clear=False), patch.object(
+        with patch.dict(os.environ, {"AI_DIRECTOR_JP25_REFINEMENT_BATCH_SIZE": "5", "AI_DIRECTOR_JP25_REFINEMENT_WORKERS": "1"}, clear=False), patch.object(
             backend,
             "invoke_ai_director_chat",
             side_effect=responses,
@@ -2511,6 +2637,91 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(backend.ai_director_last_call_info(settings)["attempts"][-1]["retry"], 1)
         self.assertTrue(backend.ai_director_retryable_transport_error(incomplete_stream))
 
+    def test_jp25_json_parser_repairs_literal_newline_trailing_comma_and_truncation(self) -> None:
+        malformed = """```json
+        {"productSummary":"Exact beige garment
+        with natural linen texture","globalRequirements":["Japanese copy",],
+        "referenceAnalysis":{"product":"exact construction","layout":"editorial"
+        """
+
+        payload = backend.parse_ai_director_json(malformed, repair=True)
+
+        self.assertIn("natural linen texture", payload["productSummary"])
+        self.assertEqual(payload["globalRequirements"], ["Japanese copy"])
+        self.assertEqual(payload["referenceAnalysis"]["product"], "exact construction")
+
+    def test_standard_director_json_parser_keeps_strict_mode_for_other_suites(self) -> None:
+        with self.assertRaisesRegex(ValueError, "JSON 无法解析"):
+            backend.parse_ai_director_json('{"productSummary":"truncated"')
+
+    def test_jp25_refinement_splits_malformed_json_batch(self) -> None:
+        pages = [
+            {
+                "page": page,
+                "role": f"第{page}页",
+                "focus": f"卖点{page}",
+                "scene": "日本生活场景",
+                "pose": "简单动作",
+                "composition": "商品主导",
+            }
+            for page in range(1, 3)
+        ]
+
+        def response_for(page: int) -> tuple[str, int]:
+            return (
+                json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page": page,
+                                "visualEnhancement": {
+                                    "camera": "50mm eye-level",
+                                    "lighting": "soft side daylight",
+                                    "composition": "one dominant product frame",
+                                    "companyPromptLayers": {
+                                        "taskAnchor": f"Create page {page}.",
+                                        "emotionAnchor": "Quiet confidence.",
+                                        "visualNarrative": f"A complete finished photograph for page {page}.",
+                                        "layoutAndCopy": "Product 65%; Japanese copy 25%; space 10%.",
+                                        "colorScheme": "#FCF9F4, #5A3C29, #E4D6C9.",
+                                        "styleDirection": "Japanese documentary ecommerce editorial.",
+                                        "hardConstraints": "Freeze product, copy, person and language.",
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                ),
+                100,
+            )
+
+        with patch.dict(
+            os.environ,
+            {
+                "AI_DIRECTOR_JP25_REFINEMENT_BATCH_SIZE": "2",
+                "AI_DIRECTOR_REFINEMENT_SPLIT_RETRY_ENABLED": "true",
+            },
+            clear=False,
+        ), patch.object(
+            backend,
+            "invoke_ai_director_chat",
+            side_effect=[("{not valid json", 100), response_for(1), response_for(2)],
+        ) as invoke:
+            refined, latency_ms = backend.refine_ai_director_page_visuals(
+                {"model": "gpt-5.6-sol", "fallbackModels": ["gpt-5.6-terra"], "timeout": 120},
+                pages,
+                {"productSummary": "current product"},
+                backend.AI_IMAGE_LANDING_SUITE_KEY,
+                "JP",
+                None,
+            )
+
+        self.assertEqual(invoke.call_count, 3)
+        self.assertEqual(latency_ms, 300)
+        self.assertTrue(refined["_creativePassStats"]["complete"])
+        self.assertTrue(refined["_creativePassStats"]["companyPromptComplete"])
+        self.assertTrue(refined["_creativePassStats"]["splitRetryUsed"])
+
     def test_jp25_refinement_splits_408_batch_and_reports_real_remote_page_count(self) -> None:
         pages = [
             {
@@ -2535,6 +2746,15 @@ class AiImageSuiteTests(unittest.TestCase):
                                     "camera": f"page-{page} 50mm eye-level",
                                     "lighting": "soft side daylight",
                                     "composition": "one dominant product frame",
+                                    "companyPromptLayers": {
+                                        "taskAnchor": f"Create Japanese product page {page}.",
+                                        "emotionAnchor": "Effortless everyday confidence.",
+                                        "visualNarrative": f"A finished page-{page} product photograph proving the assigned benefit.",
+                                        "layoutAndCopy": "Product 65%; exact Japanese copy 25%; calm space 10%.",
+                                        "colorScheme": "Background #FCF9F4, text #5A3C29, accent #E4D6C9.",
+                                        "styleDirection": "Japanese marketplace documentary product editorial.",
+                                        "hardConstraints": "Freeze product, Japanese copy, person realism and anatomy.",
+                                    },
                                 },
                             }
                             for page in page_numbers
@@ -2547,9 +2767,9 @@ class AiImageSuiteTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "AI_DIRECTOR_REFINEMENT_BATCH_SIZE": "5",
+                "AI_DIRECTOR_JP25_REFINEMENT_BATCH_SIZE": "5",
                 "AI_DIRECTOR_REFINEMENT_SPLIT_RETRY_ENABLED": "true",
-                "AI_DIRECTOR_REFINEMENT_MAX_OUTPUT_TOKENS": "2800",
+                "AI_DIRECTOR_JP25_REFINEMENT_MAX_OUTPUT_TOKENS": "5000",
             },
             clear=False,
         ), patch.object(
@@ -2576,7 +2796,180 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertTrue(refined["_creativePassStats"]["complete"])
         self.assertTrue(refined["_creativePassStats"]["splitRetryUsed"])
         self.assertTrue(all(call.args[0]["timeout"] == 120 for call in invoke.call_args_list))
-        self.assertTrue(all(call.args[0]["_maxOutputTokens"] == 2800 for call in invoke.call_args_list))
+        self.assertTrue(all(call.args[0]["_maxOutputTokens"] == 5000 for call in invoke.call_args_list))
+
+    def test_jp25_refinement_resumes_only_missing_company_prompt_pages(self) -> None:
+        pages = [
+            {
+                "page": page,
+                "role": f"第{page}页",
+                "focus": f"卖点{page}",
+                "scene": "日本生活场景",
+                "pose": "简单动作",
+                "composition": "商品主导",
+            }
+            for page in range(1, 4)
+        ]
+
+        def enhancement(page: int) -> dict:
+            return {
+                "camera": f"page-{page} 50mm eye-level",
+                "lighting": "soft side daylight",
+                "composition": "one dominant product frame",
+                "companyPromptLayers": {
+                    "taskAnchor": f"Create Japanese page {page}.",
+                    "emotionAnchor": "Quiet everyday confidence.",
+                    "visualNarrative": f"A finished product photograph for page {page} with direct visible proof.",
+                    "layoutAndCopy": "Product 65%; approved Japanese copy 25%; calm space 10%.",
+                    "colorScheme": "#FCF9F4, #5A3C29, #E4D6C9.",
+                    "styleDirection": "Japanese documentary ecommerce editorial.",
+                    "hardConstraints": "Freeze product, copy, person realism and language.",
+                },
+            }
+
+        analysis = {
+            "productSummary": "省力开瓶器",
+            "pageVisualEnhancements": {"1": enhancement(1), "2": enhancement(2)},
+            "_creativePassStats": {
+                "requestedPages": 3,
+                "refinedPages": 2,
+                "companyPromptPages": 2,
+                "companyPromptComplete": False,
+            },
+        }
+        response = json.dumps(
+            {"pages": [{"page": 3, "visualEnhancement": enhancement(3)}]},
+            ensure_ascii=False,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "AI_DIRECTOR_JP25_REFINEMENT_BATCH_SIZE": "3",
+                "AI_DIRECTOR_JP25_REFINEMENT_WORKERS": "1",
+            },
+            clear=False,
+        ), patch.object(backend, "invoke_ai_director_chat", return_value=(response, 100)) as invoke:
+            refined, _latency_ms = backend.refine_ai_director_page_visuals(
+                {"model": "gpt-5.6-sol", "fallbackModels": ["gpt-5.6-terra"], "timeout": 120},
+                pages,
+                analysis,
+                backend.AI_IMAGE_LANDING_SUITE_KEY,
+                "JP",
+                None,
+            )
+
+        self.assertEqual(invoke.call_count, 1)
+        request_text = invoke.call_args.args[1][1]["content"]
+        self.assertIn('[Locked pages]\n[{"page":3', request_text)
+        self.assertNotIn('[Locked pages]\n[{"page":1', request_text)
+        self.assertNotIn('[Locked pages]\n[{"page":2', request_text)
+        self.assertEqual(set(refined["pageVisualEnhancements"]), {"1", "2", "3"})
+        self.assertEqual(refined["_creativePassStats"]["companyPromptPages"], 3)
+        self.assertTrue(refined["_creativePassStats"]["companyPromptComplete"])
+
+    def test_jp25_partial_cache_skips_first_pass_and_resumes_page_director(self) -> None:
+        base_prompt = "[Product] Exact kitchen opener from supplied references."
+        brief = "日本市场，保持商品结构，25页逐页使用线上七层Prompt。"
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            count=25,
+        )
+        settings = {
+            "enabled": True,
+            "baseUrl": "https://director.example.test/v1",
+            "apiKey": "secret",
+            "model": "gpt-5.6-sol",
+            "fallbackModels": ["gpt-5.6-terra"],
+            "timeout": 120,
+            "visionEnabled": False,
+            "openImagePromptsEnabled": False,
+            "source": "panel",
+        }
+        layer = {
+            "taskAnchor": "Create this Japanese ecommerce page.",
+            "emotionAnchor": "Calm everyday confidence.",
+            "visualNarrative": "A finished product photograph with direct proof, realistic action, light and depth.",
+            "layoutAndCopy": "Product 65%; approved Japanese copy 25%; calm space 10%.",
+            "colorScheme": "#FCF9F4, #5A3C29, #E4D6C9.",
+            "styleDirection": "Japanese documentary ecommerce editorial.",
+            "hardConstraints": "Freeze product, copy, person realism and language.",
+        }
+        cached = {
+            "productSummary": "Exact kitchen opener",
+            "mainSellingPoints": [],
+            "secondarySellingPoints": [],
+            "globalRequirements": [],
+            "factAudit": {"provided": [], "visible": [], "inferred": [], "blocked": []},
+            "pageVisualEnhancements": {"1": {"companyPromptLayers": dict(layer)}},
+            "_creativePassStats": {
+                "requestedPages": 25,
+                "refinedPages": 1,
+                "companyPromptPages": 1,
+                "companyPromptComplete": False,
+                "complete": False,
+            },
+        }
+
+        def complete_resume(_settings, director_pages, analysis, _suite_key, _country, _inspiration, **_kwargs):
+            self.assertEqual(analysis["productSummary"], cached["productSummary"])
+            self.assertEqual(analysis["_creativePassStats"]["companyPromptPages"], 1)
+            resumed = dict(analysis)
+            resumed["pageVisualEnhancements"] = {
+                str(page): {"companyPromptLayers": dict(layer)} for page in range(1, 26)
+            }
+            resumed["_creativePassStats"] = {
+                "requestedPages": 25,
+                "refinedPages": 25,
+                "companyPromptPages": 25,
+                "companyPromptComplete": True,
+                "fallbackPages": 0,
+                "complete": True,
+            }
+            return resumed, 250
+
+        with patch.object(backend, "load_ai_director_settings", return_value=settings), patch.object(
+            backend,
+            "get_ai_director_cached_analysis",
+            return_value=cached,
+        ), patch.object(backend, "put_ai_director_cached_analysis") as put_cache, patch.object(
+            backend,
+            "invoke_ai_director_chat",
+        ) as first_pass, patch.object(
+            backend,
+            "refine_ai_director_page_visuals",
+            side_effect=complete_resume,
+        ) as resume:
+            refined, metadata = backend.refine_ai_image_suite_plan_with_director(
+                pages,
+                base_prompt,
+                brief,
+                backend.AI_IMAGE_LANDING_SUITE_KEY,
+                "JP",
+                company_effect_mode=True,
+            )
+
+        first_pass.assert_not_called()
+        resume.assert_called_once()
+        put_cache.assert_called_once()
+        self.assertEqual(len(refined), 25)
+        self.assertTrue(metadata["partialCacheResumed"])
+        self.assertTrue(metadata["creativePassComplete"])
+        self.assertEqual(metadata["creativePassStats"]["companyPromptPages"], 25)
+        self.assertIn("1/25 → 25/25", metadata["message"])
+
+    def test_frontend_jp25_automatically_resumes_partial_online_prompt_pages(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        plan_start = app_source.index("async function prepareAiImageSuitePlan")
+        plan_end = app_source.index("async function aiImageSuiteStyleAnchorFile", plan_start)
+        plan_source = app_source[plan_start:plan_end]
+
+        self.assertIn("const maxPlanningRounds = requiresRemoteCompanyPrompt ? 5 : 1;", plan_source)
+        self.assertIn("正在续写缺失页", plan_source)
+        self.assertIn("stagnantPlanningRounds >= 2", plan_source)
+        self.assertIn("conversation.suitePages = payload.suitePages", plan_source)
 
     def test_jp25_zero_remote_refinement_pages_do_not_report_second_pass_success(self) -> None:
         base_prompt = "[Product] Exact beige fashion garment from the supplied references."
@@ -2642,7 +3035,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertFalse(metadata["creativePassComplete"])
         self.assertEqual(metadata["creativePassStats"]["refinedPages"], 0)
         self.assertIn("HTTP 408", metadata["creativePassWarning"])
-        self.assertEqual(invoke.call_args.args[0]["_maxOutputTokens"], 4800)
+        self.assertEqual(invoke.call_args.args[0]["_maxOutputTokens"], 7000)
 
     def test_frontend_retries_suite_plan_with_local_rules_after_gateway_error(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
@@ -2666,6 +3059,36 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(public["fallbackModels"], ["gpt-5.6-sol"])
         self.assertTrue(public["autoFallbackEnabled"])
         self.assertNotIn("apiKey", public)
+
+    def test_jp25_runtime_chain_repairs_stale_fallback_and_skips_duplicate_stream_retry(self) -> None:
+        runtime = backend.ai_director_jp25_runtime_settings(
+            {
+                "model": "gpt-5.6-sol",
+                "fallbackModels": ["gemini-3-flash-agent", "claude-sonnet-4-6", "gpt-5.6-terra"],
+                "timeout": 120,
+            }
+        )
+
+        self.assertEqual(runtime["model"], "gpt-5.6-sol")
+        self.assertEqual(runtime["fallbackModels"], ["gpt-5.6-terra", "gemini-3-flash"])
+        self.assertTrue(runtime["_disableStreamRetry"])
+
+    def test_restored_jp25_planning_state_is_released_after_refresh(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('const interruptedJp25Plan = item.suiteKey === "jp-landing-page-25" && item.status === "planning";', app_source)
+        self.assertIn('status: interruptedJp25Plan ? "error" : item.status', app_source)
+        self.assertIn("已解除上次遗留的策划中状态", app_source)
+
+    def test_selecting_failed_suite_reconciles_late_remote_results(self) -> None:
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        select_start = app_source.index("function setAiImageConversation")
+        select_end = app_source.index("function aiImageDeleteDescriptor", select_start)
+        select_source = app_source[select_start:select_end]
+
+        self.assertIn('["generating", "partial", "error"].includes(conversation.status)', select_source)
+        self.assertIn("recoverRecentAiImageSuite(true, selectedRunId)", select_source)
+        self.assertIn("selected?.id !== selectedConversationId", select_source)
 
     def test_frontend_refreshes_shared_director_after_save_and_before_every_suite_plan(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
@@ -4069,6 +4492,71 @@ class AiImageSuiteTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in selected], ["sosove-333333333333-p09-r000001-a1"])
 
+    def test_suite_recovery_queries_all_nodes_when_first_node_is_down(self) -> None:
+        nodes = [
+            {
+                "id": "down",
+                "name": "Down node",
+                "rootUrl": "https://down.example.com",
+                "baseUrl": "https://down.example.com/v1",
+                "authKey": "down-key",
+            },
+            {
+                "id": "ready",
+                "name": "Ready node",
+                "rootUrl": "https://ready.example.com",
+                "baseUrl": "https://ready.example.com/v1",
+                "authKey": "ready-key",
+            },
+        ]
+        down_response = Mock(
+            ok=False,
+            status_code=530,
+            reason="error",
+            headers={"Content-Type": "text/html"},
+            text="gateway error",
+        )
+        down_response.json.side_effect = ValueError("not json")
+        ready_response = Mock(
+            ok=True,
+            status_code=200,
+            reason="OK",
+            headers={"Content-Type": "application/json"},
+            text="",
+        )
+        ready_response.json.return_value = {
+            "items": [
+                {
+                    "id": "sosove-abc123abc123-p01-r000001-a1",
+                    "mode": "edit",
+                    "status": "success",
+                    "size": "1500x2000",
+                    "created_at": "2026-09-03T02:00:00+00:00",
+                    "updated_at": "2026-09-03T02:01:00+00:00",
+                    "images": [{"url": "https://ready.example.com/images/result.png"}],
+                }
+            ]
+        }
+
+        def fake_get(url, **_kwargs):
+            return down_response if "down.example.com" in url else ready_response
+
+        with patch.object(backend, "chatgpt2api_service_nodes", return_value=nodes), patch.object(
+            backend, "log_ai_image_error"
+        ), patch("requests.get", side_effect=fake_get) as get:
+            payload = backend.recover_recent_ai_image_suite(
+                {"username": "admin", "role": "admin"},
+                run_id="abc123abc123",
+                known_pages=[1],
+                suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+                suite_count=25,
+            )
+
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(payload["suiteSummary"]["succeeded"], 1)
+        self.assertEqual(payload["suiteSummary"]["queriedNodeCount"], 1)
+        self.assertEqual(payload["suiteSummary"]["unavailableNodeCount"], 1)
+
     def test_suite_endpoint_returns_partial_payload_without_images(self) -> None:
         task_result = {
             "outputs": [],
@@ -4090,7 +4578,7 @@ class AiImageSuiteTests(unittest.TestCase):
             "size": "1500x2000",
             "quality": "high",
             "count": "1",
-            "suiteKey": backend.AI_IMAGE_SUITE_KEY,
+            "suiteKey": backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
             "suiteRunId": "a1b2c3d4e5f6",
             "suitePageIndexes": "[1]",
             "suiteBrief": "主卖点：修饰腰腹",
@@ -4127,7 +4615,7 @@ class AiImageSuiteTests(unittest.TestCase):
             "size": "1500x2000",
             "quality": "high",
             "count": "1",
-            "suiteKey": backend.AI_IMAGE_SUITE_KEY,
+            "suiteKey": backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
             "suiteRunId": "b1c2d3e4f5a6",
             "suitePageIndexes": "[1]",
             "suiteBrief": "Product reference test.",
@@ -4324,7 +4812,7 @@ LED电量显示
         self.assertEqual(template["suiteKey"], "jp-landing-page-25")
         self.assertEqual(template["count"], 25)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_SUITE_PLAN_VERSION)
-        self.assertEqual(template["planVersion"], "director-v30-fine-fashion-photo")
+        self.assertEqual(template["planVersion"], "director-v33-online-photography-plan")
         self.assertIn('"jp-landing-page-25"', app_text)
         self.assertIn('label: "日本产品落地页 25图"', app_text)
         self.assertIn("三层参考分析", app_text)
@@ -4785,8 +5273,36 @@ Type-C充电
         self.assertIn("Reject SOSOVE", review_text)
         self.assertIn("near-duplicate camera angles", review_text)
         self.assertIn("locked pageArchetype, sellingPoint, displayEffect, visualTreatment and impactTreatment", review_text)
-        self.assertIn("Reject pages that mix multiple selling points", review_text)
+        self.assertTrue(pages[0]["codMainRich"])
+        self.assertIn("allow only the core and approved supporting inventory", review_text)
+        self.assertIn("Reject unapproved claims", review_text)
+        self.assertIn("For every unflagged detail page retain exactly one primary selling point", review_text)
+        self.assertNotIn("Reject pages that mix multiple selling points", review_text)
         self.assertIn("Reject flat catalog layouts", review_text)
+
+        detail_messages = backend.build_ai_image_suite_review_messages(
+            backend.AI_IMAGE_COD_SUITE_KEY, "KR", 78, pages[8:9],
+            ("reference.jpg", b"reference", "image/jpeg"), [("detail.jpg", b"generated", "image/jpeg")],
+        )
+        detail_review = detail_messages[1]["content"][0]["text"]
+        self.assertFalse(pages[8].get("codMainRich", False))
+        self.assertIn("unrequested store logos", detail_review)
+        self.assertIn("Reject SOSOVE", detail_review)
+        self.assertIn("Reject pages that mix multiple selling points", detail_review)
+        self.assertNotIn("allow only the core and approved supporting inventory", detail_review)
+
+        mixed_review = backend.build_ai_image_suite_review_messages(
+            backend.AI_IMAGE_COD_SUITE_KEY, "KR", 78, [pages[0], pages[8]],
+            ("reference.jpg", b"reference", "image/jpeg"),
+            [("main.jpg", b"main", "image/jpeg"), ("detail.jpg", b"detail", "image/jpeg")],
+        )[1]["content"][0]["text"]
+        self.assertIn("unrequested store logos", mixed_review)
+        self.assertIn("Reject SOSOVE", mixed_review)
+        self.assertIn("For every unflagged detail page retain exactly one primary selling point", mixed_review)
+        compact_pages, _end = json.JSONDecoder().raw_decode(mixed_review.split("[Locked page plan]\n", 1)[1])
+        self.assertTrue(compact_pages[0]["codMainRich"])
+        self.assertIn("codMainSupportingPoints", compact_pages[0])
+        self.assertFalse(compact_pages[1].get("codMainRich", False))
 
     def test_amazon_aplus_plan_endpoint_uses_suite_configuration(self) -> None:
         payload = backend.plan_ai_image_suite(
@@ -5313,10 +5829,18 @@ USB供电
         self.assertIn("[Visual diversity recipe — non-negotiable]", prompts[0])
         self.assertIn("[COD visual impact lock — highest composition priority]", prompts[0])
         self.assertIn("oversized product or result scale", prompts[0])
-        self.assertIn("[One-page one-benefit lock — highest content priority]", prompts[0])
+        self.assertIn("[COD main core-and-support lock]", prompts[0])
+        self.assertIn("[COD MAIN SUPPORT CONTRACT]", prompts[0])
+        self.assertIn("Integrate only the approved supporting inventory", prompts[0])
+        self.assertTrue(pages[0]["codMainRich"])
+        self.assertNotIn("[One-page one-benefit lock — highest content priority]", prompts[0])
+        self.assertIn("[One-page one-benefit lock — highest content priority]", prompts[8])
+        self.assertNotIn("[COD MAIN SUPPORT CONTRACT]", prompts[8])
+        self.assertFalse(pages[8].get("codMainRich", False))
         self.assertIn("[Required display effect]", prompts[0])
-        self.assertIn("[Focused advertorial density]", prompts[0])
-        self.assertIn("one dominant product/result visual", prompts[0])
+        self.assertIn("[COD rich main layout budget]", prompts[0])
+        self.assertIn("one dominant product/result scene", prompts[0])
+        self.assertIn("[Focused advertorial density]", prompts[8])
         self.assertIn("[Cross-page diversity lock]", prompts[0])
         self.assertNotEqual(pages[0]["visualTreatment"], pages[1]["visualTreatment"])
         self.assertNotEqual(pages[8]["visualTreatment"], pages[9]["visualTreatment"])
@@ -5377,9 +5901,20 @@ USB供电
         self.assertEqual(prompt_pages[0]["contentDensity"], "structured")
         self.assertTrue(prompt_pages[0].get("copyLabels"))
         self.assertIn("Headline, subtitle and four compact benefit labels", prompts[0])
-        self.assertIn("3-5 compact proof labels", prompts[0])
-        self.assertIn("[Reference-derived rich main-image density — required]", prompts[7])
-        self.assertNotIn("[Reference-derived rich main-image density — required]", prompts[8])
+        self.assertIn("[Analysed information architecture]", prompts[0])
+        self.assertIn("[COD MAIN SUPPORT CONTRACT]", prompts[0])
+        self.assertIn("3-5 distinct source-backed supporting benefits when available", prompts[0])
+        self.assertIn("The headline is separate", prompts[0])
+        supports = prompt_pages[0]["codMainSupportingPoints"]
+        self.assertTrue(supports)
+        self.assertLessEqual(len(supports), 5)
+        self.assertEqual(prompt_pages[0]["copyLabels"], [item["label"] for item in supports])
+        self.assertTrue(all(item["sourceId"] and item["sourceType"] in {"user", "image_observation"} for item in supports))
+        self.assertNotIn(prompt_pages[0]["focusTitle"], [item["title"] for item in supports])
+        self.assertIn("[COD MAIN SUPPORT CONTRACT]", prompts[7])
+        self.assertNotIn("[COD MAIN SUPPORT CONTRACT]", prompts[8])
+        self.assertTrue(prompt_pages[7]["codMainRich"])
+        self.assertFalse(prompt_pages[8].get("codMainRich", False))
 
     def test_cod_country_company_pass_changes_execution_without_changing_source_point(self) -> None:
         base_prompt = "[Product] Exact multifunction jar opener from all supplied product and usage references."
@@ -5408,6 +5943,16 @@ USB供电
             pages[1]["visualEnhancement"]["camera"],
         )
         module_ids = [module["id"] for module in pages[0]["companyModulePlan"]]
+        refinement_messages = backend.build_ai_director_page_refinement_messages(
+            pages[:2], {"productSummary": "Exact source product", "_suitePageCount": 8},
+            backend.AI_IMAGE_COD_SUITE_KEY, "JP", {},
+        )
+        refinement_text = refinement_messages[1]["content"]
+        refinement_pages, _end = json.JSONDecoder().raw_decode(refinement_text.split("[Locked pages]\n", 1)[1])
+        self.assertTrue(refinement_pages[0]["codMainRich"])
+        self.assertEqual(refinement_pages[0]["codMainSupportingPoints"], pages[0]["codMainSupportingPoints"])
+        self.assertEqual(refinement_pages[0]["copyLabels"], pages[0]["copyLabels"])
+        self.assertIn("Unlisted support is excluded; detail pages retain one-page-one-point", refinement_text)
         remote_action = "documented jar-opening grip, left hand stabilizes jar, right hand rotates tool, gaze on lid"
         remote_module_plan = "; ".join(
             f"{module_id} assigned a unique page-specific percentage" for module_id in module_ids
@@ -5445,7 +5990,19 @@ USB供电
         self.assertIn("[SECOND-PASS REMOTE EXECUTION — highest photography priority]", prompts[0])
         self.assertIn(remote_action, prompts[0])
         self.assertIn(module_ids[0], prompts[0])
-        self.assertIn("Do not import another page's selling point", prompts[0])
+        self.assertEqual(normalized_pages[0]["sourcePointVerbatim"], pages[0]["sourcePointVerbatim"])
+        self.assertTrue(normalized_pages[0]["codMainRich"])
+        supports = normalized_pages[0]["codMainSupportingPoints"]
+        self.assertEqual([(item["sourceId"], item["title"]) for item in supports], [("user:2", "四种瓶盖适用")])
+        self.assertEqual(supports[0]["sourceType"], "user")
+        self.assertEqual(supports[0]["description"], "只展示提示词列出的四种开盖对象")
+        self.assertIn("[COD MAIN SUPPORT CONTRACT]", prompts[0])
+        self.assertIn("Approved supporting benefits may also have their own primary pages elsewhere", prompts[0])
+        self.assertIn("Only the separately listed supporting source inventory may join it", prompts[0])
+        self.assertIn("all other page benefits, headlines and unrelated claims remain outside this image", prompts[0])
+        self.assertIn(supports[0]["title"], prompts[0])
+        self.assertIn(supports[0]["description"], prompts[0])
+        self.assertNotIn("Do not import another page's selling point", prompts[0])
 
     def test_cod_country_company_modules_follow_explicit_no_text_policy(self) -> None:
         brief = "卖点：正确使用更省力。日本市场。全部图片无文字、无标题、无标签。"
@@ -5567,8 +6124,12 @@ USB供电
         self.assertTrue(all(page.get("visualEnhancement") for page in pages))
         self.assertTrue(all(page.get("companyModulePlan") for page in pages))
         self.assertEqual(len({page["visualEnhancement"]["camera"] for page in pages}), 12)
-        self.assertIn("PROMOTION_HERO", {module["id"] for module in pages[0]["companyModulePlan"]})
-        self.assertIn("FEEDBACK_GRID", {module["id"] for module in pages[-2]["companyModulePlan"]})
+        self.assertEqual(pages[0]["pageArchetype"], "产品首屏")
+        module_ids = {module["id"] for page in pages for module in page["companyModulePlan"]}
+        self.assertNotIn("PROMOTION_HERO", module_ids)
+        self.assertNotIn("FEEDBACK_GRID", module_ids)
+        self.assertTrue(all(any(module["weight"] == "DOMINANT" for module in page["companyModulePlan"]) for page in pages))
+        self.assertTrue(all(not page.get("promotionContract") and not page.get("reviewQuotes") for page in pages))
         self.assertIn("[Company compact shooting brief — visualize first]", prompts[4])
         self.assertIn("[Company module construction contract — highest layout priority]", prompts[4])
 
@@ -5732,12 +6293,19 @@ USB供电
                     all("[No-added-text execution lock — highest text priority]" in prompt for prompt in no_text_prompts)
                 )
 
-    def test_cod_hook_prompt_defaults_to_one_localized_headline(self) -> None:
+    def test_cod_hook_prompt_requires_opt_in_localized_text_on_both_submission_paths(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("[COD visible-copy lock — highest text priority]", app_source)
-        self.assertIn("Render one short, prominent", app_source)
         self.assertIn("[COD hook text policy — highest text priority]", app_source)
+        self.assertIn('function aiImageCodHookTextPolicy(', app_source)
+        self.assertIn("textPolicy=none", app_source)
+        self.assertIn("textPolicy=requested", app_source)
+        self.assertIn('formData.append("textPolicy", aiImageCodHookTextPolicy(', app_source)
+        self.assertIn('textPolicy: aiImageCodHookTextPolicy(', app_source)
+        self.assertIn("headline or advertising copy explicitly requested by the user", app_source)
+        self.assertIn("No added headline, promotion lettering, price numeral, discount text or label", app_source)
+        self.assertNotIn("Render one short, prominent ${targetCountry?.language", app_source)
 
     def test_generation_request_keeps_prompt_content_beyond_legacy_3000_limit(self) -> None:
         marker = "MIDDLE_SOURCE_REQUIREMENT_KEPT"
@@ -6001,10 +6569,11 @@ USB供电
         self.assertEqual(backend.parse_ai_image_suite_task_id(task_id)["page"], 30)
         self.assertIsNone(backend.parse_ai_image_suite_task_id("sosove-a1b2c3d4e5f6-p31-r112233-a1"))
 
-    def test_cod_detail_suite_builds_default_category_story_with_one_feedback_page(self) -> None:
+    def test_cod_detail_suite_builds_source_complete_story_without_unsupplied_offer_or_feedback(self) -> None:
+        brief = "5 大主卖点\n操作简单\n日常使用方便\n结构清楚\n容易收纳\n外观简洁\n10 个次卖点\n细节做工\n自然使用\n清洁方便\n多场景适用\n包装完整"
         pages = backend.build_ai_image_suite_plan(
             "[Product] Portable household product.",
-            "5 大主卖点\n操作简单\n日常使用方便\n结构清楚\n容易收纳\n外观简洁\n10 个次卖点\n细节做工\n自然使用\n清洁方便\n多场景适用\n包装完整",
+            brief,
             "750x1000",
             suite_key=backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
             country="JP",
@@ -6014,19 +6583,28 @@ USB供电
         self.assertEqual(len(pages), 16)
         self.assertTrue(all(page["section"] == "详情" for page in pages))
         self.assertEqual([page["page"] for page in pages], list(range(1, 17)))
-        self.assertEqual(pages[0]["pageArchetype"], "本地促销页")
+        self.assertEqual(pages[0]["pageArchetype"], "产品首屏")
         self.assertEqual(pages[1]["pageArchetype"], "产品品质背书页")
         self.assertEqual(pages[2]["pageArchetype"], "核心痛点页")
-        self.assertEqual(pages[3]["pageArchetype"], "产品全面海报")
-        self.assertEqual([page["pageArchetype"] for page in pages[4:9]], ["主卖点逐项页"] * 5)
-        self.assertEqual([page["pageArchetype"] for page in pages[9:13]], ["次卖点逐项页"] * 4)
+        self.assertEqual(sum(page["pageArchetype"] == "主卖点逐项页" for page in pages), 5)
+        self.assertEqual(sum(page["pageArchetype"] == "次卖点逐项页" for page in pages), 5)
+        self.assertNotIn("产品全面海报", [page["pageArchetype"] for page in pages], "The optional overview yields its slot to the fifth supplied secondary point")
+        source_pages = [page for page in pages if page.get("sourcePointIndex")]
+        self.assertEqual([page["sourcePointIndex"] for page in source_pages], list(range(1, 11)))
+        self.assertEqual([page["focusTitle"] for page in source_pages], ["操作简单", "日常使用方便", "结构清楚", "容易收纳", "外观简洁", "细节做工", "自然使用", "清洁方便", "多场景适用", "包装完整"])
+        self.assertEqual(
+            backend.ai_image_cod_source_point_coverage(pages, "[Product] Portable household product.", brief, backend.AI_IMAGE_COD_DETAIL_SUITE_KEY),
+            {"total": 10, "assigned": 10, "missing": [], "complete": True},
+        )
         self.assertEqual(pages[-3]["pageArchetype"], "品类多角度展示")
-        self.assertEqual(pages[-2]["pageArchetype"], "好评反馈页")
+        self.assertEqual(pages[-2]["pageArchetype"], "使用场景页")
         self.assertEqual(pages[-1]["pageArchetype"], "产品信息收尾")
-        self.assertEqual(sum(page["pageArchetype"] == "好评反馈页" for page in pages), 1)
-        self.assertEqual(pages[-2]["headline"], "お客様の声")
-        self.assertIn("70%OFF", pages[0]["headline"])
-        self.assertIn("2×2四宫格", pages[-2]["composition"])
+        self.assertEqual(sum(page["pageArchetype"] == "好评反馈页" for page in pages), 0)
+        self.assertEqual(pages[0]["headline"], "商品のご紹介")
+        self.assertEqual(pages[-2]["headline"], "暮らしの中で、使いやすく")
+        self.assertNotIn("OFF", pages[0]["headline"])
+        self.assertNotIn("2×2四宫格", pages[-2]["composition"])
+        self.assertTrue(all(not page.get("promotionContract") and not page.get("reviewQuotes") for page in pages))
         self.assertTrue(all(page["size"] == "750x1000" for page in pages))
         self.assertTrue(all(page["country"] == "JP" for page in pages))
 
@@ -6034,7 +6612,7 @@ USB供电
         for count in (12, 16, 20, 22):
             pages = backend.build_ai_image_suite_plan(
                 "[Product] Portable household product.",
-                "5 大主卖点\n一\n二\n三\n四\n五\n10 个次卖点\n甲\n乙\n丙\n丁\n戊\n己\n庚\n辛\n壬\n癸",
+                "日常家用产品，展示准确结构、真实用法与产品信息；未提供促销和顾客评价资料。",
                 "750x1000",
                 suite_key=backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
                 country="KR",
@@ -6042,18 +6620,26 @@ USB供电
             )
             self.assertEqual(len(pages), count)
             self.assertEqual([page["page"] for page in pages], list(range(1, count + 1)))
+            self.assertTrue(all(page["section"] == "详情" for page in pages))
+            self.assertEqual(pages[0]["pageArchetype"], "产品首屏")
             self.assertEqual(pages[-3]["pageArchetype"], "品类多角度展示")
-            self.assertEqual(pages[-2]["pageArchetype"], "好评反馈页")
+            self.assertEqual(pages[-2]["pageArchetype"], "使用场景页")
             self.assertEqual(pages[-1]["pageArchetype"], "产品信息收尾")
             self.assertEqual(sum(page["pageArchetype"] == "次卖点逐项页" for page in pages), count - 12)
+            self.assertTrue(all(not page.get("promotionContract") and not page.get("reviewQuotes") for page in pages))
         self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, 20), 20)
         self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, 22), 22)
         self.assertEqual(backend.normalize_ai_image_suite_count(backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, 18), 22)
 
-    def test_cod_detail_prompts_enforce_special_pages_and_single_feedback_grid(self) -> None:
+    def test_cod_detail_prompts_use_exact_source_promotion_and_review_count(self) -> None:
+        reviews = ["使い方がわかりやすかったです。", "洗いやすいと感じました。", "収納場所に収まりました。", "説明どおりの形でした。"]
+        brief = (
+            "促销70% OFF\n主卖点：操作简单、容易清洁、方便收纳。\n"
+            "真实用户评价：\n" + "\n".join(f"- {quote}" for quote in reviews)
+        )
         prompts, pages = backend.build_ai_image_suite_prompts(
             "[Product] Portable household product.",
-            "促销70% OFF\n5 大主卖点\n操作简单\n容易清洁\n方便收纳\n结构清楚\n日常使用\n10 个次卖点\n细节做工\n自然使用\n清洁方便\n多场景适用",
+            brief,
             "750x1000",
             suite_key=backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
             country="KR",
@@ -6064,16 +6650,37 @@ USB供电
         self.assertEqual(len(prompts), 16)
         self.assertEqual(len(pages), 16)
         self.assertIn("[Country-targeted COD detail-page director]", prompts[0])
-        self.assertIn("[Template promotion exception — required]", prompts[0])
+        self.assertEqual(pages[0]["pageArchetype"], "本地促销页")
+        self.assertEqual(pages[0]["promotionContract"]["percent"], 70)
+        self.assertIn("[Source-backed promotion — required]", prompts[0])
         self.assertIn("70% OFF", prompts[0])
         self.assertIn("[Local promotion opener — highest composition priority]", prompts[0])
         self.assertIn("[Feedback separation]", prompts[0])
-        self.assertIn("[Positive feedback page — required]", prompts[-2])
-        self.assertIn("exactly four short anonymous experience cards", prompts[-2])
-        self.assertIn("one 2x2 grid", prompts[-2])
+        self.assertEqual(sum(page["pageArchetype"] == "好评反馈页" for page in pages), 1)
+        self.assertEqual(pages[-2]["reviewQuotes"], reviews)
+        self.assertIn("[Source-backed feedback page]", prompts[-2])
+        self.assertIn("Use exactly 4 excerpts", prompts[-2])
+        self.assertIn("no additional review is invented to fill a grid", prompts[-2])
+        self.assertIn("安排4条给定评价", pages[-2]["composition"])
+        self.assertIn("按实际条数排版", pages[-2]["composition"])
+        for quote in reviews:
+            self.assertIn(quote, prompts[-2])
+        self.assertNotIn("exactly four short anonymous experience cards", prompts[-2])
         self.assertIn("[High-impact COD detail layout — highest composition priority]", prompts[4])
         self.assertIn("approved image-1 韩国 COD product and palette anchor", prompts[1])
         self.assertNotIn("[COD visual impact lock — highest composition priority]", prompts[0])
+
+        # A smaller supplied set stays smaller: the layout must not create a
+        # fourth testimonial merely to satisfy the former fixed-grid template.
+        two_review_brief = "促销70% OFF\n主卖点：操作简单、容易清洁、方便收纳。\n真实用户评价：\n" + "\n".join(f"- {quote}" for quote in reviews[:2])
+        smaller_prompts, smaller_pages = backend.build_ai_image_suite_prompts(
+            "[Product] Portable household product.", two_review_brief, "750x1000",
+            suite_key=backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, country="KR", suite_count=16,
+        )
+        self.assertEqual(smaller_pages[-2]["reviewQuotes"], reviews[:2])
+        self.assertIn("Use exactly 2 excerpts", smaller_prompts[-2])
+        self.assertNotIn("Use exactly 4 excerpts", smaller_prompts[-2])
+        self.assertNotIn("2×2四宫格", smaller_pages[-2]["composition"])
 
     def test_cod_detail_eyewear_and_endorsement_use_category_specific_pages(self) -> None:
         brief = (
@@ -6637,14 +7244,36 @@ USB供电
         director_text = messages[1]["content"]
         review_text = review_messages[1]["content"][0]["text"]
         self.assertIn("[COD detail-page director rule]", director_text)
-        self.assertIn("page whose archetype is 好评反馈页", director_text)
-        self.assertIn("50%-80% promotion opener", director_text)
+        self.assertEqual(pages[0]["pageArchetype"], "产品首屏")
+        self.assertEqual(pages[-2]["pageArchetype"], "使用场景页")
+        self.assertIn("product opener unless an exact offer is supplied", director_text)
+        self.assertIn("feedback page exists only for supplied review excerpts", director_text)
+        self.assertIn("preserve their real count and meaning", director_text)
+        self.assertNotIn("50%-80% promotion opener", director_text)
         self.assertIn("variantDirective", director_text)
         self.assertIn("sceneAngleDirective", director_text)
         self.assertIn("Required visible language: 泰文", review_text)
         self.assertIn("page whose archetype is 好评反馈页", review_text)
-        self.assertIn("exactly four short anonymous experience comments", review_text)
+        self.assertIn("only the supplied excerpts and their actual number", review_text)
+        self.assertIn("exact source-backed percentage, not a default range", review_text)
+        self.assertNotIn("exactly four short anonymous experience comments", review_text)
         self.assertIn("Reject multi-grid layouts on all other pages", review_text)
+
+        sourced_brief = "主卖点：操作简单、容易清洁、方便收纳。\n促销：25% OFF\n真实用户评价：\n- 使用方便。\n- 收纳省事。"
+        sourced_pages = backend.build_ai_image_suite_plan(
+            "[Product] Portable household product.", sourced_brief, "750x1000",
+            suite_key=backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, country="TH",
+        )
+        self.assertEqual(sourced_pages[0]["pageArchetype"], "本地促销页")
+        self.assertEqual(sourced_pages[0]["promotionContract"]["percent"], 25)
+        self.assertEqual(sourced_pages[-2]["pageArchetype"], "好评反馈页")
+        self.assertEqual(sourced_pages[-2]["reviewQuotes"], ["使用方便。", "收纳省事。"])
+        sourced_review = backend.build_ai_image_suite_review_messages(
+            backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, "TH", 78, sourced_pages[-2:-1],
+            ("reference.jpg", b"reference", "image/jpeg"), [("generated.jpg", b"generated", "image/jpeg")],
+        )[1]["content"][0]["text"]
+        self.assertIn("only the supplied excerpts and their actual number", sourced_review)
+        self.assertIn("fail invented review filler", sourced_review)
 
     def test_cod_detail_template_is_exposed_in_frontend_and_skill_config(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
@@ -7614,9 +8243,116 @@ USB供电
         self.assertIn('conversation.directorMode = "company";', app_source)
         self.assertIn('conversation.generationProfile = "quality";', app_source)
         self.assertIn('formData.append("companyEffectMode", companyEffectMode ? "true" : "false");', app_source)
-        self.assertIn('formData.append("forceReanalyze", companyEffectMode ? "true" : "false");', app_source)
+        self.assertIn('const forceReanalyze = companyEffectMode && conversation.suiteKey !== "jp-landing-page-25";', app_source)
+        self.assertIn('formData.append("forceReanalyze", forceReanalyze ? "true" : "false");', app_source)
         self.assertIn('AI_IMAGE_DIRECTOR_MODES.filter((mode) => mode.key !== "company")', app_source)
         self.assertIn('label: "关键原图双通道"', app_source)
+        self.assertIn('label: "AI逐页七层Prompt"', app_source)
+
+    def test_jp25_second_pass_requests_company_authored_seven_layer_prompt(self) -> None:
+        pages = backend.build_ai_image_suite_plan(
+            "[Product] Exact gray tailored wide-leg trousers from supplied references.",
+            "日本市场；30代日本女性；保持产品结构；日文排版。",
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            count=25,
+        )[:2]
+        messages = backend.build_ai_director_page_refinement_messages(
+            pages,
+            {"productSummary": "グレーのワイドパンツ", "productVisualDNA": {}},
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            "JP",
+        )
+        prompt = messages[-1]["content"]
+
+        self.assertIn("[JP25 company prompt authoring — required]", prompt)
+        self.assertIn('"companyPromptLayers"', prompt)
+        for field in backend.AI_IMAGE_JP_COMPANY_PROMPT_LAYER_FIELDS:
+            self.assertIn(f'"{field}"', prompt)
+
+    def test_jp25_remote_company_prompt_layers_lead_final_prompt(self) -> None:
+        base_prompt = "[Product] Exact gray tailored wide-leg trousers with crossover waistband, one black button and deep front pleats."
+        brief = "日本市场；30代日本女性；背景#e5e8ef；日文排版；产品结构固定。"
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            count=25,
+        )
+        pages[0]["creativePassSource"] = "remote"
+        pages[0]["visualEnhancement"] = {
+            **pages[0]["visualEnhancement"],
+            "companyPromptLayers": {
+                "taskAnchor": "Create a Japanese ecommerce hero image for exact tailored trousers.",
+                "emotionAnchor": "Quiet confidence and mature everyday elegance.",
+                "visualNarrative": "A Japanese woman in her 30s stands beside a large apartment window while soft left daylight reveals the exact crossover waistband, deep pleats and fluid trouser drape.",
+                "layoutAndCopy": "Model occupies center 62%; right 28% is calm copy space with the exact approved Japanese headline.",
+                "colorScheme": "Background #E5E8EF, text #2C2C2C, restrained accent #C4A882.",
+                "styleDirection": "Japanese department-store fashion editorial with natural documentary skin and shallow depth.",
+                "hardConstraints": "Keep the exact garment, Japanese copy, real anatomy and supplied person identity.",
+            },
+        }
+        prompts, normalized_pages = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_SUITE_SIZE,
+            suite_key=backend.AI_IMAGE_LANDING_SUITE_KEY,
+            plan=pages,
+        )
+
+        self.assertIn("[COMPANY AI-AUTHORED SEVEN-LAYER PROMPT — primary positive execution]", prompts[0])
+        self.assertIn("A Japanese woman in her 30s stands beside a large apartment window", prompts[0])
+        self.assertIn("Background #E5E8EF", prompts[0])
+        self.assertIn("[SECOND-PASS REMOTE EXECUTION — highest photography priority]", prompts[0])
+        self.assertEqual(
+            normalized_pages[0]["visualEnhancement"]["companyPromptLayers"]["taskAnchor"],
+            "Create a Japanese ecommerce hero image for exact tailored trousers.",
+        )
+
+    def test_jp25_company_prompt_status_requires_all_seven_layers_on_every_page(self) -> None:
+        complete_layers = {
+            "taskAnchor": "Create the current Japanese ecommerce page.",
+            "emotionAnchor": "Quiet confidence.",
+            "visualNarrative": "One finished product-specific editorial photograph.",
+            "layoutAndCopy": "Product 65%; exact Japanese copy 25%; calm space 10%.",
+            "colorScheme": "#FCF9F4, #5A3C29 and #E4D6C9.",
+            "styleDirection": "Natural Japanese documentary ecommerce editorial.",
+            "hardConstraints": "Freeze product, copy, anatomy and reference identity.",
+        }
+        pages = [
+            {
+                "page": page,
+                "visualEnhancement": {"companyPromptLayers": dict(complete_layers)},
+            }
+            for page in range(1, 26)
+        ]
+
+        ready = backend.ai_image_jp_company_prompt_status(pages, 25)
+        self.assertTrue(ready["ready"])
+        self.assertEqual(ready["readyCount"], 25)
+        self.assertEqual(ready["promptSource"], "remote-seven-layer")
+
+        pages[12]["visualEnhancement"]["companyPromptLayers"].pop("visualNarrative")
+        incomplete = backend.ai_image_jp_company_prompt_status(pages, 25)
+        self.assertFalse(incomplete["ready"])
+        self.assertEqual(incomplete["readyCount"], 24)
+        self.assertEqual(incomplete["missingPages"], [13])
+        self.assertEqual(incomplete["promptSource"], "pending-remote-seven-layer")
+
+    def test_jp25_generation_is_gated_and_frontend_invalidates_old_local_plans(self) -> None:
+        backend_source = (backend.ROOT_DIR / "backend.py").read_text(encoding="utf-8")
+        app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("ai_image_jp_company_prompt_status(suite_plan, suite_count)", backend_source)
+        self.assertIn("本次生图提交已暂停", backend_source)
+        self.assertIn('planVersion: "director-v33-online-photography-plan"', app_source)
+        self.assertIn("aiImageJp25CompanyPromptStatus", app_source)
+        self.assertIn("25/25页七层Prompt齐全后才会提交生图", app_source)
+        self.assertIn('material.promptSource === "remote-seven-layer" ? "线上AI七层Prompt"', app_source)
+        self.assertIn('AI_DIRECTOR_JP25_REFINEMENT_WORKERS', backend_source)
+        self.assertIn('thread_name_prefix="jp25-director"', backend_source)
+        self.assertIn('conversation.status === "planning"', app_source)
+        self.assertIn("取消线上策划", app_source)
+        self.assertIn("线上25页七层Prompt并行生成与校验中", app_source)
 
     def test_local_panel_preserves_unsaved_director_form_during_async_refresh(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
@@ -7649,6 +8385,7 @@ USB供电
         self.assertIn('summary.recoveryState = "failed";', app_source)
         self.assertIn("activeSummary.recoveryAttempt = Math.max(0, Number(activeSummary.recoveryAttempt || 0)) + 1;", app_source)
         self.assertIn("scheduleAiImageSuiteRecovery(latestConversation);", app_source)
+        self.assertIn('["generating", "partial", "error"].includes(conversation.status)', app_source)
 
     def test_account_pool_refresh_reports_ready_accounts(self) -> None:
         refresh_response = FakeResponse({"errors": []})

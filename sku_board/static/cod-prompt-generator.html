@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>COD Prompt Atelier · 电商生图提示词</title>
+    <link rel="icon" href="/static/assets/sosove-logo.jpeg" />
+    <link rel="stylesheet" href="/static/cod-prompt-generator.css?v=20260901-v9" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="atelier-shell">
+      <header class="atelier-topbar">
+        <a class="atelier-brand" href="/" aria-label="返回 SKU Board">
+          <span class="brand-mark">CP</span>
+          <span>
+            <small>COD CREATIVE SYSTEM</small>
+            <strong>Prompt Atelier</strong>
+          </span>
+        </a>
+        <div class="topbar-meta">
+          <span class="status-dot"></span>
+          <span>LOCAL / AI IMAGE API</span>
+          <span class="topbar-divider"></span>
+          <span id="saved-state">草稿已自动保存</span>
+        </div>
+        <button class="text-btn" id="reset-btn" type="button">恢复示例</button>
+      </header>
+
+      <section class="atelier-hero">
+        <div>
+          <p class="eyebrow">PRODUCT → HOOK → IMAGE PROMPTS</p>
+          <h1>把产品噱头，<em>直接变成真实成图。</em></h1>
+          <p class="hero-copy">输入产品、市场和卖点后，由已配置的 GPT‑5.6‑sol 针对当前商品从零生成专属总控 Prompt、主图与详情图分镜；换品会让旧 Prompt 立即失效，不会继续套用上一件商品的内容。</p>
+        </div>
+        <div class="hero-orbit" aria-hidden="true">
+          <span class="orbit-ring ring-one"></span>
+          <span class="orbit-ring ring-two"></span>
+          <span class="orbit-core">37<br /><small>STATIC<br />FRAMES</small></span>
+          <span class="orbit-tag tag-one">JP</span>
+          <span class="orbit-tag tag-two">COD</span>
+          <span class="orbit-tag tag-three">750×1000</span>
+        </div>
+      </section>
+
+      <section class="workspace-grid">
+        <aside class="control-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">01 / INPUT BRIEF</p>
+              <h2>产品与噱头</h2>
+            </div>
+            <span class="live-pill"><i></i> LIVE</span>
+          </div>
+
+          <label class="field field-product">
+            <span>产品名称 <b>必填</b></span>
+            <input id="product-name" type="text" placeholder="例如：Watch4 Pro 钢带血糖手表" />
+          </label>
+
+          <div class="field-row">
+            <label class="field">
+              <span>目标国家</span>
+              <select id="target-market">
+                <option value="JP">日本 · Japan</option>
+                <option value="KR">韩国 · Korea</option>
+                <option value="US">美国 · United States</option>
+                <option value="DE">德国 · Germany</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>视觉强度</span>
+              <select id="hook-intensity">
+                <option value="cod">COD 强转化</option>
+                <option value="bold">夸张钩子</option>
+                <option value="premium">高级精品</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="field-row compact-row">
+            <label class="field">
+              <span>主图数量</span>
+              <input id="main-count" type="number" min="1" max="30" value="15" />
+            </label>
+            <label class="field">
+              <span>详情数量</span>
+              <input id="detail-count" type="number" min="1" max="40" value="22" />
+            </label>
+            <label class="field">
+              <span>画布尺寸</span>
+              <input id="canvas-size" type="text" value="750x1000" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>主 SKU / 参考图绑定</span>
+            <textarea id="reference-map" rows="3" placeholder="例如：参考图2为钢带主款；参考图4为钢带辅助角度；其他为变体，不得混用"></textarea>
+          </label>
+
+          <div class="reference-upload-block">
+            <div class="field-headline">
+              <span>上传商品参考图 <b>生图必需</b></span>
+              <small>最多 12 张 · JPG / PNG / WEBP</small>
+            </div>
+            <label class="upload-dropzone" for="reference-files">
+              <input id="reference-files" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+              <span class="upload-icon">＋</span>
+              <strong>选择参考图，锁定产品外观</strong>
+              <small>建议上传当前商品正面、侧面、细节和真实使用图；文件顺序会作为参考图编号</small>
+            </label>
+            <div id="reference-preview" class="reference-preview" aria-live="polite"></div>
+          </div>
+
+          <label class="field field-tall">
+            <span>核心噱头 / 卖点 <b>一行一条</b></span>
+            <textarea id="selling-points" rows="9" placeholder="一行一条卖点，例如：&#10;24h全天候心率追踪&#10;1.9英寸曲面无边大屏&#10;通话、LINE、邮件和导航推送"></textarea>
+          </label>
+
+          <div class="section-label">
+            <span>COD 转化组件</span>
+            <small>有真实数据再填写</small>
+          </div>
+          <div class="promo-grid">
+            <label class="field"><span>折扣</span><input id="discount" type="text" placeholder="例如：70%OFF" /></label>
+            <label class="field"><span>活动价</span><input id="sale-price" type="text" placeholder="例如：9,980円" /></label>
+            <label class="field"><span>货到付款</span><input id="cod-text" type="text" placeholder="例如：代引きOK" /></label>
+            <label class="field"><span>活动期限</span><input id="deadline" type="text" placeholder="例如：本日限定" /></label>
+          </div>
+
+          <div class="toggle-row">
+            <label class="switch-label"><input id="allow-promo" type="checkbox" checked /><span class="switch"></span><span>允许促销钩子</span></label>
+            <label class="switch-label"><input id="allow-medical" type="checkbox" checked /><span class="switch"></span><span>保留健康类噱头</span></label>
+          </div>
+
+          <label class="field">
+            <span>统一配色 / 特殊要求</span>
+            <textarea id="style-notes" rows="3" placeholder="例如：明亮、不太暗；象牙白、薄荷绿、钢银、珊瑚红；附带日本模特；页面无留白"></textarea>
+          </label>
+
+          <label class="field">
+            <span>禁止内容</span>
+            <textarea id="avoid-notes" rows="2" placeholder="例如：不要混合表带、不要动画、不要乱码"></textarea>
+          </label>
+
+          <button class="generate-btn" id="generate-btn" type="button">
+            <span>AI 重新生成整套 Prompt</span>
+            <b>⌁</b>
+          </button>
+          <p class="form-note">每次点击都会把当前产品、卖点、国家和参考图重新交给 GPT‑5.6‑sol，从零生成总控与全部逐页 Prompt。输入发生变化后，上一版会立即标记失效；没有参考图也能先生成文字 Prompt，真实生图仍需商品参考图。</p>
+        </aside>
+
+        <section class="output-panel">
+          <div class="output-header">
+            <div>
+              <p class="eyebrow">02 / PROMPT OUTPUT</p>
+              <h2 id="output-title">Watch4 Pro · 日本 COD 套图</h2>
+            </div>
+            <div class="output-actions">
+              <button class="outline-btn" id="copy-master-btn" type="button">复制总控</button>
+              <button class="outline-btn" id="download-btn" type="button">下载 TXT</button>
+            </div>
+          </div>
+
+          <div class="generation-console" aria-live="polite">
+            <div class="generation-console-head">
+              <div>
+                <span class="console-kicker">03 / ACTUAL IMAGE RENDER</span>
+                <strong id="generation-status">等待上传参考图</strong>
+                <small id="generation-detail">选择页面后生成真实成图，结果会回显在“成图结果”中。</small>
+              </div>
+              <span class="generation-count" id="generation-count">0 / 37</span>
+            </div>
+            <div class="generation-progress"><i id="generation-progress-bar"></i></div>
+            <div class="generation-settings">
+              <label><span>生图模型</span><select id="render-model"><option value="gpt-image-2">GPT Image 2 · 默认</option><option value="codex-gpt-image-2">Codex GPT Image 2</option><option value="auto">自动选择可用模型</option></select></label>
+              <label><span>质量</span><select id="render-quality"><option value="high">高质</option><option value="medium">平衡</option><option value="auto">自动</option></select></label>
+              <label><span>生成策略</span><select id="render-profile"><option value="standard">标准 · 稳定</option><option value="quality">精审 · 更慢</option><option value="fast">快速 · 低等待</option></select></label>
+              <div class="director-model-display" id="director-model-display" aria-live="polite">
+                <span>提示词分析模型 · AI DIRECTOR</span>
+                <strong id="director-model-value">读取中…</strong>
+                <small id="director-model-source">套图生成前会先读取此模型的分析结果</small>
+              </div>
+              <small id="model-config-status">生图模型配置：读取中…</small>
+              <small id="director-config-status">AI 分析模型：读取中…</small>
+            </div>
+            <div class="generation-actions">
+              <button class="render-btn render-btn-analysis" id="analyze-ai-btn" type="button">AI 重写整套 Prompt <span>GPT‑5.6‑sol</span></button>
+              <button class="render-btn render-btn-secondary" id="generate-current-btn" type="button">生成当前页 <span id="selected-page-label">主图01</span></button>
+              <button class="render-btn render-btn-primary" id="generate-suite-btn" type="button">直接生成整套 <span>15 + 22</span></button>
+              <button class="render-btn render-btn-retry" id="retry-failed-btn" type="button" hidden>只补失败页</button>
+              <button class="render-btn render-btn-cancel" id="cancel-generation-btn" type="button" hidden>停止当前任务</button>
+            </div>
+          </div>
+
+          <div class="insight-strip">
+            <div class="insight-card accent-card"><span>SET</span><strong id="stat-total">37</strong><small>张静态图</small></div>
+            <div class="insight-card"><span>HOOKS</span><strong id="stat-hooks">10</strong><small>条卖点已锁定</small></div>
+            <div class="insight-card"><span>LOCALE</span><strong id="stat-locale">JP</strong><small id="stat-locale-label">日文可见文案</small></div>
+            <div class="insight-card"><span>RATIO</span><strong id="stat-ratio">3:4</strong><small>750 × 1000</small></div>
+          </div>
+
+          <div class="output-tabs" role="tablist">
+            <button class="output-tab active" data-tab="master" type="button">总控 Prompt</button>
+            <button class="output-tab" data-tab="pages" type="button">37页分镜</button>
+            <button class="output-tab" data-tab="analysis" type="button">AI 分析结果</button>
+            <button class="output-tab" data-tab="copy" type="button">日文钩子文案</button>
+            <button class="output-tab" data-tab="results" type="button">成图结果 <span class="result-tab-count" id="result-tab-count">0</span></button>
+          </div>
+
+          <div class="tab-content active" id="tab-master">
+            <div class="prompt-toolbar"><span id="master-output-mode">本地规则草稿；完成 AI 分析后自动增强 · 可直接粘贴到 Cod / 图像模型</span><button class="small-copy-btn" data-copy-target="master-output" type="button">复制</button></div>
+            <pre class="prompt-output" id="master-output"></pre>
+          </div>
+
+          <div class="tab-content" id="tab-pages">
+            <div class="pages-toolbar">
+              <div class="page-filter" role="tablist">
+                <button class="page-filter-btn active" data-section="all" type="button">全部 <span id="all-count">37</span></button>
+                <button class="page-filter-btn" data-section="main" type="button">主图 <span id="main-count-label">15</span></button>
+                <button class="page-filter-btn" data-section="detail" type="button">详情 <span id="detail-count-label">22</span></button>
+              </div>
+              <button class="small-copy-btn" id="copy-pages-btn" type="button">复制当前列表</button>
+            </div>
+            <div class="page-list" id="page-list"></div>
+          </div>
+
+          <div class="tab-content" id="tab-copy">
+            <div class="copy-board" id="copy-board"></div>
+          </div>
+
+          <div class="tab-content" id="tab-analysis">
+            <div class="analysis-toolbar">
+              <div>
+                <strong>AI Director 分析</strong>
+                <span id="analysis-meta">尚未运行 GPT‑5.6‑sol 分析</span>
+              </div>
+              <button class="small-copy-btn" id="copy-analysis-btn" type="button">复制分析摘要</button>
+            </div>
+            <div class="analysis-summary" id="analysis-summary">
+              <div class="analysis-empty"><strong>先分析，再生图</strong><small>上传参考图后点击“先用 AI 分析”，可先查看 GPT‑5.6‑sol 对产品、噱头和页面顺序的判断。</small></div>
+            </div>
+            <div class="analysis-page-list" id="analysis-page-list"></div>
+          </div>
+
+          <div class="tab-content" id="tab-results">
+            <div class="results-toolbar">
+              <div>
+                <strong>真实生成图片</strong>
+                <span>点击缩略图查看大图；每张图可单独保存</span>
+              </div>
+              <button class="small-copy-btn" id="clear-results-btn" type="button">清空本页结果</button>
+            </div>
+            <div class="generated-gallery" id="generated-gallery">
+              <div class="gallery-empty"><span>○</span><strong>还没有成图</strong><small>上传参考图后，点击“生成当前页”或“直接生成整套”</small></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <footer class="atelier-footer">
+        <span>COD Prompt Atelier / v1.0</span>
+        <span>日本本土化 · 强钩子 · 静态落地页</span>
+        <span>输入改变即时重排 · 点击按钮才会提交生图</span>
+      </footer>
+    </main>
+    <script src="/static/cod-prompt-generator.js?v=20260901-v9"></script>
+  </body>
+</html>

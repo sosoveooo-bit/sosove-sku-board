@@ -70,6 +70,7 @@ from sku_board.backend import (
     reset_user_password,
     resume_ai_image_jobs,
     save_ai_director_settings,
+    start_ai_image_health_monitor,
     start_ai_image_job,
     set_meta_credential_active,
     set_user_active,
@@ -103,6 +104,9 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/index.html"}:
             self.serve_static("index.html")
+            return
+        if parsed.path in {"/cod-prompt-generator", "/cod-prompt-generator.html"}:
+            self.serve_static("cod-prompt-generator.html")
             return
         if parsed.path.startswith("/static/"):
             self.serve_static(parsed.path.removeprefix("/static/"))
@@ -784,6 +788,7 @@ def parse_ad_launch_route(path: str) -> tuple[str, str] | None:
 def run(host: str, port: int) -> None:
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((host, port), SkuBoardHandler)
+    start_ai_image_health_monitor()
     cleanup = prune_ai_image_output_files(force=True)
     recovery = resume_ai_image_jobs()
     print(f"SKU Board running at http://{host}:{port}/")
