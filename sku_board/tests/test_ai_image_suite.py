@@ -2023,6 +2023,8 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertLess(len(serialized), 45000)
         self.assertIn("first pass performs product/reference analysis only", serialized)
         self.assertIn("Do not return a pages array in this first pass", serialized)
+        source_pages = [page for page in pages if int(backend.number(page.get("sourcePointIndex"), 0)) > 0]
+        self.assertEqual([page["focusTitle"] for page in source_pages], ["轻量", "贴合", "清晰视野"])
 
         model_payload = {
             "productSummary": "Japanese-market lightweight eyewear",
@@ -4158,7 +4160,7 @@ class AiImageSuiteTests(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertFalse(payload["reviewed"])
-        self.assertEqual(payload["status"], "warning")
+        self.assertEqual(payload["status"], "disabled")
         self.assertEqual(payload["results"], [])
 
     def test_frontend_reference_roles_are_generic_and_suites_stay_in_edit_mode(self) -> None:
@@ -4318,8 +4320,10 @@ class AiImageSuiteTests(unittest.TestCase):
             "主卖点：按压式搅拌。30秒完成。KC认证。",
             backend.AI_IMAGE_COD_SUITE_KEY,
         )
-        self.assertIn("按压式搅拌", [point["title"] for point in cod_analysis["mainSellingPoints"]])
-        self.assertIn("30秒快速完成", [point["title"] for point in cod_analysis["mainSellingPoints"]])
+        cod_titles = [point["title"] for point in cod_analysis["mainSellingPoints"]]
+        self.assertIn("按压式搅拌", cod_titles)
+        self.assertIn("30秒完成", cod_titles)
+        self.assertIn("KC认证", cod_titles)
 
     def test_cod_prompt_retains_source_claims_as_expressive_visual_direction(self) -> None:
         prompts, pages = backend.build_ai_image_suite_prompts(
@@ -4373,7 +4377,7 @@ class AiImageSuiteTests(unittest.TestCase):
             self.assertIn(raw_term, director_text)
             self.assertIn(raw_term, prompts[0])
         self.assertIn("Production-safe product brief", director_text)
-        self.assertIn("COD source claim themes — keep as visual direction", director_text)
+        self.assertIn("COD source claim themes — keep every supplied theme and ID", director_text)
 
     def test_frontend_exposes_fast_and_review_director_modes(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
@@ -4386,7 +4390,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertIn("renderAiImageFactAudit", app_source)
         self.assertIn('id="ai-image-director-mode-strip"', html_source)
         self.assertIn('key: "standard", label: "标准"', app_source)
-        self.assertIn('key: "quality", label: "精审"', app_source)
+        self.assertIn('key: "quality", label: "稳态高质"', app_source)
         self.assertIn('id="ai-image-generation-profile-strip"', html_source)
         self.assertIn("pageMeta", app_source)
         self.assertIn("data-ai-edit-prompt-index", app_source)
@@ -4400,7 +4404,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertIn("editAiImageMaterialByPrompt(editIndex, instruction)", app_source)
         self.assertIn("可修改文字、数字、颜色、背景、人物、商品细节，或按新要求重新生成", app_source)
         self.assertIn("if (!isPromptEdit && !(conversation.referenceImages", app_source)
-        self.assertIn("输入素材 ${references.length} 张 · 不限数量", app_source)
+        self.assertIn('输入素材 ${references.length} 张 · ${codHookActive ? "单次分析最多16张" : "不限数量"}', app_source)
         self.assertIn("Number.POSITIVE_INFINITY", app_source)
         self.assertIn("2 张以上参考", app_source)
         self.assertIn("(conversation.referenceImages || []).filter((reference) => reference.file)", app_source)
@@ -4557,6 +4561,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertEqual(payload["suiteSummary"]["queriedNodeCount"], 1)
         self.assertEqual(payload["suiteSummary"]["unavailableNodeCount"], 1)
 
+    @patch.object(backend, "ai_image_company_prompt_status", new=lambda *args: {"ready": True})
     def test_suite_endpoint_returns_partial_payload_without_images(self) -> None:
         task_result = {
             "outputs": [],
@@ -4606,6 +4611,7 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertIn("[Page-specific correction]", generate.call_args.kwargs["prompts"][0])
         self.assertIn("恢复产品原色并去除底部白边", generate.call_args.kwargs["prompts"][0])
 
+    @patch.object(backend, "ai_image_company_prompt_status", new=lambda *args: {"ready": True})
     def test_suite_endpoint_accepts_many_reference_images_in_numeric_order(self) -> None:
         task_result = {"outputs": [], "errors": [], "pending": [], "taskIds": [], "timedOut": False}
         fields = {
@@ -4768,7 +4774,8 @@ LED电量显示
         self.assertNotIn("[Localized headline instruction]", page_two)
         self.assertIn("[Product interaction direction]", page_two)
         self.assertIn("[Action exclusions]", page_two)
-        self.assertIn("final reference image is the approved page-1 style anchor", page_two)
+        self.assertIn("[Textual suite DNA]", page_two)
+        self.assertNotIn("approved page-1 style anchor", page_two)
         self.assertNotIn("The garment must be the visual priority", page_two)
         self.assertNotIn("Preserve every garment feature", page_two)
         self.assertIn("[No-added-text execution lock — highest text priority]", page_two)
@@ -4812,7 +4819,7 @@ LED电量显示
         self.assertEqual(template["suiteKey"], "jp-landing-page-25")
         self.assertEqual(template["count"], 25)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_SUITE_PLAN_VERSION)
-        self.assertEqual(template["planVersion"], "director-v33-online-photography-plan")
+        self.assertEqual(template["planVersion"], "director-v34-no-page1-bitmap-unique-routes")
         self.assertIn('"jp-landing-page-25"', app_text)
         self.assertIn('label: "日本产品落地页 25图"', app_text)
         self.assertIn("三层参考分析", app_text)
@@ -5112,7 +5119,46 @@ LED电量显示
         self.assertIn('const countryCod = conversation.suiteKey === "cod-country-landing-30";', app_source)
         self.assertIn("const supplementalLimit", app_source)
         self.assertIn("authorityPage", app_source)
-        self.assertIn('return conversation.suiteKey !== "cod-country-landing-30";', app_source)
+        self.assertIn('["cod-country-landing-30", "cod-country-detail-12"].includes(conversation.suiteKey)', app_source)
+
+    def test_cod_country_backend_strips_stale_generated_style_anchor(self) -> None:
+        class Upload:
+            def __init__(self, filename: str) -> None:
+                self.filename = filename
+
+        items = [Upload("product.jpg"), Upload("layout.png"), Upload("cod-country-landing-style-anchor.png")]
+        bindings = [
+            {"index": 1, "role": "product", "name": "product.jpg"},
+            {"index": 2, "role": "layout", "name": "layout.png"},
+        ]
+
+        filtered_items, filtered_bindings = backend.strip_ai_image_cod_generated_style_anchor(
+            items,
+            bindings,
+            backend.AI_IMAGE_COD_SUITE_KEY,
+            style_anchor_requested=True,
+        )
+
+        self.assertEqual([item.filename for item in filtered_items], ["product.jpg", "layout.png"])
+        self.assertEqual([item["index"] for item in filtered_bindings], [1, 2])
+
+        detail_items, detail_bindings = backend.strip_ai_image_cod_generated_style_anchor(
+            items,
+            bindings,
+            backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
+            style_anchor_requested=True,
+        )
+        self.assertEqual([item.filename for item in detail_items], ["product.jpg", "layout.png"])
+        self.assertEqual([item["index"] for item in detail_bindings], [1, 2])
+
+        jp_items, jp_bindings = backend.strip_ai_image_cod_generated_style_anchor(
+            items,
+            bindings,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+            style_anchor_requested=True,
+        )
+        self.assertEqual([item.filename for item in jp_items], ["product.jpg", "layout.png"])
+        self.assertEqual([item["index"] for item in jp_bindings], [1, 2])
 
     def test_amazon_aplus_plan_has_nine_policy_safe_modules(self) -> None:
         brief = """
@@ -6004,6 +6050,140 @@ USB供电
         self.assertIn(supports[0]["description"], prompts[0])
         self.assertNotIn("Do not import another page's selling point", prompts[0])
 
+    def test_cod_country_analysis_binds_localized_copy_to_exact_source_ids(self) -> None:
+        base_prompt = "[Product] Exact multifunction jar opener from supplied references."
+        brief = """以下是我的卖点及需求：
+1. 【杠杆原理让开盖更省力】保持正确夹持方向，仅证明最高5倍转动力。
+2. 【四种瓶盖适用】只展示提示词列出的四种开盖对象。
+日本市场，日文排版，不出现价格。"""
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            country="JP",
+            count=8,
+        )
+        analysis = backend.normalize_ai_director_analysis(
+            {
+                "productSummary": "正確な多機能オープナー",
+                "mainSellingPoints": [
+                    {
+                        "sourcePointIndex": 1,
+                        "title": "てこの力で、固いフタも軽く開く",
+                        "description": "正しい方向で最大5倍の回転力を見せる",
+                        "copyLabels": ["最大5倍", "手の負担を軽減"],
+                        "evidenceDirection": "同じ瓶を正しい向きで軽く回す手元を大きく見せる",
+                    },
+                    {
+                        "sourcePointIndex": 2,
+                        "title": "4種類のフタにこれ1つ",
+                        "description": "指定された四つの開栓対象だけを示す",
+                        "copyLabels": ["4WAY", "幅広く対応"],
+                        "evidenceDirection": "四つの対象を実物の使用状態で並べる",
+                    },
+                ],
+                "secondarySellingPoints": [],
+            },
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_COD_SUITE_KEY,
+        )
+        mapped = backend.apply_ai_director_selling_points_to_pages(
+            pages,
+            analysis,
+            base_prompt,
+            brief,
+            backend.AI_IMAGE_COD_SUITE_KEY,
+        )
+
+        self.assertEqual(analysis["mainSellingPoints"][0]["title"], "杠杆原理让开盖更省力")
+        self.assertEqual(analysis["mainSellingPoints"][0]["localizedTitle"], "てこの力で、固いフタも軽く開く")
+        self.assertEqual(mapped[0]["localizedSellingPointTitle"], "てこの力で、固いフタも軽く開く")
+        self.assertEqual(mapped[0]["headline"], "てこの力で、固いフタも軽く開く")
+        self.assertIn("同じ瓶", mapped[0]["directorSellingPointEvidence"])
+        self.assertEqual(mapped[1]["headline"], "4種類のフタにこれ1つ")
+
+    def test_cod_country_second_pass_requests_company_seven_layer_page_prompts(self) -> None:
+        pages = backend.build_ai_image_suite_plan(
+            "[Product] Exact multifunction jar opener.",
+            "卖点：省力开盖。日本市场，日文文案。",
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            country="JP",
+            count=8,
+        )[:2]
+        messages = backend.build_ai_director_page_refinement_messages(
+            pages,
+            {"productSummary": "多機能オープナー", "productVisualDNA": {}, "_suitePageCount": 8},
+            backend.AI_IMAGE_COD_SUITE_KEY,
+            "JP",
+        )
+        prompt = messages[-1]["content"]
+
+        self.assertIn("[COD company prompt authoring — required]", prompt)
+        self.assertIn("[COD online page-authoring ownership]", prompt)
+        self.assertIn('"sourcePointIndex"', prompt)
+        self.assertIn('"localizedSellingPointTitle"', prompt)
+        self.assertIn('"companyPromptLayers"', prompt)
+        for field in backend.AI_IMAGE_JP_COMPANY_PROMPT_LAYER_FIELDS:
+            self.assertIn(f'"{field}"', prompt)
+
+    def test_cod_country_complete_remote_layers_replace_verbose_local_template(self) -> None:
+        base_prompt = "[Product] Exact multifunction jar opener from supplied product and usage references."
+        brief = """以下是我的卖点及需求：
+1. 【杠杆原理让开盖更省力】保持正确夹持方向，仅证明最高5倍转动力。
+日本市场，日文排版，不出现价格，不能出现动画。"""
+        pages = backend.build_ai_image_suite_plan(
+            base_prompt,
+            brief,
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            country="JP",
+            count=8,
+        )
+        pages[0]["localizedSellingPointTitle"] = "てこの力で、固いフタも軽く開く"
+        pages[0]["headline"] = "てこの力で、固いフタも軽く開く"
+        pages[0]["directorSellingPointEvidence"] = "正しい方向で軽く回す手元と開いた瞬間を見せる"
+        pages[0]["visualEnhancement"] = {
+            **pages[0].get("visualEnhancement", {}),
+            "actionDirection": "left hand steadies the jar while the right hand rotates the exact opener",
+            "camera": "50mm at counter height",
+            "lighting": "soft left window light at 5000K",
+            "spatialPlan": "use scene 68%, exact copy 22%, breathing room 10%",
+            "modulePlan": "one dominant use photograph and one integrated proof zone",
+            "companyPromptLayers": {
+                "taskAnchor": "Create a Japanese COD hero for the exact jar opener.",
+                "emotionAnchor": "Immediate relief and believable everyday confidence.",
+                "visualNarrative": "A Japanese woman steadies one jar and turns the exact opener correctly as the lid releases, photographed at counter height with tactile product detail and a clear result moment.",
+                "layoutAndCopy": "Use scene 68%; copy 22%; calm space 10%. Show exactly 『てこの力で、固いフタも軽く開く』.",
+                "colorScheme": "Warm ivory #FCF9F4, soft beige #E4D6C9 and brown #5A3C29.",
+                "styleDirection": "Bold Japanese direct-response ecommerce with one realistic dominant photograph.",
+                "hardConstraints": "Freeze the exact product, correct operation, Japanese copy and realistic hands.",
+            },
+        }
+        prompts, normalized_pages = backend.build_ai_image_suite_prompts(
+            base_prompt,
+            brief,
+            "750x1000",
+            suite_key=backend.AI_IMAGE_COD_SUITE_KEY,
+            country="JP",
+            suite_count=8,
+            plan=pages,
+        )
+
+        self.assertIn("[COMPANY COD EXECUTION]", prompts[0])
+        self.assertIn("[COMPANY AI-AUTHORED SEVEN-LAYER PROMPT — primary positive execution]", prompts[0])
+        self.assertIn("てこの力で、固いフタも軽く開く", prompts[0])
+        self.assertIn("最高5倍", prompts[0])
+        self.assertIn("50mm at counter height", prompts[0])
+        self.assertNotIn("[Country-targeted COD landing-page director]", prompts[0])
+        self.assertLessEqual(len(prompts[0]), backend.AI_IMAGE_COD_COMPANY_PROMPT_LIMIT)
+        self.assertEqual(
+            normalized_pages[0]["visualEnhancement"]["companyPromptLayers"]["taskAnchor"],
+            "Create a Japanese COD hero for the exact jar opener.",
+        )
+
     def test_cod_country_company_modules_follow_explicit_no_text_policy(self) -> None:
         brief = "卖点：正确使用更省力。日本市场。全部图片无文字、无标题、无标签。"
         prompts, pages = backend.build_ai_image_suite_prompts(
@@ -6224,7 +6404,7 @@ USB供电
 
         refine.assert_called_once()
         self.assertTrue(metadata["creativePassUsed"])
-        self.assertEqual(metadata["creativeDirectorVersion"], "cod-page-brief-director-v1")
+        self.assertEqual(metadata["creativeDirectorVersion"], "cod-company-seven-layer-director-v1")
         self.assertEqual(refined[4]["creativePassSource"], "remote")
         self.assertEqual(refined[4]["focusTitle"], pages[4]["focusTitle"])
         prompts, normalized_pages = backend.build_ai_image_suite_prompts(
@@ -6293,18 +6473,18 @@ USB供电
                     all("[No-added-text execution lock — highest text priority]" in prompt for prompt in no_text_prompts)
                 )
 
-    def test_cod_hook_prompt_requires_opt_in_localized_text_on_both_submission_paths(self) -> None:
+    def test_cod_hook_prompt_defaults_to_source_backed_copy_on_both_submission_paths(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn("[COD visible-copy lock — highest text priority]", app_source)
-        self.assertIn("[COD hook text policy — highest text priority]", app_source)
+        self.assertIn("[COD hook selling-copy contract]", app_source)
+        self.assertIn("Visible selling-point copy is the default", app_source)
         self.assertIn('function aiImageCodHookTextPolicy(', app_source)
         self.assertIn("textPolicy=none", app_source)
         self.assertIn("textPolicy=requested", app_source)
         self.assertIn('formData.append("textPolicy", aiImageCodHookTextPolicy(', app_source)
         self.assertIn('textPolicy: aiImageCodHookTextPolicy(', app_source)
-        self.assertIn("headline or advertising copy explicitly requested by the user", app_source)
-        self.assertIn("No added headline, promotion lettering, price numeral, discount text or label", app_source)
+        self.assertIn("one prominent core-benefit headline plus 2-3 distinct source-backed", app_source)
+        self.assertIn("No added headline, benefit callout, promotion lettering, price numeral, discount text or label", app_source)
         self.assertNotIn("Render one short, prominent ${targetCountry?.language", app_source)
 
     def test_generation_request_keeps_prompt_content_beyond_legacy_3000_limit(self) -> None:
@@ -7390,7 +7570,7 @@ USB供电
             "1024x1024",
         )
 
-    def test_cod_hook_strip_normalizer_crops_square_fallback_full_bleed(self) -> None:
+    def test_cod_hook_strip_normalizer_contains_square_fallback_without_crop(self) -> None:
         from PIL import Image, ImageDraw
 
         image_buffer = BytesIO()
@@ -7404,9 +7584,9 @@ USB供电
         )[0]
         with Image.open(BytesIO(normalized[0])) as rendered:
             self.assertEqual(rendered.size, (750, 100))
-            self.assertEqual(rendered.getpixel((0, 50)), (242, 183, 5))
-            self.assertEqual(rendered.getpixel((749, 50)), (242, 183, 5))
-            self.assertNotEqual(rendered.getpixel((0, 50)), (228, 233, 237))
+            self.assertEqual(rendered.getpixel((375, 50)), (242, 183, 5))
+            self.assertEqual(rendered.getpixel((375, 10)), (31, 41, 55))
+            self.assertEqual(rendered.getpixel((375, 90)), (31, 41, 55))
 
     def test_amazon_aplus_normalizer_crops_native_landscape_full_bleed(self) -> None:
         from PIL import Image, ImageDraw
@@ -7476,6 +7656,7 @@ USB供电
 
     def test_cod_hook_edit_endpoint_applies_exact_strip_dimensions(self) -> None:
         from PIL import Image
+        from sku_board.tests.test_cod_hook_copy_contracts import CodHookCopyContractTests
 
         image_buffer = BytesIO()
         Image.new("RGB", (1024, 1024), "#b04a3a").save(image_buffer, format="PNG")
@@ -7499,6 +7680,7 @@ USB供电
             return ([{}], ["preview"])
 
         with (
+            patch("sku_board.cod_hook_vision.analyze", side_effect=CodHookCopyContractTests.synthetic_analysis),
             patch.object(backend, "chatgpt2api_image_tasks_enabled", return_value=True),
             patch.object(backend, "generate_images_via_chatgpt2api_tasks", return_value=[generated_image]),
             patch.object(backend, "save_ai_image_outputs", side_effect=fake_save),
@@ -7506,7 +7688,7 @@ USB供电
             payload = backend.generate_ad_launch_ai_image_edit(
                 fields,
                 {"reference0": Upload()},
-                {"role": "admin"},
+                {"role": "admin", "username": "hook-strip-test"},
             )
 
         self.assertEqual(saved_dimensions, [(750, 150)])
@@ -7514,6 +7696,7 @@ USB供电
         self.assertEqual(payload["material"]["pixelHeight"], 150)
 
     def test_cod_hook_batch_assigns_a_different_main_product_reference_per_output(self) -> None:
+        from sku_board.tests.test_cod_hook_copy_contracts import CodHookCopyContractTests
         fields = {
             "prompt": "Create a Thai COD product hook image.",
             "mode": "edit",
@@ -7534,15 +7717,18 @@ USB供电
         materials = [{} for _ in range(5)]
 
         with (
+            patch("sku_board.cod_hook_vision.analyze", side_effect=CodHookCopyContractTests.synthetic_analysis),
             patch.object(backend, "chatgpt2api_image_tasks_enabled", return_value=True),
             patch.object(backend, "generate_images_via_chatgpt2api_tasks", return_value=images) as generate,
             patch.object(backend, "save_ai_image_outputs", return_value=(materials, ["preview"] * 5)),
         ):
-            payload = backend.generate_ad_launch_ai_image_edit(fields, files, {"role": "admin"})
+            payload = backend.generate_ad_launch_ai_image_edit(fields, files, {"role": "admin", "username": "hook-variant-test"})
 
         prompts = generate.call_args.kwargs["prompts"]
         self.assertEqual(len(prompts), 5)
-        self.assertEqual([backend.ai_image_primary_reference_index(prompt) for prompt in prompts], [1, 2, 3, 4, 1])
+        self.assertTrue(all("[COD hook AI product identity]" in prompt for prompt in prompts))
+        routed = generate.call_args.kwargs["reference_images_by_page"]
+        self.assertEqual([routed[index][0][0] for index in range(5)], [f"variant-{index % 4 + 1}.jpg" for index in range(5)])
         self.assertEqual(payload["productReferenceIndexes"], [1, 2, 3, 4])
         self.assertEqual([item["variantReferenceIndex"] for item in payload["materials"]], [1, 2, 3, 4, 1])
 
@@ -7735,8 +7921,8 @@ USB供电
         self.assertIn("70mm full-frame equivalent", prompts[1])
         self.assertIn("[GARMENT MATERIAL & OPTICS", prompts[0])
         self.assertIn("fiber scale", prompts[0])
-        self.assertIn("[PAGE-1 GENERATED MASTER]", prompts[1])
-        self.assertIn("never copy or merge page-1 clothing", prompts[1])
+        self.assertIn("[TEXTUAL SUITE DNA]", prompts[1])
+        self.assertIn("distinct pose, scene, camera, light direction and composition", prompts[1])
         self.assertLess(max(map(len, prompts)), 9000)
 
     def test_reference_breakdown_normalizes_every_three_layer_record_and_role(self) -> None:
@@ -8243,7 +8429,8 @@ USB供电
         self.assertIn('conversation.directorMode = "company";', app_source)
         self.assertIn('conversation.generationProfile = "quality";', app_source)
         self.assertIn('formData.append("companyEffectMode", companyEffectMode ? "true" : "false");', app_source)
-        self.assertIn('const forceReanalyze = companyEffectMode && conversation.suiteKey !== "jp-landing-page-25";', app_source)
+        self.assertIn('const forceReanalyze = companyEffectMode && ![', app_source)
+        self.assertIn('"jp-landing-page-25", "cod-country-landing-30", "cod-country-detail-12",', app_source)
         self.assertIn('formData.append("forceReanalyze", forceReanalyze ? "true" : "false");', app_source)
         self.assertIn('AI_IMAGE_DIRECTOR_MODES.filter((mode) => mode.key !== "company")', app_source)
         self.assertIn('label: "关键原图双通道"', app_source)
@@ -8338,13 +8525,71 @@ USB供电
         self.assertEqual(incomplete["missingPages"], [13])
         self.assertEqual(incomplete["promptSource"], "pending-remote-seven-layer")
 
+    def test_cod_company_prompt_status_rejects_repeated_photography_routes(self) -> None:
+        def page(number_value: int, route: str) -> dict:
+            return {
+                "page": number_value,
+                "sceneAngleDirective": f"scene-{route}",
+                "poseFingerprint": f"pose-{route}",
+                "visualEnhancement": {
+                    "shotConcept": f"shot-{route}",
+                    "actionDirection": f"action-{route}",
+                    "camera": f"camera-{route}",
+                    "spatialPlan": f"space-{route}",
+                    "modulePlan": f"module-{route}",
+                    "companyPromptLayers": {
+                        "taskAnchor": f"Create COD page {number_value}.",
+                        "emotionAnchor": "Believable relief.",
+                        "visualNarrative": f"A finished product photograph following route {route} with its own evidence moment, action, camera and room zone.",
+                        "layoutAndCopy": f"Product 65%; route {route} copy 25%; breathing room 10%.",
+                        "colorScheme": "#FCF9F4, #5A3C29 and #E4D6C9.",
+                        "styleDirection": "Localized direct-response ecommerce photography.",
+                        "hardConstraints": "Freeze product, source meaning, copy and anatomy.",
+                    },
+                },
+            }
+
+        pages = [page(1, "counter-close"), page(2, "counter-close"), page(3, "window-wide")]
+        status = backend.ai_image_cod_company_prompt_status(pages, 3)
+
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["readyCount"], 2)
+        self.assertEqual(status["missingPages"], [2])
+        self.assertEqual(status["duplicatePages"], [2])
+        self.assertEqual(status["duplicatePairs"][0]["sourcePage"], 1)
+
+        pages[1] = page(2, "tabletop-macro")
+        unique = backend.ai_image_cod_company_prompt_status(pages, 3)
+        self.assertTrue(unique["ready"])
+        self.assertEqual(unique["readyCount"], 3)
+        self.assertEqual(unique["duplicatePages"], [])
+        self.assertEqual(unique["promptSource"], "remote-seven-layer-unique")
+
+    def test_cod_company_generation_stops_before_render_when_layers_are_missing(self) -> None:
+        fields = {
+            "prompt": "Exact multifunction opener from the supplied product image.",
+            "model": "gpt-image-2.5-sunburst",
+            "size": "750x1000",
+            "quality": "high",
+            "count": "1",
+            "suiteKey": backend.AI_IMAGE_COD_DETAIL_SUITE_KEY,
+            "suiteCount": "12",
+            "suiteBrief": "卖点：省力开盖。",
+            "suitePlan": "[]",
+            "suitePageIndexes": "[1]",
+            "companyEffectMode": "true",
+        }
+
+        with self.assertRaisesRegex(ValueError, "0/12.*生图提交已暂停"):
+            backend.generate_ad_launch_ai_image_edit(fields, {}, {"role": "admin"})
+
     def test_jp25_generation_is_gated_and_frontend_invalidates_old_local_plans(self) -> None:
         backend_source = (backend.ROOT_DIR / "backend.py").read_text(encoding="utf-8")
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn("ai_image_jp_company_prompt_status(suite_plan, suite_count)", backend_source)
+        self.assertIn("ai_image_company_prompt_status(suite_plan, suite_count, suite_key)", backend_source)
         self.assertIn("本次生图提交已暂停", backend_source)
-        self.assertIn('planVersion: "director-v33-online-photography-plan"', app_source)
+        self.assertIn('planVersion: "director-v34-no-page1-bitmap-unique-routes"', app_source)
         self.assertIn("aiImageJp25CompanyPromptStatus", app_source)
         self.assertIn("25/25页七层Prompt齐全后才会提交生图", app_source)
         self.assertIn('material.promptSource === "remote-seven-layer" ? "线上AI七层Prompt"', app_source)
@@ -8352,7 +8597,7 @@ USB供电
         self.assertIn('thread_name_prefix="jp25-director"', backend_source)
         self.assertIn('conversation.status === "planning"', app_source)
         self.assertIn("取消线上策划", app_source)
-        self.assertIn("线上25页七层Prompt并行生成与校验中", app_source)
+        self.assertIn("页七层Prompt并行生成与去重校验中", app_source)
 
     def test_local_panel_preserves_unsaved_director_form_during_async_refresh(self) -> None:
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")

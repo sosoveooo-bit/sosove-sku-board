@@ -7687,3 +7687,5 @@ body[data-active-view="aiImages"] .ai-image-shell {
     grid-column: 1 / -1;
   }
 }
+.ai-image-cancel-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0}.ai-image-cancel-controls span{font-size:12px;color:#94614c;max-width:650px}.ai-image-cancel-controls button{flex-shrink:0}
+#ai-image-cancel-btn{position:fixed;right:24px;bottom:24px;z-index:90;background:#fff2ee;border:1px solid #dc9e8f;color:#a13f2d;box-shadow:0 4px 18px #55241624;padding:11px 18px}#ai-image-cancel-btn:disabled{opacity:.5}

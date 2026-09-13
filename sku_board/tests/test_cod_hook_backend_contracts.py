@@ -14,7 +14,7 @@ class CodHookBackendContractTests(unittest.TestCase):
 
     def test_no_reference_requirement_does_not_change_hook_text_policy(self):
         cases = (
-            ("Copy the exact product from the reference", "hook", "none"),
+            ("Copy the exact product from the reference", "hook", "requested"),
             ("Write short Japanese ad copy", "effect", "requested"),
             ("活动折扣15%", "discount", "requested"),
         )

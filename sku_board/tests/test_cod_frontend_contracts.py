@@ -97,13 +97,38 @@ function aiImageSuiteReferenceRoleScore(){return 0;}
 """, constants=self.CONFIG_CONSTANTS,
         )
 
-    def test_hook_text_policy_is_explicit_and_no_text_has_priority(self):
-        self.run_js(["aiImageCodHookTextPolicy"], """
-assert.equal(aiImageCodHookTextPolicy('放大产品，真实厨房场景','hook'),'none');
+    def test_both_cod_suites_disable_generated_hero_bitmap_anchor(self):
+        self.run_js(["aiImageSuiteUsesGeneratedStyleAnchor"], """
+for (const suiteKey of ['cod-country-landing-30','cod-country-detail-12']) {
+  assert.equal(aiImageSuiteUsesGeneratedStyleAnchor({suiteKey}),false);
+}
+assert.equal(aiImageSuiteUsesGeneratedStyleAnchor({suiteKey:'jp-landing-page-25'}),false);
+assert.equal(aiImageSuiteUsesGeneratedStyleAnchor({suiteKey:'rakuten-jp-product-9'}),false);
+""")
+
+    def test_cod_company_prompt_status_rejects_duplicate_visual_routes(self):
+        self.run_js(
+            ["aiImageJp25CompanyPromptStatus", "aiImageCodCompanyPromptStatus"],
+            """
+function page(page,route){return {page,sceneAngleDirective:'scene-'+route,poseFingerprint:'pose-'+route,visualEnhancement:{shotConcept:'shot-'+route,actionDirection:'action-'+route,camera:'camera-'+route,spatialPlan:'space-'+route,modulePlan:'module-'+route,companyPromptLayers:{taskAnchor:'task '+page,emotionAnchor:'calm',visualNarrative:'finished route '+route,layoutAndCopy:'layout '+route,colorScheme:'#fff',styleDirection:'market',hardConstraints:'freeze'}}};}
+const repeated=aiImageCodCompanyPromptStatus([page(1,'a'),page(2,'a'),page(3,'b')],3);
+assert.equal(repeated.ready,false);
+assert.deepEqual(repeated.missingPages,[2]);
+assert.deepEqual(repeated.duplicatePages,[2]);
+const unique=aiImageCodCompanyPromptStatus([page(1,'a'),page(2,'b'),page(3,'c')],3);
+assert.equal(unique.ready,true);
+assert.equal(unique.readyCount,3);
+            """,
+            constants=("AI_IMAGE_JP25_COMPANY_PROMPT_FIELDS",),
+        )
+
+    def test_hook_selling_copy_is_default_and_no_text_has_priority(self):
+        self.run_js(["aiImageCodHookCopyRestriction", "aiImageCodHookTextPolicy"], """
+assert.equal(aiImageCodHookTextPolicy('放大产品，真实厨房场景','hook'),'requested');
 assert.equal(aiImageCodHookTextPolicy('加一句广告文案：便利な毎日','hook'),'requested');
 assert.equal(aiImageCodHookTextPolicy('Add a headline: Easy every day','effect'),'requested');
 assert.equal(aiImageCodHookTextPolicy('Write short Japanese ad copy','effect'),'requested');
-assert.equal(aiImageCodHookTextPolicy('Copy the exact product from the reference','hook'),'none');
+assert.equal(aiImageCodHookTextPolicy('Copy the exact product from the reference','hook'),'requested');
 for (const type of ['promotion','priceBar','discount']) {
   assert.equal(aiImageCodHookTextPolicy('原价100，活动价80',type),'requested');
   assert.equal(aiImageCodHookTextPolicy('无字，只显示产品',type),'none');
@@ -118,16 +143,17 @@ assert.equal(aiImageCodHookTextPolicy('Remove any lettering','discount'),'none')
 assert.equal(aiImageCodHookTextPolicy('Omit headline','comparison'),'none');
 assert.equal(aiImageCodHookTextPolicy('Omit the headline','comparison'),'none');
 assert.equal(aiImageCodHookTextPolicy('without any added text','priceBar'),'none');
-assert.equal(aiImageCodHookTextPolicy('做前后对比，只展示效果','comparison'),'none');
+assert.equal(aiImageCodHookTextPolicy('做前后对比，只展示效果','comparison'),'requested');
 """)
 
     def test_hook_prompt_keeps_same_policy_with_or_without_references(self):
         self.run_js(
-            ["aiImageCodHookTextPolicy", "aiImageCodHookTypeConfig", "aiImageTemplatePrompt"],
+            ["aiImageCodHookCopyRestriction", "aiImageCodHookTextPolicy", "aiImageCodHookCopyInstruction", "aiImageCodHookTypeConfig", "aiImageTemplatePrompt"],
             """
 for (const hasReferences of [false,true]) {
   const plain = aiImageTemplatePrompt('codHook',{},hasReferences,{userIntent:'突出产品，真实厨房场景',codHookType:'hook'});
-  assert.match(plain,/textPolicy=none/);
+  assert.match(plain,/textPolicy=requested/);
+  assert.match(plain,/Selling-copy budget/);
   assert.match(plain,/No split screens, grids or collages/);
   const compared = aiImageTemplatePrompt('codHook',{},hasReferences,{userIntent:'无字，只展示同条件痛点对比',codHookType:'comparison'});
   assert.match(compared,/textPolicy=none/);
@@ -183,6 +209,7 @@ function aiImageDirectorMode(){return 'company';}
 function aiImageReferenceRoleKey(){return 'product';}
 function setAiImageDirectorStage(){}
 function aiImageJp25CompanyPromptStatus(){return {ready:false,readyCount:0};}
+function aiImageCompanyPromptStatus(){return {ready:false,readyCount:0,missingPages:[1]};}
 async function api(){apiCalls++;return payload;}
 function syncAiImageStateFromConversation(){persisted=true;}
 function renderAiImageSidebar(){}
@@ -207,9 +234,9 @@ for (const coverage of [{},{complete:true},{complete:undefined}]) {
 
     def test_only_cod_versions_and_opt_in_social_proof_copy_change(self):
         self.run_js(["aiImageSuiteConfig"], """
-assert.equal(AI_IMAGE_SUITE_CONFIGS['jp-landing-page-25'].planVersion,'director-v33-online-photography-plan');
-assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-landing-30'].planVersion,'cod-country-v24-rich-main-support');
-assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-detail-12'].planVersion,'cod-detail-v16-source-backed');
+assert.equal(AI_IMAGE_SUITE_CONFIGS['jp-landing-page-25'].planVersion,'director-v34-no-page1-bitmap-unique-routes');
+assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-landing-30'].planVersion,'cod-country-v28-source-driven-online-only');
+assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-detail-12'].planVersion,'cod-detail-v20-source-driven-online-only');
 const detail=aiImageSuiteConfig({suiteKey:'cod-country-detail-12',suiteCount:22});
 assert.equal(detail.mainCount,0);
 assert.equal(detail.detailCount,22);
@@ -248,7 +275,7 @@ assert.equal(monitorHint('jp-landing-page-25',true,true),sourceHint);
 assert.equal(monitorHint('ordinary-image',false,false),sourceHint);
 """, setup="function monitorHint(key,companyEffectSuite,jpCreativeDirector){const suiteConfig={key};return (" + hint_match.group(1) + ");}")
         index_html = (APP_JS.parent / "index.html").read_text(encoding="utf-8-sig")
-        self.assertIn('<script src="/static/app.js?v=20260908-cod-rich-main-v9"></script>', index_html)
+        self.assertIn('<script src="/static/app.js?v=20260911-jp25-no-anchor-v1"></script>', index_html)
         self.assertIn('为每页分配一个卖点、场景、构图和参考图', index_html)
 
     def test_hook_dispatch_sends_policy_on_both_api_paths(self):

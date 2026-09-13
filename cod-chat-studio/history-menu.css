@@ -1,0 +1,30 @@
+#history .history-row{display:flex;align-items:center;border-radius:10px;margin:3px 0;min-width:0;position:relative}
+#history .history-row[hidden]{display:none}
+#history .history-row:hover{background:#eef1f6}
+#history .history-row.active{background:#e8edf8;color:#3264cf}
+#history .history-open{flex:1;min-width:0;margin:0;padding:11px 9px;background:transparent}
+.history-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#history .history-more{flex:0 0 28px;width:28px;margin:0 5px 0 0;padding:2px 0;font-size:22px;line-height:28px;border-radius:6px;background:transparent;color:#8290a7;opacity:0}
+#history .history-row:hover .history-more,#history .history-row:focus-within .history-more,#history .history-row.active .history-more{opacity:1}
+#history .history-more:hover{background:#dbe4f4;color:#3769d9}
+.history-menu{position:fixed;z-index:30;width:176px;padding:7px;background:white;border:1px solid #e5e9f0;border-radius:10px;box-shadow:0 10px 32px #283b5b25;color:#485366}
+.history-menu[hidden]{display:none}
+.history-menu button{display:flex;align-items:center;gap:12px;width:100%;border:0;border-radius:6px;padding:11px 12px;text-align:left;font-size:13px;background:transparent}
+.history-menu button:hover,.history-menu button:focus-visible{background:#f0f4fc;outline:none}
+.history-menu button>span:first-child{font-size:17px;width:19px;text-align:center;color:#8994a7}
+.menu-divider{height:1px;background:#edf0f5;margin:6px 3px}
+.history-menu .danger{color:#bd5353}
+#historyDialog{width:min(430px,calc(100vw - 32px));border:1px solid #e3e8f1;border-radius:16px;padding:25px;color:#333f52;box-shadow:0 20px 70px #18335830}
+#historyDialog::backdrop{background:#1b2d484d}
+#historyDialog h2{font-size:18px;margin:0 0 12px}
+#historyDialog p{font-size:13px;line-height:1.8;overflow-wrap:anywhere;color:#778295}
+#historyNameLabel{font-size:12px;color:#64718a}
+#historyNameLabel[hidden]{display:none}
+#historyName{display:block;width:100%;margin-top:8px;padding:11px;border:1px solid #d9e1ee}
+#historyName:focus{outline:2px solid #7597e6;outline-offset:1px}
+#historyDialog #historyDialogError{color:#b84e4e}
+.history-dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}
+.history-dialog-actions button{font-size:13px;padding:9px 16px}
+#historyConfirm{background:#4778e8;color:white;border-color:transparent}
+#historyConfirm.danger{background:#bd5353}
+@media(hover:none){#history .history-more{opacity:1}}

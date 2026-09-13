@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from sku_board import cod_prompt_atelier, cod_prompt_render, cod_prompt_assets, cod_prompt_queue
+
 from sku_board.backend import (
+    cancel_ai_image_operation,
+    run_ai_operation,
     add_feedback,
     add_item,
     add_note,
@@ -65,6 +69,7 @@ from sku_board.backend import (
     regenerate_selling,
     review_ai_image_suite,
     recover_recent_ai_image_suite,
+    recover_saved_cod_hook_result,
     refresh_ai_image_account_pool,
     read_ai_image_output,
     reset_user_password,
@@ -102,6 +107,63 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        atelier_prefix = "/api/sku-board/cod-atelier/projects"
+        if parsed.path == atelier_prefix:
+            self.handle_auth_read(cod_prompt_atelier.list_projects)
+            return
+        if parsed.path.startswith(atelier_prefix + "/"):
+            parts = parsed.path[len(atelier_prefix) + 1:].strip("/").split("/")
+            revision = parse_qs(parsed.query).get("revision", [None])[0]
+            if len(parts) == 1:
+                self.handle_auth_read(lambda user: cod_prompt_atelier.get_project(parts[0], user, revision=revision))
+                return
+            if len(parts) == 2 and parts[1] == "render-queues":
+                self.handle_auth_read(lambda user: cod_prompt_queue.list_queues(parts[0], user, revision=revision))
+                return
+            if (len(parts) == 3 and parts[1] == "assets") or (len(parts) == 2 and parts[1] == "images.zip"):
+                user = auth_state(self.session_token()).get("user")
+                if not user:
+                    self.send_json({"ok": False, "error": "请先登录"}, status=HTTPStatus.UNAUTHORIZED)
+                    return
+                try:
+                    if parts[1] == "assets":
+                        content, mime = cod_prompt_assets.read_asset(parts[0], parts[2], user, revision)
+                        self.send_bytes(content, mime, cache_control="private, no-store")
+                    else:
+                        stream, filename = cod_prompt_assets.image_zip(parts[0], revision, user)
+                        with stream:
+                            stream.seek(0, 2)
+                            length = stream.tell()
+                            stream.seek(0)
+                            self.send_response(HTTPStatus.OK)
+                            self.send_common_headers(content_type="application/zip", cache_control="private, no-store")
+                            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                            self.send_header("Content-Length", str(length))
+                            self.end_headers()
+                            while chunk := stream.read(256 * 1024):
+                                self.wfile.write(chunk)
+                except PermissionError as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                except (ValueError, OSError) as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if len(parts) == 3 and parts[1] == "references":
+                user = auth_state(self.session_token()).get("user")
+                if not user:
+                    self.send_json({"ok": False, "error": "请先登录"}, status=HTTPStatus.UNAUTHORIZED)
+                    return
+                try:
+                    content, mime = cod_prompt_atelier.read_reference(parts[0], parts[2], user, revision=revision)
+                    self.send_bytes(content, mime, cache_control="private, no-store")
+                except PermissionError as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                except ValueError as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                except OSError:
+                    self.send_json({"ok": False, "error": "参考图读取失败，请重新上传"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": False, "error": "route not found"}, status=HTTPStatus.NOT_FOUND)
+            return
         if parsed.path in {"/", "/index.html"}:
             self.serve_static("index.html")
             return
@@ -125,6 +187,10 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             material_id = unquote(parsed.path.removeprefix("/api/sku-board/ai-image-output/")).strip("/")
             query = {key: values[0] for key, values in parse_qs(parsed.query).items() if values}
             self.handle_auth_ai_image_output(material_id, query.get("remote", ""))
+            return
+        if parsed.path == "/api/sku-board/ai-image-hook-recovery":
+            query = {key: values[0] for key, values in parse_qs(parsed.query).items() if values}
+            self.handle_auth_read(lambda user: recover_saved_cod_hook_result(query, user))
             return
         if parsed.path.startswith("/api/sku-board/ai-image-jobs/"):
             job_id = unquote(parsed.path.removeprefix("/api/sku-board/ai-image-jobs/")).strip("/")
@@ -179,6 +245,30 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        atelier_prefix = "/api/sku-board/cod-atelier/projects"
+        if parsed.path == atelier_prefix + "/upload":
+            self.handle_auth_upload(cod_prompt_atelier.save_project_upload)
+            return
+        if parsed.path.startswith(atelier_prefix + "/"):
+            parts = parsed.path[len(atelier_prefix) + 1:].strip("/").split("/")
+            if len(parts) == 4 and parts[1] == "render-queues" and parts[3] in {"resume", "cancel"}:
+                action = cod_prompt_queue.resume_queue if parts[3] == "resume" else cod_prompt_queue.cancel_queue
+                self.handle_auth_mutation(lambda payload, user: action(parts[0], parts[2], payload, user))
+                return
+            actions = {
+                "generate": cod_prompt_atelier.start_generation,
+                "cancel": cod_prompt_atelier.cancel_generation,
+                "edit-page": cod_prompt_atelier.edit_page,
+                "render": cod_prompt_render.start_render,
+                "review": cod_prompt_atelier.review_project,
+                "render-queue": cod_prompt_queue.start_queue,
+                "archive-images": cod_prompt_assets.archive_existing,
+            }
+            if len(parts) == 2 and parts[1] in actions:
+                self.handle_auth_mutation(lambda payload, user: actions[parts[1]](parts[0], payload, user))
+                return
+            self.send_json({"ok": False, "error": "route not found"}, status=HTTPStatus.NOT_FOUND)
+            return
         if parsed.path == "/api/sku-board/login":
             self.handle_login()
             return
@@ -227,10 +317,13 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/sku-board/ai-image-suite-plan":
-            self.handle_auth_mutation(lambda payload, user: plan_ai_image_suite(payload, user))
+            self.handle_auth_mutation(lambda payload, user: run_ai_operation(payload,user,lambda:plan_ai_image_suite(payload,user)))
             return
         if parsed.path == "/api/sku-board/ai-image-suite-plan-upload":
-            self.handle_auth_upload(lambda fields, files, user: plan_ai_image_suite_upload(fields, files, user))
+            self.handle_auth_upload(lambda fields, files, user: run_ai_operation(fields,user,lambda:plan_ai_image_suite_upload(fields,files,user)))
+            return
+        if parsed.path == "/api/sku-board/ai-image-cancel":
+            self.handle_auth_mutation(cancel_ai_image_operation)
             return
         if parsed.path == "/api/sku-board/ai-image-suite-review":
             self.handle_auth_upload(lambda fields, files, user: review_ai_image_suite(fields, files, user))
@@ -402,6 +495,8 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             return
         try:
             self.send_json(callback(user), status=status)
+        except PermissionError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
         except ValueError as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -469,6 +564,8 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             self.send_json(callback(payload, user), status=status)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
+        except PermissionError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
         except ValueError as exc:
             if ai_image_operation:
                 self.send_ai_image_error(exc, user, ai_image_operation, HTTPStatus.BAD_REQUEST)
@@ -488,13 +585,15 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
     ) -> None:
         user = auth_state(self.session_token()).get("user")
         if not user:
-            self.send_json({"ok": False, "error": "璇峰厛鐧诲綍"}, status=HTTPStatus.UNAUTHORIZED)
+            self.send_json({"ok": False, "error": "请先登录"}, status=HTTPStatus.UNAUTHORIZED)
             return
         try:
             fields, files = self.read_multipart_body()
             self.send_json(callback(fields, files, user), status=status)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
+        except PermissionError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
         except ValueError as exc:
             if ai_image_operation:
                 self.send_ai_image_error(exc, user, ai_image_operation, HTTPStatus.BAD_REQUEST)
@@ -785,13 +884,16 @@ def parse_ad_launch_route(path: str) -> tuple[str, str] | None:
     return launch_id, action
 
 
-def run(host: str, port: int) -> None:
+def run(host: str, port: int, *, skip_startup_cleanup: bool = False) -> None:
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((host, port), SkuBoardHandler)
     start_ai_image_health_monitor()
-    cleanup = prune_ai_image_output_files(force=True)
-    recovery = resume_ai_image_jobs()
+    cleanup = {"removed": 0, "bytes": 0} if skip_startup_cleanup else prune_ai_image_output_files(force=True)
+    recovery = resume_ai_image_jobs(prune_expired=not skip_startup_cleanup)
+    queue_recovery = cod_prompt_queue.resume_queues_on_startup()
     print(f"SKU Board running at http://{host}:{port}/")
+    if queue_recovery.get("resumed"):
+        print(f"Atelier image queues resumed: {queue_recovery['resumed']}")
     if cleanup["removed"]:
         print(
             "Expired local AI image outputs removed: "
@@ -814,8 +916,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the SKU operation board.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8793)
+    parser.add_argument("--skip-startup-cleanup", action="store_true", help="保留现有图片和过期任务记录，用于安全更新服务；不在启动时执行清理")
     args = parser.parse_args()
-    run(args.host, args.port)
+    run(args.host, args.port, skip_startup_cleanup=args.skip_startup_cleanup)
 
 
 if __name__ == "__main__":

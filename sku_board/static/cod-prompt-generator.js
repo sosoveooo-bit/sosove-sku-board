@@ -1,1227 +1,747 @@
 (() => {
   "use strict";
-
-  const $ = (id) => document.getElementById(id);
-  const STORAGE_KEY = "cod-prompt-atelier-v1";
-  const MARKET = {
-    JP: { label: "日本", language: "日文", scene: "东京、丸之内、涩谷、日式住宅、车站通勤与本土生活场景", palette: "象牙白、浅薄荷绿、不锈钢银、深炭灰，珊瑚红与暖金色作为COD强调色" },
-    KR: { label: "韩国", language: "韩文", scene: "首尔商务街区、公寓、咖啡店、地铁与本土生活场景", palette: "象牙白、雾蓝、银灰、炭黑，珊瑚色作为强调色" },
-    US: { label: "美国", language: "英文", scene: "城市公寓、办公室、健身房与通勤生活场景", palette: "暖白、钢灰、炭黑，橙红作为强调色" },
-    DE: { label: "德国", language: "德文", scene: "柏林办公室、住宅、通勤与户外生活场景", palette: "暖白、雾灰、深蓝，砖红作为强调色" },
-  };
-
-  const SAMPLE = {
-    product: "Watch4 Pro 钢带血糖手表",
-    market: "JP",
-    intensity: "cod",
-    main: 15,
-    detail: 22,
-    size: "750x1000",
-    model: "gpt-image-2",
-    quality: "high",
-    generationProfile: "standard",
-    reference: "参考图2为钢带主款；参考图4为钢带辅助角度；参考图1、5为皮革变体；参考图3、6为硅胶变体，不能混用。",
-    points: [
-      "心血管领域专家指导的24小时健康趋势监测",
-      "无创免扎针血糖趋势显示，每30分钟更新并同步App",
-      "24小时心率追踪与异常变化提醒",
-      "光电血氧趋势监测",
-      "1.9英寸曲面无边大屏，强光下清晰显示",
-      "商务不锈钢钢带，精密抛光，贴合手腕",
-      "蓝牙通话、LINE、邮件和导航通知",
-      "AI语音操作",
-      "100种运动模式，覆盖跑步、游泳和高尔夫",
-      "24小时云端趋势分析与静默SOS提醒",
-    ].join("\n"),
-    discount: "",
-    salePrice: "",
-    codText: "代引きOK",
-    deadline: "",
-    allowPromo: true,
-    allowMedical: true,
-    style: "明亮、不太暗；日本电商高密度排版；附带日本模特；页面无留白；COD视觉夸张。",
-    avoid: "不要混合表带、不要动画、不要乱码、不要虚构证书或医生。",
-  };
-
-  const JP_HEADLINES = [
-    ["心血管", "専門家の知見を、毎日の記録へ"],
-    ["血糖", "血糖トレンドを、手元で可視化"],
-    ["心率", "24時間、心拍をチェック"],
-    ["血氧", "血中酸素の変化を見える化"],
-    ["大屏", "1.9インチ、広く見やすく"],
-    ["钢带", "手元に映える、スチールバンド"],
-    ["通话", "通話も通知も、手元で"],
-    ["语音", "話しかけるだけのスマート操作"],
-    ["运动", "100種類のスポーツを記録"],
-    ["云端", "毎日の変化をクラウドで確認"],
-    ["SOS", "静かに知らせる、SOSサポート"],
-  ];
-
-  function readForm() {
-    const product = $("product-name").value.trim() || "当前商品";
-    return sanitizeFormForProduct({
-      product,
-      market: $("target-market").value,
-      intensity: $("hook-intensity").value,
-      main: clampNumber($("main-count").value, 1, 30, 15),
-      detail: clampNumber($("detail-count").value, 1, 40, 22),
-      size: $("canvas-size").value.trim() || "750x1000",
-      model: $("render-model")?.value || SAMPLE.model,
-      quality: $("render-quality")?.value || SAMPLE.quality,
-      generationProfile: $("render-profile")?.value || SAMPLE.generationProfile,
-      reference: $("reference-map").value.trim(),
-      points: splitPoints($("selling-points").value, product),
-      discount: $("discount").value.trim(),
-      salePrice: $("sale-price").value.trim(),
-      codText: $("cod-text").value.trim(),
-      deadline: $("deadline").value.trim(),
-      allowPromo: $("allow-promo").checked,
-      allowMedical: $("allow-medical").checked,
-      style: $("style-notes").value.trim(),
-      avoid: $("avoid-notes").value.trim(),
-    });
-  }
-
-  function sanitizeFormForProduct(form) {
-    const result = { ...form, points: Array.isArray(form.points) ? [...form.points] : [] };
-    const changedProduct = result.product && result.product !== SAMPLE.product;
-    if (changedProduct && result.reference === SAMPLE.reference) result.reference = "";
-    if (changedProduct && result.points.join("\n") === SAMPLE.points) result.points = [`突出${result.product}的核心购买理由、真实外观与使用价值`];
-    if (changedProduct && result.avoid === SAMPLE.avoid) result.avoid = "不要混用不同SKU、规格或包装；不要动画、乱码、产品变形或虚构信息。";
-    if (result.market !== "JP" && result.style === SAMPLE.style) {
-      const market = MARKET[result.market] || MARKET.JP;
-      result.style = `明亮、不太暗；${market.label}本土电商高密度排版；附带当地人物与使用场景；页面无留白；COD视觉夸张。`;
-    }
-    if (result.market !== "JP" && result.codText === SAMPLE.codText) result.codText = "";
-    return result;
-  }
-
-  function clampNumber(value, min, max, fallback) {
-    const number = Number(value);
-    return Number.isFinite(number) ? Math.min(max, Math.max(min, Math.round(number))) : fallback;
-  }
-
-  function splitPoints(value, product = "当前商品") {
-    const points = String(value || "").split(/[\n\r；;]+/).map((item) => item.trim()).filter(Boolean);
-    return points.length ? points : [`突出${product}的核心购买理由、真实外观与使用价值`];
-  }
-
-  function esc(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
-  }
-
-  function japaneseHeadline(point, index) {
-    const source = `${point || ""}`.toLowerCase();
-    const hit = JP_HEADLINES.find(([key]) => source.includes(key.toLowerCase()));
-    if (hit) return hit[1];
-    const fallback = ["選ばれる理由を、ひとつずつ", "毎日に寄り添う、頼れる一品", "使い方も、実感もわかりやすく"];
-    return fallback[index % fallback.length];
-  }
-
-  function pageHook(point, index, market) {
-    if (market !== "JP") return pointTitle(point, "当前页面核心卖点");
-    return japaneseHeadline(point, index);
-  }
-
-  function promoLine(form) {
-    if (!form.allowPromo) return "不启用促销组件；用产品数字和卖点做视觉钩子。";
-    const parts = [form.discount, form.salePrice, form.codText, form.deadline].filter(Boolean);
-    return parts.length ? `允许使用用户提供的COD转化信息：${parts.join(" / ")}。` : "允许使用促销贴纸、静态CTA和大号数字；没有真实价格时不要虚构价格。";
-  }
-
-  function buildMasterPrompt(form, plan = null) {
-    const aiMasterPrompt = typeof plan?.masterPrompt === "string" ? plan.masterPrompt.trim() : "";
-    if (aiMasterPrompt && plan?.promptBlueprint?.source === "model") return aiMasterPrompt;
-    const market = MARKET[form.market] || MARKET.JP;
-    const total = form.main + form.detail;
-    const intensity = form.intensity === "premium" ? "高级精品" : form.intensity === "bold" ? "夸张钩子" : "COD强转化";
-    const points = form.points.map((item, index) => `${index + 1}. ${item}`).join("\n");
-    const mainMap = makeMainPages(form).map((page) => `主图${String(page.index).padStart(2, "0")}：${page.title}｜${page.focus}`).join("\n");
-    const detailMap = makeDetailPages(form).map((page) => `详情${String(page.index).padStart(2, "0")}：${page.title}｜${page.focus}`).join("\n");
-    const director = plan?.director && typeof plan.director === "object" ? plan.director : null;
-    const directedPages = Array.isArray(plan?.suitePages) ? plan.suitePages : [];
-    const pageMap = directedPages.length
-      ? directedPages.map((page, index) => `${page.page || index + 1}. ${page.role || "页面"}｜${page.title || page.focusTitle || "未命名"}｜目标：${page.objective || page.focus || "—"}｜场景：${page.scene || "—"}｜钩子：${page.headline || page.sellingPoint || "—"}`).join("\n")
-      : `${mainMap}\n${detailMap}`;
-    const aiDirectorSection = director
-      ? `
-
-[AI Director analysis — use this result as the current source of truth]
-Analysis source: ${director.source === "model" ? "AI model" : "server rules"}.
-Analysis model: ${director.model || directorConfig.model || "未配置"}.
-Product summary: ${director.productSummary || "—"}.
-Visual DNA: ${compactAnalysisValue(director.productVisualDNA, 900)}.
-Selling-point coverage: ${compactAnalysisValue(director.sellingPointCoverage, 900)}.
-Do not replace the AI-directed page roles with a generic repeated template.`
-      : "";
-    return `[Country-targeted COD landing-page director]
-Target market: ${market.label} (${form.market}).
-Visible language: ${market.language} only.
-Image suite: ${form.main} main images + ${form.detail} detail images = ${total} images.
-Current image index: {{CURRENT_PAGE}}.
-Canvas: ${form.size}, vertical, full-bleed, no unfinished bottom area.
-Render one finished static ecommerce image immediately. Do not output a plan or explanation.
-
-[Product identity]
-Product: ${form.product}.
-Reference role map: ${form.reference || "Use the uploaded reference images as identity references; keep one exact SKU per page."}
-Preserve exact product shape, color, materials, structure, packaging, labels, proportions, accessories and usage method. Never merge different variants.
-
-[Source selling points — preserve the original meaning]
-${points}
-
-[COD creative direction]
-Visual mode: ${intensity}.
-Keep the product or result as the largest visual, but use rich COD merchandising: oversized numbers, bold color blocks, promotional stickers, ribbons, static arrows, comparison dividers, data cards, local model scenes and dramatic product close-ups.
-${promoLine(form)}
-Main image 02 must be the only 2x2 pain-point grid. Main image 07 must be the fair before/after comparison. Other pages can use layered evidence modules but must not become a repetitive card wall.
-
-[Localized art direction]
-${market.scene}。
-Bright ${market.label} ecommerce-inspired information density, editorial product photography, strong hierarchy and local lifestyle realism.
-Palette: ${market.palette}。
-${form.style || "页面明亮、丰富、统一配色、夸张包装、无留白。"}
-
-[Visible copy]
-Use one short localized headline plus compact labels. All visible copy must use natural ${market.language} rather than literal Chinese translation.
-Reserve a clean text-safe zone when exact text rendering is uncertain; never create random letters.
-
-[Claims and evidence handling]
-保留用户明确提供的产品卖点、规格与效果语义，但不要自行增加用户未提供的认证、机构、专家姓名、实验编号、效果数据或功能。
-${form.allowMedical ? "如果当前产品确实包含健康类卖点，允许保留用户提供的原始语义和数字，但不得扩展为诊断或治疗承诺；非健康产品不得加入任何健康类内容。" : "健康类内容改为中性表达；非健康产品只使用当前商品卖点。"}
-
-[Static image and quality]
-No animation, GIF, video timeline or motion sequence. No distorted product, mixed variant, random copy, watermark or platform logo.
-${form.avoid || "避免产品变形、SKU或规格串款、乱码和空白区域。"}
-Every page must feel like a distinct conversion module while preserving the same product identity, model quality, palette family and ${market.label} visual grade.
-[Page map]
-${pageMap}${aiDirectorSection}`;
-  }
-
-  function renderMasterPrompt(form = currentForm, plan = suitePlanCache) {
-    const output = $("master-output");
-    if (output && form) output.textContent = buildMasterPrompt(form, plan);
-    const mode = $("master-output-mode");
-    if (!mode) return;
-    const director = plan?.director && typeof plan.director === "object" ? plan.director : null;
-    mode.textContent = plan?.promptBlueprint?.source === "model"
-      ? `${plan.promptBlueprint.model || director?.promptRewriteModel || directorConfig.model || "AI 模型"} 已针对当前商品从零生成 · 指纹 ${plan.promptBlueprint.fingerprint || "—"}`
-      : director?.source === "model"
-        ? `${director.model || directorConfig.model || "AI 模型"} 已增强总控 · 可直接粘贴到 Cod / 图像模型`
-      : director
-        ? "服务器规则总控 · 可直接粘贴到 Cod / 图像模型"
-        : "本地规则草稿；完成 AI 分析后自动增强 · 可直接粘贴到 Cod / 图像模型";
-  }
-
-  function buildSuiteBrief(form) {
-    const market = MARKET[form.market] || MARKET.JP;
-    const promo = [form.discount, form.salePrice, form.codText, form.deadline].filter(Boolean).join(" / ");
-    return [
-      `产品：${form.product}`,
-      `目标市场：${market.label}（${form.market}），可见文案使用${market.language}`,
-      `套图结构：主图${form.main}张 + 详情图${form.detail}张 = ${form.main + form.detail}张，画布${form.size}`,
-      `核心卖点：${form.points.join("；")}`,
-      promo ? `真实促销信息：${promo}` : "未提供真实价格、折扣或期限，不要编造促销数字",
-      `视觉要求：${form.style || `明亮、统一配色、COD强转化、附带${market.label}本土人物和场景、无留白`}`,
-      `参考图绑定：${form.reference || "第一张为主商品，其余由AI按文件名和画面自动识别"}`,
-      `限制：${form.avoid || "静态画面，不要动画、乱码、变形或混用变体"}`,
-    ].join("\n");
-  }
-
-  function buildPromptGeneratorInput(form) {
-    return {
-      product: form.product,
-      market: form.market,
-      intensity: form.intensity,
-      sellingPoints: [...form.points],
-      promotions: {
-        discount: form.discount,
-        salePrice: form.salePrice,
-        codText: form.codText,
-        deadline: form.deadline,
-      },
-      allowPromo: form.allowPromo,
-      allowMedical: form.allowMedical,
-      style: form.style,
-      avoid: form.avoid,
-      referenceMap: form.reference,
-    };
-  }
-
-  function promptInputFingerprint(form) {
-    return JSON.stringify({
-      ...buildPromptGeneratorInput(form),
-      main: form.main,
-      detail: form.detail,
-      size: form.size,
-      references: referenceFiles.map((file) => ({ name: file.name, size: file.size, modified: file.lastModified })),
-      directorModel: directorConfig.model,
-      directorEnabled: directorConfig.enabled,
-      directorConfigured: directorConfig.configured,
-    });
-  }
-
-  function makeMainPages(form) {
-    return createPageSet(form.main, "main", form);
-  }
-
-  function makeDetailPages(form) {
-    return createPageSet(form.detail, "detail", form);
-  }
-
-  function pointTitle(point, fallback = "核心卖点") {
-    const cleaned = String(point || "")
-      .replace(/^\s*(?:\d+[.、)）:]?|[-*•])\s*/, "")
-      .replace(/[（(][^）)]{0,36}[）)]/g, "")
-      .split(/[，。；;：:\n]/)[0]
-      .trim();
-    return Array.from(cleaned || fallback).slice(0, 18).join("");
-  }
-
-  function adaptivePageBlueprint(form, section, index) {
-    const localIndex = index + 1;
-    const points = form.points.length ? form.points : [`突出${form.product}的核心购买理由`];
-    if (section === "main") {
-      if (localIndex === 1) return ["首屏英雄图", `建立${form.product}识别并放大最核心购买理由`, `完整${form.product}作为最大主体，结合目标市场人物或场景与用户提供的第一核心卖点`, points[0]];
-      if (localIndex === 2) return ["四宫格痛点", `把${form.product}解决的四个购买痛点做成唯一一张2×2信息图`, points.slice(0, 4).map((point) => pointTitle(point)).join("、") || `${form.product}四个真实使用痛点`, `${form.product}解决的四个核心痛点`];
-      if (localIndex === 3) return [pointTitle(points[0], "核心噱头"), `集中放大首要卖点：${points[0]}`, `${form.product}主体、卖点证据和一个强数字或醒目短句`, points[0]];
-      if (localIndex === 7) return ["公平对比", `用同条件左右对比证明${form.product}的核心价值`, `传统方案或使用前状态 vs 使用${form.product}后的真实便利；不虚构效果数据`, points[0]];
-      if (localIndex === form.main) return ["购买理由收束", `汇总${form.product}的主要购买理由并形成静态CTA`, `完整主商品、三组最强卖点、用户提供的真实促销信息和购买行动区`, points.slice(0, 3).join("；")];
-      const point = points[(localIndex - 3) % points.length];
-      return [pointTitle(point), `完整表现当前卖点：${point}`, `${form.product}作为主体，用产品细节、真实使用动作或结果证据表现该卖点`, point];
-    }
-    if (localIndex === 1) return ["产品外观总览", `完整展示${form.product}正面、侧面和关键结构`, `只使用当前主SKU，保持形状、颜色、材质、比例和配件一致`, points[0]];
-    if (localIndex === 2) return ["结构与核心细节", `放大${form.product}最能证明品质或功能的局部`, `参考图可见结构、接口、纹理、工艺或核心组件微距`, points[0]];
-    if (localIndex === form.detail) return ["产品信息收尾", `用${form.product}、包装、配件、规格和注意事项完成收尾`, `仅展示用户提供或参考图可确认的产品信息，不编造参数`, `${form.product}产品信息`];
-    const point = points[(localIndex - 3 + points.length) % points.length];
-    const archetypes = ["卖点证据", "材质工艺", "使用步骤", "本土场景", "局部特写", "效果说明", "规格信息"];
-    const archetype = archetypes[(localIndex - 3) % archetypes.length];
-    return [`${pointTitle(point)} · ${archetype}`, `深入解释卖点：${point}`, `以${form.product}真实局部、使用过程、场景动作或可验证信息建立证据`, point];
-  }
-
-  function createPageSet(count, section, form) {
-    const result = [];
-    for (let index = 0; index < count; index += 1) {
-      const base = adaptivePageBlueprint(form, section, index);
-      const globalIndex = section === "main" ? index + 1 : form.main + index + 1;
-      const point = base[3] || form.points[(globalIndex - 1) % form.points.length];
-      const title = base[0];
-      const focus = base[1];
-      const hook = pageHook(point, globalIndex - 1, form.market);
-      const page = {
-        index: globalIndex,
-        section,
-        localIndex: index + 1,
-        title,
-        focus,
-        hook,
-        evidence: base[2] || focus,
-        sourcePoint: point,
-      };
-      page.prompt = buildPagePrompt(page, form);
-      result.push(page);
-    }
-    return result;
-  }
-
-  function buildPagePrompt(page, form) {
-    const market = MARKET[form.market] || MARKET.JP;
-    const sectionLabel = page.section === "main" ? `主图${String(page.localIndex).padStart(2, "0")}` : `详情${String(page.localIndex).padStart(2, "0")}`;
-    const extra = /四宫格/.test(page.title) ? "必须使用2×2四宫格，每格一个痛点，四格大小一致但层级清晰。" : /对比/.test(page.title) ? "必须使用左右公平对比，同一主体、同一镜头、同一比例和同一光线。" : "禁止复制相邻页的机位和信息区位置。";
-    const labels = page.section === "main" ? "3至5个短标签、静态箭头或图标" : "2至4个短标签或一个局部证据模块";
-    const scene = page.scene || market.scene;
-    const composition = page.composition || `${form.size} vertical full-bleed；产品或结果占45%至70%；${labels}；无空白底部`;
-    const treatment = page.impactTreatment || (form.intensity === "premium" ? "克制高级、材质真实、编辑式排版" : "COD强转化、夸张大数字、促销贴纸、斜切色带、静态数据卡和高对比层级");
-    const localizedCopy = page.aiDirected
-      ? `使用AI导演提供的${market.language}标题「${page.hook}」，其余文字保持短、粗、清晰，不生成长段落。`
-      : `把“${page.sourcePoint || page.hook}”的含义改写成一句自然${market.language}短标题；中文只作为创作说明，不得出现在画面中。`;
-    return `[${sectionLabel} · ${page.title}]
-Goal: ${page.focus}。
-Single page hook: ${page.hook}。
-Product: ${form.product}。严格按照已绑定的参考图保持产品身份。
-Scene: ${scene}，加入与本页卖点有关的目标市场生活道具和自然人物动作。
-Evidence: ${page.evidence}。
-${page.pose ? `Pose / action: ${page.pose}。\n` : ""}Composition: ${composition}。
-Visual treatment: ${treatment}。
-Localized copy: 所有可见文案只使用${market.language}；${localizedCopy}
-${extra}
-Static only: no animation, video UI, random text, watermark or distorted product.`;
-  }
-
-  function aiDirectedPages(form) {
-    const planPages = Array.isArray(suitePlanCache?.suitePages) ? suitePlanCache.suitePages : [];
-    if (planPages.length !== form.main + form.detail) return null;
-    return planPages.map((source, index) => {
-      const globalIndex = Number(source.page) || index + 1;
-      const section = globalIndex <= form.main ? "main" : "detail";
-      const localIndex = section === "main" ? globalIndex : globalIndex - form.main;
-      const page = {
-        index: globalIndex,
-        section,
-        localIndex,
-        title: source.title || source.focusTitle || `${section === "main" ? "主图" : "详情"}${String(localIndex).padStart(2, "0")}`,
-        focus: source.objective || source.focus || source.focusDescription || "当前页面核心购买理由",
-        hook: source.headline || source.sellingPoint || pageHook(form.points[(globalIndex - 1) % form.points.length], globalIndex - 1, form.market),
-        evidence: source.evidence || source.supportingDetail || source.focusDescription || "用参考图可确认的产品事实建立视觉证据",
-        scene: source.scene || "",
-        pose: source.pose || "",
-        composition: source.composition || "",
-        impactTreatment: source.impactTreatment || source.visualEnhancement?.impactTreatment || "",
-        sourcePoint: source.sellingPoint || "",
-        aiDirected: true,
-        modelAuthored: Boolean(source.modelPrompt),
-      };
-      page.prompt = String(source.modelPrompt || "").trim() || buildPagePrompt(page, form);
-      return page;
-    }).sort((a, b) => a.index - b.index);
-  }
-
-  function storyboardPages(form) {
-    return aiDirectedPages(form) || [...makeMainPages(form), ...makeDetailPages(form)];
-  }
-
-  function makeCopyCards(form) {
-    const points = form.points.slice(0, 12);
-    return points.map((point, index) => ({
-      index: index + 1,
-      source: point,
-      headline: form.market === "JP" ? japaneseHeadline(point, index) : point,
-      label: form.market === "JP" ? ["注目ポイント", "毎日の記録", "スマート管理"][index % 3] : "Primary hook",
-    }));
-  }
-
-  function render(form) {
-    const pages = storyboardPages(form);
-    currentPages = pages;
-    if (!pages.some((page) => page.index === selectedPage)) selectedPage = pages[0]?.index || 1;
-    const market = MARKET[form.market] || MARKET.JP;
-    const total = pages.length;
-    $("output-title").textContent = `${form.product} · ${market.label} COD 套图`;
-    $("stat-total").textContent = total;
-    $("stat-hooks").textContent = form.points.length;
-    $("stat-locale").textContent = form.market;
-    $("stat-locale-label").textContent = `${market.language}可见文案`;
-    $("stat-ratio").textContent = ratioLabel(form.size);
-    $("all-count").textContent = total;
-    $("main-count-label").textContent = form.main;
-    $("detail-count-label").textContent = form.detail;
-    renderMasterPrompt(form, suitePlanCache);
-    $("page-list").innerHTML = pages.map((page) => `<article class="page-card ${page.section}${page.index === selectedPage ? " selected" : ""}${generatedMaterials.has(page.index) ? " generated" : ""}" data-section="${page.section}" data-page="${page.index}" tabindex="0" role="button" aria-label="选择第${page.index}页">
-      <div class="page-card-header"><span class="page-index">${String(page.index).padStart(2, "0")}</span><span class="page-kind">${page.section === "main" ? "主图" : "详情"}</span></div>
-      <h3>${esc(page.title)}</h3>
-      <p>${esc(page.focus)}</p>
-      <code>${esc(page.hook)}</code>
-    </article>`).join("");
-    $("copy-board").innerHTML = makeCopyCards(form).map((item) => `<article class="copy-card">
-      <small>HOOK ${String(item.index).padStart(2, "0")} · ${esc(item.label)}</small>
-      <strong>${esc(item.headline)}</strong>
-      <p>${esc(item.source)}</p>
-    </article>`).join("");
-    bindPageFilters();
-    renderReferencePreview();
-    renderDirectorAnalysis(suitePlanCache);
-    renderGenerationStatus();
-    renderGeneratedGallery();
-    saveDraft(form);
-  }
-
-  function ratioLabel(size) {
-    const match = String(size).match(/(\d+)\s*[x×]\s*(\d+)/i);
-    if (!match) return "—";
-    const width = Number(match[1]);
-    const height = Number(match[2]);
-    if (!width || !height) return "—";
-    const ratio = width / height;
-    if (Math.abs(ratio - .75) < .03) return "3:4";
-    if (Math.abs(ratio - 1) < .03) return "1:1";
-    return `${width}:${height}`;
-  }
-
-  function saveDraft(form) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(form));
-      $("saved-state").textContent = `已保存 ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-    } catch (error) {
-      $("saved-state").textContent = "仅本页有效";
-    }
-  }
-
-  function loadDraft() {
-    let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"); } catch (error) { saved = null; }
-    const raw = saved && typeof saved === "object" ? { ...SAMPLE, ...saved } : { ...SAMPLE };
-    const form = sanitizeFormForProduct({ ...raw, points: splitPoints(Array.isArray(raw.points) ? raw.points.join("\n") : raw.points, raw.product || "当前商品") });
-    $("product-name").value = form.product;
-    $("target-market").value = form.market;
-    $("hook-intensity").value = form.intensity;
-    $("main-count").value = form.main;
-    $("detail-count").value = form.detail;
-    $("canvas-size").value = form.size;
-    if ($("render-model")) $("render-model").value = form.model || SAMPLE.model;
-    if ($("render-quality")) $("render-quality").value = form.quality || SAMPLE.quality;
-    if ($("render-profile")) $("render-profile").value = form.generationProfile || SAMPLE.generationProfile;
-    $("reference-map").value = form.reference;
-    $("selling-points").value = form.points.join("\n");
-    $("discount").value = form.discount || "";
-    $("sale-price").value = form.salePrice || "";
-    $("cod-text").value = form.codText || "";
-    $("deadline").value = form.deadline || "";
-    $("allow-promo").checked = form.allowPromo !== false;
-    $("allow-medical").checked = form.allowMedical !== false;
-    $("style-notes").value = form.style || "";
-    $("avoid-notes").value = form.avoid || "";
+  const API = "/api/sku-board/cod-atelier";
+  const STORAGE_KEY = "cod-prompt-atelier-v2";
+  const PAGE_DRAFTS_KEY = "cod-prompt-atelier-page-drafts-v1";
+  const LEGACY_STORAGE_KEY = "cod-prompt-atelier-v1";
+  const DEFAULT_FORM = Object.freeze({ product: "", market: "JP", intensity: "cod", main: 15, detail: 22, size: "750x1000", model: "gpt-image-2", quality: "high", generationProfile: "standard", reference: "", points: [], discount: "", salePrice: "", codText: "", deadline: "", allowPromo: true, allowMedical: true, style: "", avoid: "" });
+  const MARKET = { JP: { label: "日本", language: "日文" }, KR: { label: "韩国", language: "韩文" }, US: { label: "美国", language: "英文" }, DE: { label: "德国", language: "德文" } };
+  const STATUS = { draft: "等待生成", planning: "AI 正在分析与规划", generating: "AI 正在分批生成", reviewing: "AI 正在检查提示词", complete: "整套已完成", partial: "部分完成，可继续补齐", error: "AI 生成失败", cancelled: "已停止，已完成页保留" };
+  const QUEUE_STATUS = { queued: "后台排队中", running: "后台生成中", paused: "已暂停", partial: "部分完成", complete: "本轮已完成", error: "队列失败", needs_attention: "任务结果待核实" };
+  const ROLE_LABELS = { product: "主 SKU / 产品", detail: "产品细节", person: "人物参考", usage: "使用场景", layout: "版式参考" };
+  const RENDER_KEYS = ["model", "quality", "generationProfile"];
+  function splitPoints(value) { return (Array.isArray(value) ? value : String(value || "").split(/[\n\r；;]+/)).map((point) => String(point).trim()).filter(Boolean); }
+  function normalizeForm(value = {}) {
+    const form = { ...DEFAULT_FORM, ...value };
+    Object.keys(DEFAULT_FORM).filter((key) => typeof DEFAULT_FORM[key] === "string").forEach((key) => { form[key] = String(form[key] ?? DEFAULT_FORM[key]).trim(); });
+    form.points = splitPoints(form.points);
+    form.main = Number(form.main); form.detail = Number(form.detail);
+    form.allowPromo = form.allowPromo !== false; form.allowMedical = form.allowMedical !== false;
     return form;
   }
+  function validateForm(form) {
+    if (!form.product) throw new Error("请先填写当前商品名称。");
+    if (!Number.isInteger(form.main) || form.main < 1 || form.main > 30) throw new Error("主图数量请填写 1–30 的整数。");
+    if (!Number.isInteger(form.detail) || form.detail < 1 || form.detail > 40) throw new Error("详情数量请填写 1–40 的整数。");
+    if (!/^\d+\s*[x×]\s*\d+$/i.test(form.size)) throw new Error("画布尺寸请填写宽×高，例如 750x1000。");
+    if (!form.points.length) throw new Error("请至少填写一条当前商品的真实卖点或噱头。");
+    return form;
+  }
+  function contentSignature(form) { const normalized = normalizeForm(form); return JSON.stringify(Object.keys(DEFAULT_FORM).filter((key) => !RENDER_KEYS.includes(key)).map((key) => [key, normalized[key]])); }
+  function totalCount(form) { return Number(form.main) + Number(form.detail); }
+  function isRunning(project) { return ["planning", "generating", "reviewing"].includes(project?.status); }
+  function queueRunning(queue) { return ["queued", "running"].includes(queue?.status); }
+  function draftKey(project, page) { return project?.id ? `${project.id}:${Number(project.revision)}:${Number(page)}` : ""; }
+  function currentDrafts(state) { return Object.values(state.pageDrafts || {}).filter((draft) => draft.projectId === state.project?.id && Number(draft.revision) === Number(state.project?.revision)); }
+  function hasPageDraft(state, page) { return Boolean(state.pageDrafts?.[draftKey(state.project, page)]); }
+  function sortedPages(project) {
+    const pages = new Map((Array.isArray(project?.outline) ? project.outline : []).map((page) => [Number(page.page), page]));
+    (Array.isArray(project?.suitePages) ? project.suitePages : []).forEach((page) => pages.set(Number(page.page), { ...pages.get(Number(page.page)), ...page }));
+    return [...pages.values()].sort((a, b) => Number(a.page) - Number(b.page));
+  }
+  function visiblePages(project, section = "all") { return sortedPages(project).filter((page) => section === "all" || page.section === section); }
+  function snapshotFresh(state) { return Boolean(state.project && !state.dirty && contentSignature(state.form) === contentSignature(state.project.form)); }
+  function canUsePrompt(state, page = null) {
+    if (!snapshotFresh(state) || state.busy || isRunning(state.project)) return false;
+    if (page ? hasPageDraft(state, page.page) || Number(page.page) === state.selectedPage && state.pageEditorDirty : currentDrafts(state).length || state.pageEditorDirty) return false;
+    return page ? Boolean(page.modelPrompt && page.executionPrompt) : Boolean(state.project.masterPrompt);
+  }
+  function suiteComplete(state) {
+    const pages = sortedPages(state.project);
+    return canUsePrompt(state) && state.project.status === "complete" && pages.length === totalCount(state.form) && pages.every((page, index) => Number(page.page) === index + 1 && page.modelPrompt && page.executionPrompt);
+  }
+  function pageLabel(page) { return page ? `${page.section === "main" ? "主图" : "详情"}${String(page.localIndex || page.page).padStart(2, "0")}` : "未选页面"; }
+  function fullPack(state, mode = state.exportMode || "compact") {
+    if (!suiteComplete(state)) throw new Error("整套提示词尚未完成，或输入已修改；请完成当前版本后再复制整套。");
+    if (mode === "standalone") return sortedPages(state.project).map((page) => `===== ${pageLabel(page)} · ${page.title || ""} · 独立执行版 =====\n${page.executionPrompt}`).join("\n\n");
+    const shared = state.project.sharedExecutionRequirements;
+    if (!shared) throw new Error("此旧版本没有共享执行要求快照，请改选“逐张独立版”导出，或生成新版本后使用整套导入版。");
+    return [state.project.masterPrompt, "\n===== SHARED EXECUTION REQUIREMENTS / 全套执行要求（仅一次） =====", String(shared), "\n===== PAGE CREATIVE PROMPTS / 逐页创意（共同遵循上方总控与要求） =====", ...sortedPages(state.project).map((page) => `\n===== ${pageLabel(page)} · ${page.title || ""} =====\n${page.modelPrompt}`)].join("\n");
+  }
+  function materialEntries(project) {
+    const value = project?.materials;
+    if (Array.isArray(value)) return value.map((material, index) => [Number(material.pageNumber || material.suitePage || material.page || index + 1), material]);
+    return value && typeof value === "object" ? Object.entries(value).flatMap(([key, material]) => (Array.isArray(material) ? material : [material]).filter(Boolean).map((item) => [Number(item.pageNumber || item.suitePage || item.page || key), item])) : [];
+  }
+  function errorText(value) { return typeof value === "string" ? value : value?.message || (value ? JSON.stringify(value) : ""); }
+  function actualDirectorModel(director = {}) { return director.activeModel || director.actualModel || (director.source === "model" && director.status !== "running" ? director.model : "") || ""; }
+  function versionSelection(project, previousProject, previousRevision, chosen) { return previousProject === project?.id && Number(previousRevision) === Number(project?.revision) && chosen ? chosen : String(project?.revision || ""); }
 
-  function bindPageFilters() {
-    document.querySelectorAll(".page-filter-btn").forEach((button) => {
-      button.onclick = () => {
-        document.querySelectorAll(".page-filter-btn").forEach((item) => item.classList.toggle("active", item === button));
-        const section = button.dataset.section;
-        document.querySelectorAll(".page-card").forEach((card) => {
-          card.hidden = section !== "all" && card.dataset.section !== section;
-        });
-      };
-    });
-    document.querySelectorAll(".page-card").forEach((card) => {
-      const choose = () => {
-        selectedPage = Number(card.dataset.page) || 1;
-        document.querySelectorAll(".page-card").forEach((item) => item.classList.toggle("selected", item === card));
-        const page = currentPages.find((item) => item.index === selectedPage);
-        if ($("selected-page-label")) $("selected-page-label").textContent = page ? `${page.section === "main" ? "主图" : "详情"}${String(page.localIndex).padStart(2, "0")}` : `第${selectedPage}页`;
-      };
-      card.addEventListener("click", choose);
-      card.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } });
-    });
+  // Every callback is scoped to both a local request token and a saved revision.
+  // Late responses can remain archived, but cannot repaint a different product.
+  function createController({ request, notify = () => {}, changed = () => {}, schedule = setTimeout, unschedule = clearTimeout, draftStorage = null, initialForm = DEFAULT_FORM } = {}) {
+    const state = { form: normalizeForm(initialForm), project: null, projects: [], dirty: false, token: 0, busy: "", error: "", notice: "", referencesMode: "replace", localReferences: [], referenceRoles: [], referenceSequence: 0, selectedPage: 1, filter: "all", pageEditorDirty: false, pageEditorValue: "", pageEditorKey: "", pageEditorSource: "saved", pageDrafts: Object.create(null), draftError: "", exportMode: "compact", historical: false, rendering: null, queues: [], queueId: "", queueError: "", queueTimer: null, queueBusy: false, redoConfirmation: null, hiddenGallery: false, config: null, configError: "", libraryError: "", pollTimer: null };
+    let queueReadSequence = 0;
+    try {
+      const stored = JSON.parse(draftStorage?.getItem(PAGE_DRAFTS_KEY) || "{}");
+      Object.entries(stored || {}).forEach(([key, draft]) => { if (draft && typeof draft.value === "string" && key === draftKey({ id: draft.projectId, revision: draft.revision }, draft.page)) state.pageDrafts[key] = draft; });
+    } catch (_) { state.draftError = "单页草稿读取失败；服务器已保存版本未受影响。"; }
+    function persistPageDrafts() {
+      try { if (!draftStorage?.setItem) throw new Error("local storage unavailable"); draftStorage.setItem(PAGE_DRAFTS_KEY, JSON.stringify(state.pageDrafts)); state.draftError = ""; }
+      catch (_) { state.draftError = "本地草稿存储失败，文字暂保留在本页内存；请保存或复制后再关闭网页。"; }
+    }
+    function syncEditor() {
+      const key = draftKey(state.project, state.selectedPage);
+      const page = sortedPages(state.project).find((item) => Number(item.page) === state.selectedPage);
+      const draft = state.pageDrafts[key];
+      if (state.pageEditorKey === key && (state.pageEditorDirty || state.pageEditorValue === (page?.modelPrompt || ""))) return;
+      state.pageEditorKey = key; state.pageEditorValue = draft?.value ?? page?.modelPrompt ?? "";
+      state.pageEditorDirty = Boolean(draft); state.pageEditorSource = draft ? "restored" : "saved";
+    }
+    const emit = () => { syncEditor(); changed(state); };
+    const scope = () => ({ token: state.token, id: state.project?.id || "", revision: Number(state.project?.revision || 0) });
+    const current = (context) => context.token === state.token && context.id === (state.project?.id || "") && context.revision === Number(state.project?.revision || 0);
+    function resetEditor() { state.pageEditorDirty = false; state.pageEditorValue = ""; state.pageEditorKey = ""; state.pageEditorSource = "saved"; }
+    function quietCancel(project) {
+      if (!project?.id || !project?.revision) return Promise.resolve();
+      return request(`${API}/projects/${encodeURIComponent(project.id)}/cancel`, { method: "POST", json: { revision: project.revision } }).catch(() => {});
+    }
+    function invalidate(cancel = true) {
+      const previous = state.project;
+      if (state.pollTimer != null) unschedule(state.pollTimer);
+      if (state.queueTimer != null) unschedule(state.queueTimer);
+      queueReadSequence += 1;
+      state.pollTimer = null; state.token += 1;
+      if (cancel && isRunning(previous)) void quietCancel(previous);
+      // Render runs belong to the server snapshot: changing products never cancels them.
+      state.queueTimer = null; state.queues = []; state.queueId = ""; state.queueError = ""; state.queueBusy = false; state.redoConfirmation = null;
+      state.busy = ""; state.rendering = null; state.error = ""; resetEditor();
+    }
+    function start(kind) {
+      if (state.busy) throw new Error("请先等待或停止当前提示词任务。");
+      const editor = kind === "editing" ? { pageEditorValue: state.pageEditorValue, pageEditorDirty: state.pageEditorDirty, pageEditorKey: state.pageEditorKey } : null;
+      invalidate(false);
+      if (editor) Object.assign(state, editor);
+      state.busy = kind;
+      const context = scope(); emit(); return context;
+    }
+    function accept(project, context, { keepForm = false } = {}) {
+      if (!current(context)) return false;
+      if (!project?.id || !Number.isInteger(Number(project.revision))) throw new Error("服务器没有返回有效的商品版本。");
+      if (context.id && project.id !== context.id) throw new Error("返回商品与当前请求不一致，已拒绝载入。");
+      const preferences = Object.fromEntries(RENDER_KEYS.map((key) => [key, state.form[key]]));
+      state.project = project;
+      if (!keepForm) state.form = normalizeForm({ ...project.form, ...preferences });
+      state.referencesMode = "keep"; state.localReferences = [];
+      state.referenceRoles = (project.references || []).map((reference) => reference.role || "product");
+      state.dirty = false; state.error = ""; state.hiddenGallery = false;
+      state.historical = Boolean(project.currentRevision && Number(project.revision) < Number(project.currentRevision));
+      if (context.revision !== Number(project.revision)) { resetEditor(); state.queues = []; state.queueId = ""; state.rendering = null; }
+      context.id = project.id; context.revision = Number(project.revision);
+      if (!sortedPages(project).some((page) => Number(page.page) === state.selectedPage)) state.selectedPage = Number(sortedPages(project)[0]?.page || 1);
+      const index = state.projects.findIndex((item) => item.id === project.id);
+      const summary = { id: project.id, name: project.name || project.form?.product, revision: project.currentRevision || project.revision, status: project.status, updatedAt: project.updatedAt };
+      if (index >= 0) state.projects[index] = { ...state.projects[index], ...summary }; else state.projects.unshift(summary);
+      return true;
+    }
+    function handleError(error, context) {
+      if (!current(context)) return;
+      state.error = String(error?.message || error); state.busy = "";
+      emit(); notify(state.error);
+    }
+    function schedulePoll(context) {
+      if (!current(context) || !isRunning(state.project)) return;
+      state.pollTimer = schedule(async () => {
+        state.pollTimer = null;
+        try {
+          const payload = await request(`${API}/projects/${encodeURIComponent(context.id)}?revision=${context.revision}`);
+          if (!current(context)) return;
+          if (Number(payload.project?.revision) !== context.revision) throw new Error("轮询返回了不同版本，已停止回写。");
+          const wasReviewing = state.project.status === "reviewing";
+          accept(payload.project, context, { keepForm: true }); emit();
+          if (isRunning(state.project)) schedulePoll(context);
+          else if (wasReviewing) notify(state.project.qualityReport?.status === "error" ? "AI 质检未完整完成，请查看报告中的错误与已完成建议。" : "提示词质检完成，请查看具体页码与建议。");
+          else if (state.project.status === "complete") notify("当前商品整套 AI Prompt 已完成。");
+          else if (state.project.error) notify(errorText(state.project.error));
+        } catch (error) { handleError(error, context); }
+      }, 1400);
+    }
+    function updateForm(value) {
+      const next = normalizeForm(value);
+      if (contentSignature(next) === contentSignature(state.form)) { state.form = next; state.redoConfirmation = null; emit(); return; }
+      const productChanged = next.product !== state.form.product;
+      const previousProduct = state.project?.form;
+      invalidate();
+      if (productChanged) {
+        if (previousProduct) {
+          if (JSON.stringify(next.points) === JSON.stringify(splitPoints(previousProduct.points))) next.points = [];
+          ["discount", "salePrice", "codText", "deadline", "avoid"].forEach((key) => { if (next[key] === String(previousProduct[key] || "")) next[key] = ""; });
+        }
+        state.project = null; state.historical = false; state.localReferences = []; state.referenceRoles = []; state.referencesMode = "replace"; next.reference = "";
+        state.notice = "已切换新商品。旧项目仍在商品库；请更新卖点、促销并重新上传当前商品参考图。";
+      } else state.notice = "商品输入已修改，旧版提示词仅供查看；重新生成前不能复制或生图。";
+      state.form = next; state.dirty = true; state.selectedPage = 1; emit();
+    }
+    function newProduct() {
+      const preferences = Object.fromEntries(["market", "intensity", "main", "detail", "size", ...RENDER_KEYS].map((key) => [key, state.form[key]]));
+      invalidate(); state.project = null; state.form = normalizeForm(preferences); state.localReferences = []; state.referenceRoles = []; state.referencesMode = "replace"; state.dirty = false; state.historical = false; state.selectedPage = 1;
+      state.notice = "新商品草稿：重新填写产品与卖点。旧商品存档未改动。"; emit();
+    }
+    function setReferences(files) {
+      invalidate(); state.referencesMode = "replace";
+      state.localReferences = Array.from(files || []).slice(0, 12).map((file) => ({ file, role: "product", key: ++state.referenceSequence }));
+      state.referenceRoles = state.localReferences.map((reference) => reference.role);
+      state.dirty = true; state.notice = "参考图已替换，旧版已过期；服务器会按图片内容重新绑定。"; emit();
+    }
+    function setReferenceRole(index, role) {
+      if (!ROLE_LABELS[role]) return;
+      invalidate(); state.referenceRoles[index] = role;
+      if (state.localReferences[index]) state.localReferences[index].role = role;
+      state.dirty = true; state.notice = "参考图用途已改变，需要重新生成提示词。"; emit();
+    }
+    function references() {
+      if (state.referencesMode === "replace") return state.localReferences.map((reference, index) => ({ ...reference, index: index + 1, name: reference.file.name, size: reference.file.size, mime: reference.file.type, role: state.referenceRoles[index] || reference.role }));
+      return (state.project?.references || []).map((reference, index) => ({ ...reference, role: state.referenceRoles[index] || reference.role || "product" }));
+    }
+    function uploadBody() {
+      const body = new FormData(); body.append("form", JSON.stringify(state.form));
+      if (state.project) { body.append("projectId", state.project.id); body.append("revision", String(state.project.revision)); }
+      body.append("referencesMode", state.referencesMode);
+      body.append("referenceBindings", JSON.stringify(references().map((reference, index) => ({ index: index + 1, role: reference.role }))));
+      if (state.referencesMode === "replace") state.localReferences.forEach((reference, index) => body.append(`reference${index}`, reference.file, reference.file.name));
+      return body;
+    }
+    function requireCurrentVersion() { if (state.historical) throw new Error("这是历史版本，可复制或生图；请从版本菜单打开最新版本后再修改。旧版不会被覆盖。"); }
+    async function saveWithin(context) {
+      validateForm(state.form); requireCurrentVersion();
+      if (snapshotFresh(state)) return state.project;
+      const payload = await request(`${API}/projects/upload`, { method: "POST", body: uploadBody() });
+      if (!current(context)) return null;
+      accept(payload.project, context); state.notice = "商品与参考图已存入独立版本。"; return state.project;
+    }
+    async function saveProject() {
+      let context;
+      try {
+        if (state.pageEditorDirty) throw new Error("当前页还有未保存修改，请先点击“保存单页修改”。");
+        context = start("saving"); const project = await saveWithin(context); if (!project || !current(context)) return; state.busy = ""; emit(); notify("商品与参考图已保存。");
+      }
+      catch (error) { if (context) handleError(error, context); else notify(error.message); }
+    }
+    async function listProjects() {
+      try { const payload = await request(`${API}/projects`); state.projects = Array.isArray(payload.projects) ? payload.projects : []; state.libraryError = ""; }
+      catch (error) { state.libraryError = error.message; }
+      emit(); return state.projects;
+    }
+    async function openProject(id, revision = null, { draft = null } = {}) {
+      if (!id) { notify("请先选择一个已保存商品。"); return; }
+      const previous = Object.fromEntries(["form", "project", "dirty", "localReferences", "referenceRoles", "referencesMode", "notice", "historical", "selectedPage", "pageEditorValue", "pageEditorDirty", "pageEditorKey"].map((key) => [key, state[key]]));
+      invalidate(); state.project = null; state.dirty = true; state.busy = "loading"; state.form = normalizeForm({ ...state.form, product: "" }); state.localReferences = []; state.referenceRoles = []; state.referencesMode = "replace"; state.notice = "正在读取商品存档…";
+      const context = scope(); emit();
+      try {
+        const payload = await request(`${API}/projects/${encodeURIComponent(id)}${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`);
+        if (!current(context)) return;
+        if (payload.project?.id !== id || revision && Number(payload.project?.revision) !== Number(revision)) throw new Error("商品存档版本不匹配，已拒绝载入。");
+        accept(payload.project, context); state.busy = "";
+        state.notice = state.historical ? `正在查看历史 v${revision}，可复制或生图；修改请打开最新版本。` : "已恢复商品、参考图、提示词与成图。";
+        if (draft?.dirty && draft.form?.product === state.form.product) {
+          state.form = normalizeForm(draft.form); state.dirty = true;
+          if (draft.referencesMode === "replace") { state.referencesMode = "replace"; state.localReferences = []; state.referenceRoles = []; }
+          else if (Array.isArray(draft.referenceRoles)) state.referenceRoles = draft.referenceRoles;
+          state.notice = "已恢复未保存文字草稿。旧版不可执行；未保存的本地图片需重新上传。";
+        }
+        emit(); if (!state.dirty) schedulePoll(context);
+        void refreshQueues(context);
+      } catch (error) {
+        if (!current(context)) return;
+        Object.assign(state, previous);
+        state.busy = ""; state.error = error.message; state.notice = "读取未成功，原先的商品与未保存输入已保留。";
+        emit(); notify(error.message);
+      }
+    }
+    async function generate(mode = "fresh", instruction = "") {
+      let context;
+      const pageNumber = state.selectedPage;
+      try {
+        requireCurrentVersion();
+        if (isRunning(state.project) && !state.dirty) throw new Error("AI 正在生成此版本，请等待或先停止。");
+        if (currentDrafts(state).length || state.pageEditorDirty) throw new Error("这个版本还有单页草稿；请先保存修改，或在对应页明确放弃草稿。");
+        if (mode !== "fresh" && !snapshotFresh(state)) throw new Error("输入已修改，请重新生成整套；补齐和单页重写只针对当前已保存版本。");
+        context = start(mode === "page" || mode === "repair" ? "rewriting" : "submitting");
+        if (mode === "fresh" && !await saveWithin(context)) return;
+        if (!current(context)) return;
+        const payload = await request(`${API}/projects/${encodeURIComponent(context.id)}/generate`, { method: "POST", json: { revision: context.revision, mode, ...(mode === "page" ? { pageNumber, instruction } : {}) } });
+        if (!current(context)) { if (payload.project && isRunning(payload.project)) void quietCancel(payload.project); return; }
+        accept(payload.project, context); state.busy = ""; resetEditor();
+        state.notice = mode === "resume" ? "只补未完成 Prompt，已完成页保留。" : mode === "repair" ? "正在新版本中只修复质检标记的页面与钩子，其他内容保持不变。" : mode === "page" ? "正在重写选中页，旧版本仍可打开。" : "已启动新一套原创 Prompt：先分析规划，再分批完成逐页内容。";
+        emit(); schedulePoll(context); void refreshQueues(context);
+      } catch (error) { if (context) handleError(error, context); else notify(error.message); }
+    }
+    async function stop() {
+      const project = state.project;
+      const draft = state.dirty ? Object.fromEntries(["form", "dirty", "localReferences", "referenceRoles", "referencesMode"].map((key) => [key, state[key]])) : null;
+      invalidate(false);
+      if (!project) { state.notice = "已停止接收当前请求。"; emit(); return; }
+      state.busy = "stopping"; const context = scope(); emit();
+      try {
+        const payload = await request(`${API}/projects/${encodeURIComponent(project.id)}/cancel`, { method: "POST", json: { revision: project.revision } });
+        if (!current(context)) return;
+        accept(payload.project, context, { keepForm: true });
+        if (draft) Object.assign(state, draft);
+        state.busy = "";
+        state.notice = "已停止提示词后续生成，已完成页保留；独立的后台生图队列不受影响。"; emit(); void refreshQueues(context);
+      } catch (error) { handleError(error, context); }
+    }
+    async function savePage(modelPrompt) {
+      let context;
+      try {
+        requireCurrentVersion();
+        if (!snapshotFresh(state) || isRunning(state.project)) throw new Error("商品输入有修改或当前版本仍在生成，请先完成整套。");
+        if (!String(modelPrompt || "").trim()) throw new Error("当前页 Prompt 不能为空。");
+        const pageNumber = state.selectedPage, savedDraftKey = draftKey(state.project, pageNumber); context = start("editing");
+        const payload = await request(`${API}/projects/${encodeURIComponent(context.id)}/edit-page`, { method: "POST", json: { revision: context.revision, pageNumber, modelPrompt } });
+        if (!current(context)) return;
+        accept(payload.project, context);
+        if (state.pageDrafts[savedDraftKey]?.value === modelPrompt) { delete state.pageDrafts[savedDraftKey]; persistPageDrafts(); }
+        state.busy = ""; resetEditor(); state.notice = "单页修改已另存版本。其他未保存单页草稿仍留在原版本，可打开原版本恢复。"; emit(); notify("当前页已保存为新版本。"); void refreshQueues(context);
+      } catch (error) { if (context) handleError(error, context); else notify(error.message); }
+    }
+    function setPageEditor(value) {
+      const page = sortedPages(state.project).find((item) => Number(item.page) === state.selectedPage), key = draftKey(state.project, state.selectedPage);
+      if (!key || !page) return;
+      state.pageEditorKey = key; state.pageEditorValue = String(value); state.pageEditorDirty = state.pageEditorValue !== (page.modelPrompt || ""); state.pageEditorSource = "editing";
+      if (state.pageEditorDirty) state.pageDrafts[key] = { projectId: state.project.id, revision: Number(state.project.revision), page: state.selectedPage, value: state.pageEditorValue, sourceModelPrompt: state.pageDrafts[key]?.sourceModelPrompt ?? page.modelPrompt ?? "", updatedAt: new Date().toISOString() };
+      else delete state.pageDrafts[key];
+      persistPageDrafts(); emit();
+    }
+    function discardPageDraft() { const key = draftKey(state.project, state.selectedPage); delete state.pageDrafts[key]; persistPageDrafts(); resetEditor(); state.notice = "已放弃本页未保存草稿，恢复此版本的已保存 Prompt；服务器版本未改动。"; emit(); }
+    function selectPage(number) { state.selectedPage = Number(number); state.redoConfirmation = null; resetEditor(); emit(); }
+    function setFilter(section) { state.filter = ["all", "main", "detail"].includes(section) ? section : "all"; emit(); }
+    function queueSnapshot(queue) {
+      if (!queue) return null;
+      const pages = Array.isArray(queue.pages) ? queue.pages : [];
+      return { ...queue, running: queueRunning(queue), requested: pages.map((page) => Number(page.page)), completed: Number(queue.completed ?? queue.counts?.completed ?? 0), total: Number(queue.total ?? queue.counts?.total ?? pages.length), active: Number(pages.find((page) => ["running", "submitted", "pending"].includes(page.status))?.page || 0), errors: pages.filter((page) => ["error", "failed"].includes(page.status)).map((page) => ({ page: Number(page.page), message: errorText(page.error) || "本页任务失败" })) };
+    }
+    function acceptQueues(queues, context, preferId = "") {
+      if (!current(context)) return false;
+      if (!Array.isArray(queues)) throw new Error("服务器未返回有效的后台队列列表。");
+      if (queues.some((queue) => queue.projectId !== context.id || Number(queue.revision) !== context.revision)) throw new Error("后台队列不属于当前商品版本，已拒绝显示。");
+      state.queues = queues.slice().sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+      const selected = state.queues.find((queue) => queue.id === (preferId || state.queueId)) || state.queues.find(queueRunning) || state.queues[0];
+      state.queueId = selected?.id || ""; state.rendering = queueSnapshot(selected); state.queueError = "";
+      return true;
+    }
+    function scheduleQueuePoll(context) {
+      if (!current(context) || !state.queues.some(queueRunning)) return;
+      if (state.queueTimer != null) unschedule(state.queueTimer);
+      state.queueTimer = schedule(() => { state.queueTimer = null; void refreshQueues(context); }, 2400);
+    }
+    async function refreshQueues(context = scope()) {
+      if (!context.id || !current(context)) return;
+      const readSequence = ++queueReadSequence;
+      try {
+        const payload = await request(`${API}/projects/${encodeURIComponent(context.id)}/render-queues?revision=${context.revision}`);
+        if (!current(context) || readSequence !== queueReadSequence) return;
+        acceptQueues(payload.queues, context); emit();
+        const latest = await request(`${API}/projects/${encodeURIComponent(context.id)}?revision=${context.revision}`);
+        if (!current(context) || readSequence !== queueReadSequence) return;
+        if (latest.project?.id !== context.id || Number(latest.project?.revision) !== context.revision) throw new Error("成图存档返回了不同商品版本。");
+        // Refresh results only; never replace typed inputs, reference files, or a page draft.
+        state.project.materials = latest.project.materials || [];
+        emit(); scheduleQueuePoll(context);
+      } catch (error) { if (current(context) && readSequence === queueReadSequence) { state.queueError = error.message; emit(); scheduleQueuePoll(context); } }
+    }
+    function selectQueue(id) { const queue = state.queues.find((item) => item.id === id); if (queue) { state.queueId = id; state.rendering = queueSnapshot(queue); state.redoConfirmation = null; emit(); } }
+    function renderSettings() { return Object.fromEntries(RENDER_KEYS.map((key) => [key, state.form[key]])); }
+    function requestRedo(mode = "current") {
+      if (!snapshotFresh(state) || state.queueBusy) return;
+      const pageNumbers = mode === "retry" ? (state.rendering?.errors || []).map((item) => item.page) : [state.selectedPage];
+      if (!pageNumbers.length) { notify("当前没有可明确重试的失败页；结果待核实的任务不会自动重提。"); return; }
+      state.redoConfirmation = { ...scope(), pageNumbers, settings: renderSettings() }; emit();
+    }
+    async function confirmRedo() {
+      const confirmation = state.redoConfirmation;
+      if (!confirmation || !current(confirmation) || JSON.stringify(confirmation.settings) !== JSON.stringify(renderSettings())) { state.redoConfirmation = null; emit(); notify("版本或生图设置已变化，请重新确认。"); return; }
+      const pages = confirmation.pageNumbers.slice(); state.redoConfirmation = null;
+      await renderImages("redo", pages);
+    }
+    async function renderImages(mode = "current", confirmedPages = null) {
+      const context = scope();
+      try {
+        if (state.queueBusy) return;
+        const page = sortedPages(state.project).find((item) => Number(item.page) === state.selectedPage);
+        if (!canUsePrompt(state, page)) throw new Error("当前版本或选中页未就绪，或存在未保存修改。请完成 Prompt 后再生图。");
+        if (!references().length) throw new Error("真实生图需要当前商品参考图；请上传并重新生成提示词。");
+        if (mode === "suite" && !suiteComplete(state)) throw new Error("整套尚未完成，可先对已完成页单独生图。");
+        if (mode === "retry" || mode === "redo" && !confirmedPages) { requestRedo(mode === "retry" ? "retry" : "current"); return; }
+        const pageNumbers = mode === "suite" ? sortedPages(state.project).map((item) => Number(item.page)) : mode === "redo" ? confirmedPages : [state.selectedPage];
+        if (!pageNumbers.length || pageNumbers.some((number) => { const requestedPage = sortedPages(state.project).find((item) => Number(item.page) === number); return !requestedPage || !canUsePrompt(state, requestedPage); })) throw new Error("所选页面有未保存草稿或未完成的 Prompt，请先处理。");
+        state.queueBusy = true; state.queueError = ""; queueReadSequence += 1; emit();
+        const payload = await request(`${API}/projects/${encodeURIComponent(context.id)}/render-queue`, { method: "POST", json: { revision: context.revision, mode: mode === "redo" ? "redo" : "resume", pageNumbers, ...renderSettings() } });
+        if (!current(context)) return;
+        queueReadSequence += 1; acceptQueues([payload.queue, ...state.queues.filter((queue) => queue.id !== payload.queue?.id)], context, payload.queue?.id);
+        state.queueBusy = false; state.notice = mode === "redo" ? "已确认重生成：新任务可能计费，旧图仍保留。" : "后台队列已保存：已完成或进行中的任务会复用，关闭页面后未完成任务仍由本地服务处理。"; emit();
+        void refreshQueues(context);
+      } catch (error) { if (current(context)) { state.queueBusy = false; state.queueError = error.message; emit(); notify(error.message); } }
+    }
+    async function queueAction(action, id = state.queueId) {
+      const context = scope();
+      if (!context.id || !id || state.queueBusy || !["resume", "cancel"].includes(action)) return;
+      try {
+        state.queueBusy = true; queueReadSequence += 1; emit();
+        const payload = await request(`${API}/projects/${encodeURIComponent(context.id)}/render-queues/${encodeURIComponent(id)}/${action}`, { method: "POST", json: { revision: context.revision } });
+        if (!current(context)) return;
+        queueReadSequence += 1; acceptQueues([payload.queue, ...state.queues.filter((queue) => queue.id !== payload.queue?.id)], context, payload.queue?.id);
+        state.queueBusy = false; state.notice = action === "cancel" ? "已停止此队列后续提交；已提交供应商的任务仍可能完成并计费。已完成图片保留。" : "只继续尚未提交的任务，不会自动重试失败或结果不明的页。"; emit(); void refreshQueues(context);
+      } catch (error) { if (current(context)) { state.queueBusy = false; state.queueError = error.message; emit(); notify(error.message); } }
+    }
+    async function review(mode = "rules") {
+      let context;
+      try {
+        if (!canUsePrompt(state)) throw new Error("请先保存单页草稿并完成当前版本，再检查提示词。");
+        context = start("reviewing");
+        const payload = await request(`${API}/projects/${encodeURIComponent(context.id)}/review`, { method: "POST", json: { revision: context.revision, mode: mode === "ai" ? "ai" : "rules" } });
+        if (!current(context)) return;
+        accept(payload.project, context, { keepForm: true }); state.busy = "";
+        state.notice = mode === "ai" ? "AI 检查已启动；报告是修改建议，不代表语言或宣称已获人工验证。" : "规则检查已完成；只能识别结构和文本信号，不能保证本土语言自然度。"; emit(); schedulePoll(context); void refreshQueues(context);
+      } catch (error) { if (context) handleError(error, context); else notify(error.message); }
+    }
+    async function archiveImages() {
+      const context = scope(); if (!context.id || state.queueBusy) return;
+      try {
+        state.queueBusy = true; emit();
+        const payload = await request(`${API}/projects/${encodeURIComponent(context.id)}/archive-images`, { method: "POST", json: { revision: context.revision } });
+        if (!current(context)) return;
+        if (payload.project?.id === context.id && Number(payload.project?.revision) === context.revision) state.project.materials = payload.project.materials || [];
+        state.queueBusy = false;
+        state.notice = payload.message || "已尝试长期保存此版本仍可读取的成图。";
+        if (Array.isArray(payload.errors) && payload.errors.length) state.notice += "；" + payload.errors.map((item) => `第${item.page || "—"}页：${item.message || "原图不可用"}`).join("；");
+        emit(); void refreshQueues(context);
+      } catch (error) { if (current(context)) { state.queueBusy = false; state.queueError = error.message; emit(); notify(error.message); } }
+    }
+    return { state, updateForm, newProduct, setReferences, setReferenceRole, references, saveProject, listProjects, openProject, generate, stop, savePage, setPageEditor, discardPageDraft, selectPage, setFilter, renderImages, refreshQueues, selectQueue, queueAction, requestRedo, confirmRedo, review, archiveImages, emit, scope, current };
   }
 
-  function copyText(value) {
-    if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
-    const area = document.createElement("textarea");
-    area.value = value; document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove();
-    return Promise.resolve();
+  function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+  function safeImageUrl(value) { const url = String(value || ""); return /^(?:https?:\/\/|blob:|data:image\/(?:png|jpe?g|webp);base64,|\/(?!\/))/i.test(url) ? url : ""; }
+  function ratioLabel(size) {
+    const match = String(size).match(/^(\d+)\s*[x×]\s*(\d+)$/i);
+    if (!match || !Number(match[1]) || !Number(match[2])) return "—";
+    const gcd = (a, b) => b ? gcd(b, a % b) : a;
+    const divisor = gcd(Number(match[1]), Number(match[2])); return `${Number(match[1]) / divisor}:${Number(match[2]) / divisor}`;
   }
+  const exported = { DEFAULT_FORM, PAGE_DRAFTS_KEY, normalizeForm, validateForm, contentSignature, totalCount, sortedPages, visiblePages, snapshotFresh, canUsePrompt, suiteComplete, fullPack, materialEntries, draftKey, currentDrafts, hasPageDraft, createController, safeImageUrl, actualDirectorModel, versionSelection };
+  if (typeof module !== "undefined" && module.exports) module.exports = exported;
+  if (typeof document === "undefined") return;
 
+  const $ = (id) => document.getElementById(id);
+  const FIELDS = { product: "product-name", market: "target-market", intensity: "hook-intensity", main: "main-count", detail: "detail-count", size: "canvas-size", reference: "reference-map", points: "selling-points", discount: "discount", salePrice: "sale-price", codText: "cod-text", deadline: "deadline", allowPromo: "allow-promo", allowMedical: "allow-medical", style: "style-notes", avoid: "avoid-notes", model: "render-model", quality: "render-quality", generationProfile: "render-profile" };
+  let app, toastTimer;
+  let previewUrls = [], previewKey = "", uiReady = false, restoringDraft = true;
+  const setText = (id, value) => { if ($(id)) $(id).textContent = value; };
+  const disabled = (id, value) => { if ($(id)) $(id).disabled = Boolean(value); };
+  const hidden = (id, value) => { if ($(id)) $(id).hidden = Boolean(value); };
   function toast(message) {
     let node = document.querySelector(".atelier-toast");
-    if (!node) { node = document.createElement("div"); node.className = "atelier-toast"; document.body.appendChild(node); }
+    if (!node) { node = document.createElement("div"); node.className = "atelier-toast"; node.setAttribute("role", "status"); document.body.appendChild(node); }
     node.textContent = message; node.classList.add("show");
-    window.clearTimeout(toast.timer); toast.timer = window.setTimeout(() => node.classList.remove("show"), 1800);
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => node.classList.remove("show"), 4500);
   }
-
-  function downloadText(form) {
-    const pages = storyboardPages(form);
-    const body = [buildMasterPrompt(form, suitePlanCache), "\n\n===== PAGE PROMPTS =====\n", ...pages.map((page) => `${page.prompt}\n\n`)].join("");
-    const blob = new Blob([body], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a"); link.href = url; link.download = `${form.product.replace(/[^\w\u4e00-\u9fff-]+/g, "-")}-cod-prompts.txt`; link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  const GENERATION_SUITE_KEY = "cod-country-landing-30";
-  const GENERATION_COUNT_OPTIONS = [8, 12, 16, 20, 24, 30, 37];
-  let currentPages = [];
-  let selectedPage = 1;
-  let referenceFiles = [];
-  let generatedMaterials = new Map();
-  let generationState = { status: "idle", requested: 0, completed: 0, active: 0, errors: [], plan: null };
-  let analysisState = { running: false, error: "" };
-  let generationAbortController = null;
-  let suitePlanCache = null;
-  let suitePlanCacheKey = "";
-  let directorConfig = { loaded: false, enabled: false, configured: false, model: "", fallbackModels: [], message: "" };
-
-  function generationSuiteCount(form) {
-    const total = form.main + form.detail;
-    return GENERATION_COUNT_OPTIONS.includes(total) ? total : 37;
-  }
-
-  function renderReferencePreview() {
-    const node = $("reference-preview");
-    if (!node) return;
-    if (!referenceFiles.length) {
-      node.innerHTML = `<div class="reference-empty">尚未选择参考图。生图接口至少需要 1 张商品图。</div>`;
-      return;
-    }
-    node.innerHTML = referenceFiles.map((file, index) => {
-      const url = URL.createObjectURL(file);
-      const html = `<div class="reference-thumb"><img src="${url}" alt="参考图${index + 1}"><span>${index + 1}</span><em>${esc(file.name)}</em></div>`;
-      window.setTimeout(() => URL.revokeObjectURL(url), 3000);
-      return html;
-    }).join("");
-  }
-
-  function referenceRoleFromBrief(index, form) {
-    const source = String(form?.reference || "");
-    const segment = source.split(/[；;\n。]+/).find((clause) => {
-      const match = clause.match(/(?:参考图|图片|image)\s*([0-9、,，\s和及]+)/i);
-      return match && match[1].split(/[、,，\s和及]+/).filter(Boolean).map(Number).includes(index);
-    }) || "";
-    if (/主款|主商品|主产品|主体|hero|primary/i.test(segment)) return "product";
-    if (/辅助|细节|角度|特写|结构|包装|detail/i.test(segment)) return "detail";
-    if (/人物|模特|person|model/i.test(segment)) return "person";
-    if (/使用|操作|佩戴|安装|usage|how.?to/i.test(segment)) return "usage";
-    if (/排版|风格|场景|灵感|其他.*变体|不要混用|不得混用|排除|layout|style|scene|variant/i.test(segment)) return "layout";
-    return index === 1 ? "product" : "auto";
-  }
-
-  function buildReferenceBindings(form = currentForm) {
-    return referenceFiles.map((file, index) => ({
-      index: index + 1,
-      role: referenceRoleFromBrief(index + 1, form),
-      filename: file.name,
-      name: file.name,
-      keywords: index === 0 ? "主商品；如果绑定说明指定其他图片，以绑定说明为准" : "由AI按绑定说明、文件名和画面自动识别",
-    }));
-  }
-
-  function generationReferenceSet(form, plan = null) {
-    const resolved = Array.isArray(plan?.resolvedReferenceBindings) ? plan.resolvedReferenceBindings : [];
-    const bindings = resolved.length
-      ? referenceFiles.map((file, index) => ({ ...(resolved.find((item) => Number(item.index) === index + 1) || {}), index: index + 1, name: file.name, filename: file.name, role: (resolved.find((item) => Number(item.index) === index + 1)?.role || "auto") }))
-      : buildReferenceBindings(form);
-    const explicitMap = /参考图|图片|image/i.test(String(form?.reference || ""));
-    if (!explicitMap) return { files: referenceFiles, bindings };
-    const selected = referenceFiles.map((file, index) => ({ file, binding: bindings[index] }))
-      .filter((item) => ["product", "detail", "usage", "person"].includes(item.binding.role));
-    if (!selected.length) return { files: referenceFiles, bindings };
-    return {
-      files: selected.map((item) => item.file),
-      bindings: selected.map((item, index) => ({ ...item.binding, index: index + 1 })),
-    };
-  }
-
-  function renderGenerationStatus() {
-    const total = generationState.requested || generationSuiteCount(currentForm || SAMPLE);
-    const completed = generationState.completed || 0;
-    const active = generationState.active || 0;
-    const percent = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
-    const status = $("generation-status");
-    const detail = $("generation-detail");
-    const count = $("generation-count");
-    const bar = $("generation-progress-bar");
-    const currentBtn = $("generate-current-btn");
-    const suiteBtn = $("generate-suite-btn");
-    const analyzeBtn = $("analyze-ai-btn");
-    const retryBtn = $("retry-failed-btn");
-    const cancelBtn = $("cancel-generation-btn");
-    if (!status || !detail || !count || !bar) return;
-    count.textContent = analysisState.running ? "AI" : `${completed} / ${total}`;
-    bar.style.width = analysisState.running ? "35%" : `${percent}%`;
-    const page = currentPages.find((item) => item.index === selectedPage);
-    const activeModel = imageModelLabel(currentForm?.model || "gpt-image-2");
-    const activeProfile = generationProfileLabel(currentForm?.generationProfile || "standard");
-    if (page && $("selected-page-label")) $("selected-page-label").textContent = `${page.section === "main" ? "主图" : "详情"}${String(page.localIndex).padStart(2, "0")}`;
-    if (analysisState.running) {
-      status.textContent = "AI Director 正在重写整套 Prompt…";
-      detail.textContent = `正在调用 ${directorConfig.model || "GPT‑5.6‑sol"} 只依据当前商品重新生成总控与${total}页独立Prompt；不会复用上一商品内容。`;
-    } else if (generationState.status === "running") {
-      status.textContent = active ? `正在生成第 ${active} 页…` : "正在准备生图任务…";
-      detail.textContent = `模型 ${activeModel} · ${activeProfile}策略 · 后台任务会自动轮询，已完成 ${completed}/${total}。`;
-    } else if (generationState.status === "done") {
-      status.textContent = `已完成 ${completed} 张真实成图`;
-      detail.textContent = generationState.errors.length ? `模型 ${activeModel} · 有 ${generationState.errors.length} 张失败，可重新选择页面补图。` : `模型 ${activeModel} · 所有选定页面已生成，可在“成图结果”中查看和保存。`;
-    } else if (generationState.status === "error") {
-      status.textContent = "生图任务未完成";
-      detail.textContent = generationState.errors[0] || "请检查登录状态、参考图和远端生图节点配置。";
-    } else {
-      status.textContent = referenceFiles.length ? "参考图已就绪，可生成Prompt或真实生图" : "可先生成整套文字 Prompt";
-      detail.textContent = referenceFiles.length ? `当前模型 ${activeModel} · ${activeProfile}策略。可先让 GPT‑5.6‑sol 重写整套Prompt，再生成当前页或整套图片。` : `不上传图片也能先让 GPT‑5.6‑sol 生成整套Prompt；真实生图前再上传当前商品参考图。`;
-    }
-    if (currentBtn) currentBtn.disabled = Boolean(generationAbortController);
-    if (suiteBtn) suiteBtn.disabled = Boolean(generationAbortController);
-    if (analyzeBtn) analyzeBtn.disabled = Boolean(generationAbortController);
-    if (retryBtn) retryBtn.hidden = !failedPageNumbers().length || Boolean(generationAbortController) || analysisState.running;
-    if (cancelBtn) cancelBtn.hidden = !generationAbortController;
-  }
-
-  function imageModelLabel(model = "") {
-    const value = String(model || "");
-    const labels = {
-      "gpt-image-2": "GPT Image 2",
-      "codex-gpt-image-2": "Codex GPT Image 2",
-      auto: "自动选择可用模型",
-    };
-    if (labels[value]) return labels[value];
-    if (value.startsWith("acore/")) return `Acore · ${value.slice("acore/".length)}`;
-    return value || "未指定模型";
-  }
-
-  function generationProfileLabel(profile = "") {
-    return ({ fast: "快速", standard: "标准", quality: "精审" }[String(profile)] || "标准");
-  }
-
-  function setModelConfigStatus(message, warning = false) {
-    const node = $("model-config-status");
-    if (!node) return;
-    node.textContent = message;
-    node.classList.toggle("is-warning", Boolean(warning));
-  }
-
-  function setDirectorConfigStatus(message, warning = false) {
-    const node = $("director-config-status");
-    if (!node) return;
-    node.textContent = message;
-    node.classList.toggle("is-warning", Boolean(warning));
-  }
-
-  function setDirectorModelDisplay(model, source, warning = false) {
-    const card = $("director-model-display");
-    const value = $("director-model-value");
-    const detail = $("director-model-source");
-    if (value) value.textContent = model || "未配置";
-    if (detail) detail.textContent = source || "套图生成前会先读取此模型的分析结果";
-    if (card) card.classList.toggle("is-warning", Boolean(warning));
-  }
-
-  function readSavedRenderPreference(key) {
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-      return saved && typeof saved === "object" ? String(saved[key] || "") : "";
-    } catch (error) {
-      return "";
-    }
-  }
-
-  function fillSelect(select, values, selected, labeler = (value) => value) {
-    if (!select || !Array.isArray(values) || !values.length) return selected;
-    const options = [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
-    if (!options.length) return selected;
-    const next = options.includes(selected) ? selected : options[0];
-    select.innerHTML = options.map((value) => `<option value="${esc(value)}">${esc(labeler(value))}</option>`).join("");
-    select.value = next;
-    return next;
-  }
-
-  async function loadImageConfig() {
-    try {
-      const payload = await apiRequest("/api/sku-board/ai-image-config");
-      const config = payload?.aiImage && typeof payload.aiImage === "object" ? payload.aiImage : {};
-      const director = config.director && typeof config.director === "object" ? config.director : {};
-      directorConfig = {
-        loaded: true,
-        enabled: Boolean(director.enabled),
-        configured: Boolean(director.configured),
-        model: String(director.model || ""),
-        fallbackModels: Array.isArray(director.fallbackModels) ? director.fallbackModels : [],
-        message: String(director.message || ""),
-      };
-      const models = Array.isArray(config.models) ? config.models : [];
-      const qualities = Array.isArray(config.qualities) ? config.qualities : [];
-      const savedModel = readSavedRenderPreference("model");
-      const savedQuality = readSavedRenderPreference("quality");
-      const configuredModel = String(config.model || "");
-      const modelPreference = savedModel && models.includes(savedModel) ? savedModel : configuredModel;
-      if (models.length) fillSelect($("render-model"), models, modelPreference || models[0], imageModelLabel);
-      if (qualities.length) fillSelect($("render-quality"), qualities, savedQuality || $("render-quality")?.value || qualities[0], (value) => ({ auto: "自动", low: "低质", medium: "平衡", high: "高质" }[value] || value));
-      const nodeCount = Number(config.nodeCount || config.nodes?.length || 0);
-      if (config.enabled && nodeCount) {
-        setModelConfigStatus(`已读取服务器配置 · ${nodeCount} 个生图节点 · 当前 ${imageModelLabel($("render-model")?.value || configuredModel || "gpt-image-2")}；最终质量由模型和策略共同决定`);
-      } else {
-        setModelConfigStatus("未检测到可用生图节点；提示词仍可编排，真实出图前请先在 SKU Board 配置 AI 生图服务", true);
-      }
-      if (directorConfig.enabled && directorConfig.configured && directorConfig.model) {
-        const fallback = directorConfig.fallbackModels.length ? ` · 备援 ${directorConfig.fallbackModels.join(" / ")}` : "";
-        setDirectorModelDisplay(directorConfig.model, `已启用 · ${fallback ? `自动备援：${directorConfig.fallbackModels.join(" / ")}` : "无备援"}`);
-        setDirectorConfigStatus(`AI 分析模型已启用 · ${directorConfig.model}${fallback}；套图编排会先调用该模型分析产品、噱头和参考图`);
-      } else {
-        setDirectorModelDisplay(directorConfig.model || "未配置", directorConfig.model ? "已读取模型名称，但 AI DIRECTOR 尚未启用或 API 地址/密钥不完整" : "请在主 SKU Board 的 AI DIRECTOR 中配置模型", true);
-        setDirectorConfigStatus("AI 分析模型未启用或未完成配置；当前可用本地规则编排，想用 GPT‑5.6‑sol 请在 SKU Board 的 AI DIRECTOR 中启用", true);
-      }
-      currentForm = readForm();
-      saveDraft(currentForm);
-      renderGenerationStatus();
-    } catch (error) {
-      const authError = error?.status === 401 || error?.status === 403;
-      setModelConfigStatus(authError ? "未登录或暂无 AI 生图权限；当前使用默认模型，登录后会读取服务器配置" : "暂未读取到服务器模型配置；当前使用默认 GPT Image 2，生成失败时请检查 AI 生图节点", true);
-      setDirectorModelDisplay(authError ? "无法读取配置" : "读取失败", authError ? "请先登录主 SKU Board，页面才能显示 AI Director 模型" : "请检查服务器和 AI Director 配置", true);
-      setDirectorConfigStatus(authError ? "未登录或暂无 AI 导演配置读取权限；请先登录主 SKU Board" : "暂未读取到 AI 分析模型配置；当前使用本地规则编排", true);
-    }
-  }
-
-  function compactAnalysisValue(value, limit = 520) {
-    if (value == null || value === "") return "—";
-    if (typeof value === "string") return value.slice(0, limit);
-    try {
-      return JSON.stringify(value, null, 2).slice(0, limit);
-    } catch (error) {
-      return String(value).slice(0, limit);
-    }
-  }
-
-  function directorAnalysisText(plan = suitePlanCache) {
-    if (!plan) return "尚未运行 AI Director 分析";
-    const director = plan.director && typeof plan.director === "object" ? plan.director : {};
-    const pages = Array.isArray(plan.suitePages) ? plan.suitePages : [];
-    const lines = [
-      `分析来源：${director.source === "model" ? "AI 模型" : "服务器本地规则"}`,
-      `分析模型：${director.model || directorConfig.model || "未配置"}`,
-      `Prompt生成：${plan.promptBlueprint?.source === "model" ? `AI从零生成（${plan.promptBlueprint.model || director.promptRewriteModel || "—"} / 指纹 ${plan.promptBlueprint.fingerprint || "—"}）` : "本地规则草稿"}`,
-      `产品总结：${director.productSummary || "—"}`,
-      `产品视觉 DNA：${compactAnalysisValue(director.productVisualDNA, 700)}`,
-      `套图页数：${pages.length}（主图${currentForm?.main || 0} + 详情${currentForm?.detail || 0}）`,
-      "页面顺序：",
-      ...pages.map((page) => `${page.page || "?"}. ${page.title || page.focusTitle || "未命名"}｜${page.objective || page.focus || "—"}｜日文钩子：${page.headline || page.sellingPoint || "—"}`),
-    ];
-    if (director.warning) lines.splice(2, 0, `警告：${director.warning}`);
-    return lines.join("\n");
-  }
-
-  function renderDirectorAnalysis(plan = suitePlanCache) {
-    const summary = $("analysis-summary");
-    const pageList = $("analysis-page-list");
-    const meta = $("analysis-meta");
-    if (!summary || !pageList || !meta) return;
-    if (!plan) {
-      meta.textContent = directorConfig.model ? `等待调用 ${directorConfig.model} 分析` : "尚未运行 GPT‑5.6‑sol 分析";
-      summary.innerHTML = `<div class="analysis-empty"><strong>先分析，再生图</strong><small>上传参考图后点击“先用 AI 分析”，可先查看 GPT‑5.6‑sol 对产品、噱头和页面顺序的判断。</small></div>`;
-      pageList.innerHTML = "";
-      return;
-    }
-    const director = plan.director && typeof plan.director === "object" ? plan.director : {};
-    const pages = Array.isArray(plan.suitePages) ? plan.suitePages : [];
-    const model = director.model || directorConfig.model || "未配置";
-    const fromModel = director.source === "model";
-    meta.textContent = plan.promptBlueprint?.source === "model"
-      ? `AI原创整套Prompt · ${plan.promptBlueprint.model || director.promptRewriteModel || model} · 商品指纹 ${plan.promptBlueprint.fingerprint || "—"} · ${pages.length}页`
-      : `${fromModel ? "AI 模型分析" : "服务器本地规则"} · ${model} · ${pages.length}页脚本已生成`;
-    const dna = compactAnalysisValue(director.productVisualDNA, 680);
-    const coverage = compactAnalysisValue(director.sellingPointCoverage, 680);
-    summary.innerHTML = [
-      `<article class="analysis-summary-card wide"><span>PRODUCT SUMMARY</span><strong>${esc(director.productSummary || "未返回产品总结")}</strong>${director.warning ? `<p class="analysis-warning">${esc(director.warning)}</p>` : ""}</article>`,
-      plan.promptBlueprint?.creativeRationale ? `<article class="analysis-summary-card wide"><span>NEW PROMPT ROUTE</span><strong>${esc(plan.promptBlueprint.creativeRationale)}</strong><p>本次只绑定商品：${esc(plan.promptBlueprint.product || currentForm?.product || "当前商品")}</p></article>` : "",
-      `<article class="analysis-summary-card"><span>VISUAL DNA</span><p>${esc(dna)}</p></article>`,
-      `<article class="analysis-summary-card"><span>SELLING-POINT COVERAGE</span><p>${esc(coverage)}</p></article>`,
-    ].join("");
-    pageList.innerHTML = pages.map((page, index) => `<article class="analysis-page-card">
-      <header><span>${String(page.page || index + 1).padStart(2, "0")}</span><span>${esc(page.role || (index < (currentForm?.main || 0) ? "主图" : "详情图"))}</span></header>
-      <strong>${esc(page.title || page.focusTitle || "未命名页面")}</strong>
-      <p>${esc(page.objective || page.focus || page.focusDescription || "")}</p>
-      <code>${esc(page.headline || page.sellingPoint || "")}</code>
-    </article>`).join("");
-  }
-
-  function renderGeneratedGallery() {
-    const gallery = $("generated-gallery");
-    const tabCount = $("result-tab-count");
-    if (!gallery) return;
-    const materials = [...generatedMaterials.entries()].sort((a, b) => a[0] - b[0]);
-    if (tabCount) tabCount.textContent = String(materials.length);
-    if (!materials.length) {
-      gallery.innerHTML = `<div class="gallery-empty"><span>○</span><strong>还没有成图</strong><small>上传参考图后，点击“生成当前页”或“直接生成整套”</small></div>`;
-      return;
-    }
-    const errors = generationState.errors.length
-      ? `<div class="generation-error">${generationState.errors.map((message) => esc(message)).join("<br>")}</div>`
-      : "";
-    gallery.innerHTML = errors + materials.map(([pageNumber, material]) => {
-      const url = material.previewUrl || material.previewDataUrl || material.remoteUrl || "";
-      const page = currentPages.find((item) => item.index === Number(pageNumber));
-      const label = page ? `${page.section === "main" ? "主图" : "详情"}${String(page.localIndex).padStart(2, "0")}` : `第${pageNumber}页`;
-      return `<article class="generated-card"><a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${esc(label)}"></a><div class="generated-meta"><div><strong>${esc(label)}</strong><small>${esc(page?.title || material.name || "AI 生成")}</small></div><a class="generated-download" href="${esc(url)}" target="_blank" rel="noopener" download>保存</a></div></article>`;
-    }).join("");
-  }
-
   async function apiRequest(path, options = {}) {
-    const response = await fetch(path, { ...options, credentials: "same-origin" });
-    const raw = await response.text();
-    let payload = {};
-    try { payload = raw ? JSON.parse(raw) : {}; } catch (error) { throw new Error(`服务返回异常（HTTP ${response.status}）`); }
+    const { json, ...requestOptions } = options;
+    if (json !== undefined) { requestOptions.body = JSON.stringify(json); requestOptions.headers = { ...requestOptions.headers, "Content-Type": "application/json" }; }
+    const response = await fetch(path, { ...requestOptions, credentials: "same-origin" });
+    let payload;
+    try { payload = JSON.parse(await response.text()); } catch (_) { throw new Error(`服务器返回异常（HTTP ${response.status}），请检查本地服务。`); }
     if (!response.ok || payload.ok === false) {
-      const message = typeof payload.error === "string" ? payload.error : payload.error?.message;
-      const error = new Error(message || `请求失败（HTTP ${response.status}）`);
-      error.status = response.status;
-      throw error;
+      const error = new Error([401, 403].includes(response.status) ? "请先登录主 SKU Board，并确认有此功能的访问权限。" : errorText(payload.error) || `请求失败（HTTP ${response.status}）`);
+      error.status = response.status; throw error;
     }
     return payload;
   }
-
-  async function waitForImageJob(payload) {
-    let current = payload;
-    let attempts = 0;
-    while (current?.pending && current.jobId) {
-      if (generationAbortController?.signal.aborted) throw new Error("已取消生图");
-      if (attempts > 360) throw new Error("生图任务等待超时，请稍后在 SKU Board 中恢复任务");
-      await new Promise((resolve) => window.setTimeout(resolve, 2200));
-      current = await apiRequest(`/api/sku-board/ai-image-jobs/${encodeURIComponent(current.jobId)}`, { signal: generationAbortController?.signal });
-      attempts += 1;
-      if ($("generation-detail")) $("generation-detail").textContent = current.message || "远端生图任务处理中…";
-    }
-    return current;
+  function readForm() {
+    const value = {};
+    Object.entries(FIELDS).forEach(([key, id]) => { const input = $(id); if (input) value[key] = input.type === "checkbox" ? input.checked : input.value; });
+    return normalizeForm(value);
   }
-
-  function buildLocalSuitePlan(form, suiteCount) {
-    const market = MARKET[form.market] || MARKET.JP;
-    const pages = [...makeMainPages(form), ...makeDetailPages(form)].slice(0, suiteCount);
-    return pages.map((page) => ({
-      page: page.index,
-      title: page.title,
-      role: `${page.section === "main" ? "主图" : "详情图"}${String(page.localIndex).padStart(2, "0")}`,
-      objective: page.focus,
-      focus: `${page.title}：${page.focus}`,
-      focusTitle: page.title,
-      focusDescription: page.focus,
-      sellingPoint: page.hook,
-      evidence: page.evidence,
-      scene: (MARKET[form.market] || MARKET.JP).scene,
-      pose: page.section === "main" ? `${market.label}本土人物自然使用、手持或展示产品，动作必须符合当前商品的真实使用方式` : "产品特写或与卖点相关的真实使用动作",
-      composition: page.section === "main" ? `产品占画面45%至70%，高密度${market.label}电商信息排版，满幅无留白` : "产品局部占主体，搭配2至4个短标签或一个证据模块",
-      headline: page.hook,
-      size: form.size,
-      pageArchetype: page.title,
-      impactTreatment: "COD强转化、夸张大数字、静态色带和促销贴纸；保持一个清晰主视觉",
-      textPolicy: "requested",
-      contentDensity: page.title === "四宫格痛点" ? "structured" : "focused",
-    }));
+  function writeForm(form) {
+    Object.entries(FIELDS).forEach(([key, id]) => {
+      const input = $(id); if (!input) return;
+      if (input.type === "checkbox") input.checked = Boolean(form[key]);
+      else if (document.activeElement !== input) {
+        const value = key === "points" ? form.points.join("\n") : String(form[key] ?? "");
+        if (input.value !== value) input.value = value;
+      }
+    });
   }
-
-  function buildDirectorSuitePlanFormData(form, suiteCount) {
-    const formData = new FormData();
-    formData.append("prompt", buildMasterPrompt(form));
-    formData.append("suiteBrief", buildSuiteBrief(form));
-    formData.append("promptGeneratorInput", JSON.stringify(buildPromptGeneratorInput(form)));
-    formData.append("size", form.size);
-    formData.append("suiteKey", GENERATION_SUITE_KEY);
-    formData.append("suiteCount", String(suiteCount));
-    formData.append("mainCount", String(form.main));
-    formData.append("detailCount", String(form.detail));
-    formData.append("suiteCountry", form.market);
-    formData.append("useDirector", "true");
-    formData.append("companyEffectMode", "true");
-    formData.append("forceReanalyze", "true");
-    formData.append("fullPromptRewrite", "true");
-    const bindings = buildReferenceBindings(form);
-    formData.append("referenceBindings", JSON.stringify(bindings));
-    formData.append("referenceUploadCount", String(referenceFiles.length));
-    referenceFiles.slice(0, 16).forEach((file, index) => formData.append(`reference${index}`, file, file.name));
-    return formData;
-  }
-
-  async function ensureSuitePlan(form, options = {}) {
-    const suiteCount = generationSuiteCount(form);
-    const cacheKey = promptInputFingerprint(form);
-    const force = Boolean(options.force);
-    if (!force && suitePlanCache && suitePlanCacheKey === cacheKey) return suitePlanCache;
-    if (force) {
-      suitePlanCache = null;
-      suitePlanCacheKey = "";
-    }
-    if ($("generation-status")) $("generation-status").textContent = directorConfig.enabled && directorConfig.configured ? "GPT‑5.6‑sol 正在从零重写整套 Prompt…" : "正在编译页面脚本…";
-    if ($("generation-detail")) $("generation-detail").textContent = directorConfig.enabled && directorConfig.configured
-      ? `使用 ${directorConfig.model || "GPT‑5.6‑sol"} 只依据当前商品、卖点、国家与参考图，重新生成总控和全部${suiteCount}页Prompt。`
-      : "AI 分析模型未启用，将使用服务器本地规则编排；想用 GPT‑5.6‑sol 请先在 SKU Board 的 AI DIRECTOR 中启用。";
-    let remoteError = null;
+  function readDraft() {
     try {
-      const payload = await apiRequest("/api/sku-board/ai-image-suite-plan-upload", {
-        method: "POST",
-        body: buildDirectorSuitePlanFormData(form, suiteCount),
-        signal: generationAbortController?.signal,
+      const currentDraft = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+      if (currentDraft?.form) return currentDraft;
+      const legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || "null");
+      if (legacy && typeof legacy === "object") return { form: normalizeForm(legacy), dirty: true, legacy: true };
+    } catch (_) { /* Invalid local storage never blocks server archives. */ }
+    return { form: normalizeForm(), dirty: false };
+  }
+  function saveDraft(state) {
+    if (state.busy === "loading" || restoringDraft) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ form: state.form, projectId: state.project?.id || "", revision: state.project?.revision || null, historical: state.historical, dirty: state.dirty, selectedPage: state.selectedPage, exportMode: state.exportMode, referencesMode: state.referencesMode, referenceRoles: state.referenceRoles }));
+      setText("saved-state", state.draftError || (currentDrafts(state).length ? `本地暂存 ${currentDrafts(state).length} 页草稿 · 尚未提交` : state.project && !state.dirty ? `商品已存档 · v${state.project.revision}` : "文字草稿已保存 · 图片需保存商品"));
+    } catch (_) { setText("saved-state", "本地存储不可用；请保存商品到服务器"); }
+  }
+  function selectedPage(state) { return sortedPages(state.project).find((page) => Number(page.page) === state.selectedPage); }
+  function displayStatus(state) {
+    if (state.busy === "loading") return "正在打开商品版本";
+    if (state.busy === "saving") return "正在保存商品与参考图";
+    if (state.busy === "stopping") return "正在停止服务器任务";
+    if (state.busy === "reviewing") return "正在提交质量检查";
+    if (state.busy) return "正在提交当前任务";
+    if (state.error) return "请求失败 · 不会使用模板替代";
+    if (!state.project) return state.form.product ? "新商品草稿 · 等待 AI 生成" : "新商品 · 请填写产品与卖点";
+    if (state.dirty) return "输入已修改 · 旧版已过期";
+    return STATUS[state.project.status] || state.project.status || "商品已保存";
+  }
+  function renderProjectControls(state) {
+    const select = $("project-select");
+    if (select) {
+      const desired = select.value || state.project?.id || "";
+      const html = `<option value="">选择已保存商品</option>` + state.projects.map((project) => `<option value="${esc(project.id)}">${esc(project.name || "未命名商品")} · v${esc(project.revision)} · ${esc(STATUS[project.status] || project.status || "")}</option>`).join("");
+      if (select.innerHTML !== html) { select.innerHTML = html; select.value = desired; }
+    }
+    const versions = $("project-version");
+    if (versions) {
+      const summaries = Array.isArray(state.project?.versions) ? state.project.versions : [];
+      const desired = versionSelection(state.project, versions.dataset.project, versions.dataset.viewRevision, versions.value);
+      const html = summaries.length ? summaries.slice().sort((a, b) => Number(b.revision) - Number(a.revision)).map((version) => `<option value="${Number(version.revision)}">v${Number(version.revision)} · ${esc(STATUS[version.status] || version.status || "")}${Number(version.revision) === Number(state.project.revision) ? " · 当前查看" : ""}</option>`).join("") : `<option value="">保存后查看版本</option>`;
+      if (versions.innerHTML !== html) { versions.innerHTML = html; versions.value = summaries.some((version) => String(version.revision) === desired) ? desired : String(state.project?.revision || ""); }
+      versions.dataset.project = state.project?.id || "";
+      versions.dataset.viewRevision = String(state.project?.revision || "");
+    }
+    const previousDrafts = Object.values(state.pageDrafts).filter((draft) => draft.projectId === state.project?.id && Number(draft.revision) !== Number(state.project?.revision));
+    setText("project-draft-note", previousDrafts.length ? `还有 ${previousDrafts.length} 页未保存草稿留在 ${[...new Set(previousDrafts.map((draft) => `v${draft.revision}`))].join("、")}，打开相应历史版本可恢复查看与复制。` : "单页编辑会在本机按商品、版本、页码暂存，切页或换品不会清除。");
+    setText("project-status", [displayStatus(state), state.project ? `v${state.project.revision} · 指纹 ${String(state.project.fingerprint || "待生成").slice(0, 16)}` : "", state.error || errorText(state.project?.error) || state.notice, state.draftError, state.libraryError ? `商品库：${state.libraryError}` : ""].filter(Boolean).join(" · "));
+    if ($("project-status")) $("project-status").dataset.status = state.error || state.dirty ? "warning" : state.project?.status || "draft";
+    disabled("save-project-btn", state.historical || state.busy || state.pageEditorDirty || isRunning(state.project) && !state.dirty);
+    disabled("load-project-btn", state.busy === "loading"); disabled("load-version-btn", !state.project || state.busy === "loading");
+  }
+  function renderReferences(state) {
+    const node = $("reference-preview"); if (!node) return;
+    const refs = app.references();
+    const key = JSON.stringify([state.project?.id, state.project?.revision, state.referencesMode, refs.map((reference) => [reference.key, reference.name, reference.sha256, reference.role])]);
+    if (key === previewKey) return;
+    previewKey = key; previewUrls.forEach((url) => URL.revokeObjectURL(url)); previewUrls = [];
+    node.innerHTML = refs.length ? refs.map((reference, index) => {
+      let url;
+      if (reference.file) { url = URL.createObjectURL(reference.file); previewUrls.push(url); }
+      else url = safeImageUrl(reference.previewUrl) || `${API}/projects/${encodeURIComponent(state.project.id)}/references/${reference.index || index + 1}?revision=${state.project.revision}`;
+      return `<div class="reference-thumb"><img src="${esc(url)}" alt="参考图${index + 1}：${esc(reference.name)}"><span>${index + 1}</span><em title="${esc(reference.name)}">${esc(reference.name)}</em><label class="reference-role" for="reference-role-${index}">用途<select id="reference-role-${index}" data-reference-index="${index}"${state.historical ? " disabled" : ""}>${Object.entries(ROLE_LABELS).map(([role, label]) => `<option value="${role}"${reference.role === role ? " selected" : ""}>${label}</option>`).join("")}</select></label></div>`;
+    }).join("") + `<button class="text-btn reference-remove-btn" type="button" id="remove-references-btn"${state.historical ? " disabled" : ""}>清空当前参考图（保留已存档历史）</button>` : `<div class="reference-empty">尚未绑定当前商品参考图。可先生成文字 Prompt；真实生图前需上传并保存。</div>`;
+    node.querySelectorAll("select[data-reference-index]").forEach((select) => select.addEventListener("change", () => app.setReferenceRole(Number(select.dataset.referenceIndex), select.value)));
+    $("remove-references-btn")?.addEventListener("click", () => { if ($("reference-files")) $("reference-files").value = ""; app.setReferences([]); });
+  }
+  function renderPromptStatus(state) {
+    const project = state.project, total = totalCount(state.form), ready = sortedPages(project).filter((page) => page.executionPrompt).length;
+    setText("prompt-progress-label", `${displayStatus(state)} · ${ready} / ${Number.isFinite(total) ? total : "—"} 页${project?.progress?.stage ? ` · ${project.progress.stage}` : ""}`);
+    const director = project?.director || {}, actualModel = actualDirectorModel(director), configuredModel = state.config?.director?.model || "", requestedModel = director.requestedModel || director.model || configuredModel;
+    setText("director-model-value", actualModel || requestedModel || (state.configError ? "无法读取配置" : "未配置"));
+    setText("director-model-source", actualModel ? `此版本最近完成阶段实际模型${director.fallbackUsed ? " · 使用了备援模型" : ""}` : requestedModel ? "请求/配置模型；当前阶段尚未成功返回" : state.configError || "请在主 SKU Board 的 AI DIRECTOR 中配置模型");
+    setText("director-config-status", director.warning || state.configError || (configuredModel ? `配置：${configuredModel}${state.config.director.fallbackModels?.length ? ` · 备援：${state.config.director.fallbackModels.join(" / ")}` : ""}。失败会保留错误与已完成页，不会自动套模板。` : "未配置 AI 分析模型；不能生成新 Prompt。"));
+    $("director-model-display")?.classList.toggle("is-warning", Boolean(state.configError || !actualModel && !configuredModel));
+    setText("master-output-mode", state.dirty && project?.masterPrompt ? "输入已变更：以下为过期版本，仅供查看，复制与生图已禁用。" : project?.masterPrompt ? `AI 原创总控 · ${actualModel || "模型待确认"} · v${project.revision} · 指纹 ${String(project.fingerprint || "—").slice(0, 16)}` : "尚无 AI 总控。填写商品资料后生成；此处不会用固定模板替代。");
+    if ($("master-output-mode")) $("master-output-mode").title = project?.fingerprint || "";
+    setText("master-output", project?.masterPrompt || "当前商品还没有生成总控 Prompt。点击“AI 重新生成整套 Prompt”开始。");
+    const unavailable = state.historical || state.busy || isRunning(project) && !state.dirty;
+    disabled("generate-btn", unavailable); disabled("analyze-ai-btn", unavailable);
+    hidden("resume-prompts-btn", !project || !["partial", "error", "cancelled"].includes(project.status));
+    disabled("resume-prompts-btn", state.historical || state.dirty || state.busy || currentDrafts(state).length || state.pageEditorDirty);
+    hidden("cancel-generation-btn", !state.busy && !isRunning(project));
+    disabled("cancel-generation-btn", state.busy === "stopping" || state.busy === "loading"); hidden("local-draft-btn", true);
+    disabled("copy-master-btn", !canUsePrompt(state)); disabled("copy-suite-btn", !suiteComplete(state)); disabled("download-btn", !suiteComplete(state));
+    if ($("export-mode") && $("export-mode").value !== state.exportMode) $("export-mode").value = state.exportMode;
+    setText("export-mode-help", state.exportMode === "standalone" ? "逐张独立版：每页携带完整执行 Prompt，可分别导入生图。" : state.project?.masterPrompt && !state.project.sharedExecutionRequirements ? "这是较早的存档，缺少共享要求快照；请选择逐张独立版，或生成新版本后使用整套导入。" : "整套导入版：总控与共享要求各一次，后接逐页创意，适合整套导入。不会省略当前页的独立执行版。");
+    disabled("copy-pages-btn", !canUsePrompt(state) || !visiblePages(project, state.filter).some((page) => page.executionPrompt));
+    document.querySelectorAll(".small-copy-btn[data-copy-target]").forEach((button) => { button.disabled = !canUsePrompt(state); });
+  }
+  function renderPages(state) {
+    const pages = sortedPages(state.project), list = $("page-list");
+    if (list) {
+      list.innerHTML = pages.length ? pages.map((page) => `<article class="page-card ${esc(page.section)}${Number(page.page) === state.selectedPage ? " selected" : ""}${page.executionPrompt ? "" : " is-pending"}" data-section="${esc(page.section)}" data-page="${Number(page.page)}" tabindex="0" role="button" aria-pressed="${Number(page.page) === state.selectedPage}" aria-label="选择${esc(pageLabel(page))}"${state.filter !== "all" && page.section !== state.filter ? " hidden" : ""}><div class="page-card-header"><span class="page-index">${String(page.page).padStart(2, "0")}</span><span class="page-kind${hasPageDraft(state, page.page) ? " has-draft" : ""}">${esc(pageLabel(page))} · ${hasPageDraft(state, page.page) ? "本地草稿" : page.executionPrompt ? "已就绪" : "待补齐"}</span></div><h3>${esc(page.title || "等待 AI 页面主题")}</h3><p>${esc(page.focus || page.objective || "")}</p>${page.headline ? `<code>${esc(page.headline)}</code>` : ""}</article>`).join("") : `<div class="analysis-empty"><strong>当前商品尚无分镜</strong><small>AI 会根据商品重新分配页面主题，不会套用上一件商品的固定页。</small></div>`;
+      list.querySelectorAll(".page-card").forEach((card) => {
+        const choose = () => app.selectPage(Number(card.dataset.page)); card.addEventListener("click", choose);
+        card.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); choose(); } });
       });
-      const pages = Array.isArray(payload.suitePages) ? payload.suitePages : [];
-      if (pages.length !== suiteCount) throw new Error("AI 导演返回的页面数量不完整");
-      if (directorConfig.enabled && directorConfig.configured && payload.promptBlueprint?.source !== "model") {
-        throw new Error("AI Director没有返回当前商品的完整原创Prompt套图");
-      }
-      suitePlanCache = {
-        ...payload,
-        suitePages: pages,
-        suiteCount: Number(payload.suiteCount) || suiteCount,
-        resolvedReferenceBindings: payload.resolvedReferenceBindings || buildReferenceBindings(form),
-        director: payload.director || { source: "rules", message: "使用服务器规则编排" },
-      };
-      suitePlanCacheKey = cacheKey;
-      generationState.plan = suitePlanCache;
-      renderDirectorAnalysis(suitePlanCache);
-      renderMasterPrompt(form, suitePlanCache);
-      const source = suitePlanCache.promptBlueprint?.source === "model"
-        ? `已由 ${suitePlanCache.promptBlueprint.model || suitePlanCache.director?.promptRewriteModel || directorConfig.model || "GPT‑5.6‑sol"} 从零生成当前商品整套Prompt`
-        : suitePlanCache.director?.source === "model"
-          ? `已完成 ${suitePlanCache.director.model || directorConfig.model || "GPT‑5.6‑sol"} 分析`
-          : "已完成服务器规则编排";
-      setDirectorConfigStatus(source + "；现在复制或按逐页脚本生成图片", suitePlanCache.promptBlueprint?.source !== "model");
-      return suitePlanCache;
-    } catch (error) {
-      remoteError = error;
-      if (error?.name === "AbortError" || error?.status === 401 || error?.status === 403) throw error;
-      if ($("generation-detail")) $("generation-detail").textContent = `AI 分析暂时不可用（${error.message || "服务异常"}），改用本地规则继续生成。`;
     }
-    const pages = buildLocalSuitePlan(form, suiteCount);
-    if (!pages.length) throw remoteError || new Error("没有可生成的页面计划");
-    suitePlanCache = { suitePages: pages, suiteCount, resolvedReferenceBindings: buildReferenceBindings(form), director: { source: "local-rules", message: "AI 导演异常，已使用本地规则编排", warning: remoteError?.message || "" } };
-    suitePlanCacheKey = cacheKey;
-    generationState.plan = suitePlanCache;
-    renderDirectorAnalysis(suitePlanCache);
-    renderMasterPrompt(form, suitePlanCache);
-    setDirectorConfigStatus(`AI 分析模型暂时不可用，已改用本地规则；${remoteError?.message || "可稍后重试"}`, true);
-    return suitePlanCache;
+    document.querySelectorAll(".page-filter-btn").forEach((button) => { button.classList.toggle("active", button.dataset.section === state.filter); button.setAttribute("aria-pressed", String(button.dataset.section === state.filter)); });
+    const page = selectedPage(state);
+    setText("selected-prompt-title", page ? `${pageLabel(page)} · ${page.title || "单页 Prompt"}${state.pageEditorDirty ? " · 尚未保存" : ""}` : "选择一页查看与编辑 Prompt");
+    if ($("page-prompt-editor") && $("page-prompt-editor").value !== state.pageEditorValue) $("page-prompt-editor").value = state.pageEditorValue;
+    disabled("page-prompt-editor", state.historical || !page?.modelPrompt || !snapshotFresh(state) || isRunning(state.project) || state.busy);
+    setText("page-draft-status", state.draftError || (state.pageEditorDirty ? `${state.pageEditorSource === "restored" ? "已恢复" : "已暂存"}本机草稿 · ${state.project?.name || state.form.product} / v${state.project?.revision} / 第${state.selectedPage}页。${state.historical ? "历史版本草稿可复制，不能覆盖存档。" : "保存后才会更新实际执行 Prompt。"}` : page?.modelPrompt ? `显示服务器已保存的 v${state.project.revision}；本页当前没有未保存草稿。` : "选择已完成页后可编辑，修改自动暂存在本机。"));
+    if ($("page-draft-status")) $("page-draft-status").dataset.dirty = String(state.pageEditorDirty);
+    disabled("discard-page-draft-btn", !state.pageEditorDirty || state.busy); disabled("copy-page-draft-btn", !state.pageEditorDirty);
+    setText("page-execution-output", page?.executionPrompt || "此页尚未生成完整执行 Prompt。保存的执行内容会原样用于复制、TXT 与实际生图。");
+    disabled("save-page-prompt-btn", state.historical || !state.pageEditorDirty || !snapshotFresh(state) || isRunning(state.project) || state.busy);
+    disabled("rewrite-page-btn", state.historical || !page || !snapshotFresh(state) || isRunning(state.project) || state.busy || currentDrafts(state).length || state.pageEditorDirty);
+    disabled("copy-selected-page-btn", !canUsePrompt(state, page)); disabled("copy-execution-btn", !canUsePrompt(state, page)); setText("selected-page-label", pageLabel(page));
   }
-
-  async function analyzeSuiteOnly() {
-    if (generationAbortController || analysisState.running) return;
-    const form = readForm();
-    currentForm = form;
-    analysisState = { running: true, error: "" };
-    generationAbortController = new AbortController();
-    renderGenerationStatus();
-    activateAnalysisTab();
+  function renderHooks(state) {
+    const board = $("copy-board"); if (!board) return;
+    const hooks = Array.isArray(state.project?.hooks) ? state.project.hooks : [], labels = { pain: "痛点型", effect: "效果型", scene: "场景型" };
+    board.innerHTML = hooks.length ? hooks.map((hook, index) => `<article class="copy-card"><small>HOOK ${String(index + 1).padStart(2, "0")} · 来源卖点</small><p>${esc(hook.source)}</p>${(hook.variants || []).filter((variant) => labels[variant.type]).map((variant) => `<div class="hook-variant"><small>${labels[variant.type]}</small><strong>${esc(variant.text)}</strong></div>`).join("")}${state.dirty ? `<small>输入已改动 · 此组文案已过期</small>` : ""}</article>`).join("") : `<div class="analysis-empty"><strong>等待当前商品的本土化钩子</strong><small>AI 将按真实卖点生成痛点型、效果型与场景型文案。这里不使用固定词库。</small></div>`;
+  }
+  function formatValue(value) { return value == null || value === "" ? "等待 AI 返回" : typeof value === "string" ? value : JSON.stringify(value, null, 2); }
+  function analysisText(state) {
+    if (!state.project) return "";
+    const director = state.project.director || {};
+    return [`商品：${state.project.name || state.form.product}`, `版本：${state.project.revision}`, `实际模型：${actualDirectorModel(director) || "尚未返回"}`, `状态：${STATUS[state.project.status] || state.project.status}`, `指纹：${state.project.fingerprint || "—"}`, `分析：${JSON.stringify(director, null, 2)}`, `页面规划：${JSON.stringify(state.project.outline || [], null, 2)}`].join("\n");
+  }
+  function renderAnalysis(state) {
+    const director = state.project?.director || {};
+    setText("analysis-meta", state.project ? `v${state.project.revision} · ${actualDirectorModel(director) || "模型未成功返回"} · ${STATUS[state.project.status] || state.project.status}${state.dirty ? " · 输入已修改" : ""}` : "尚未运行当前商品分析");
+    const summary = $("analysis-summary");
+    if (summary) summary.innerHTML = state.project && (state.project.masterPrompt || Object.keys(director).length) ? `<article class="analysis-summary-card wide"><span>PRODUCT SUMMARY</span><strong>${esc(state.project.productSummary || director.productSummary || state.project.name || "等待分析结果")}</strong>${state.project.error ? `<p class="analysis-warning">${esc(errorText(state.project.error))}</p>` : ""}</article><article class="analysis-summary-card"><span>VISUAL DNA</span><p>${esc(formatValue(state.project.visualDNA || director.productVisualDNA))}</p></article><article class="analysis-summary-card"><span>SELLING-POINT COVERAGE</span><p>${esc(formatValue(director.sellingPointCoverage || state.project.outline?.map((page) => `${pageLabel(page)}：${page.focus || page.title || ""}`)))}</p></article>` : `<div class="analysis-empty"><strong>分析当前商品，而非固定套版</strong><small>生成后显示实际模型、视觉方向、卖点覆盖与页面顺序；失败会保留真实错误。</small></div>`;
+    if ($("analysis-page-list")) $("analysis-page-list").innerHTML = sortedPages(state.project).map((page) => `<article class="analysis-page-card"><header><span>${String(page.page).padStart(2, "0")}</span><span>${esc(pageLabel(page))}</span></header><strong>${esc(page.title || "待生成")}</strong><p>${esc(page.focus || page.objective || "")}</p><code>${esc(page.headline || "")}</code></article>`).join("");
+    disabled("copy-analysis-btn", !canUsePrompt(state));
+  }
+  function renderQuality(state) {
+    const report = state.project?.qualityReport, issues = Array.isArray(report?.issues) ? report.issues : [];
+    const source = report?.source === "ai" ? "AI 辅助检查" : "本地规则检查";
+    const busy = isRunning(state.project) || state.busy, ready = canUsePrompt(state);
+    setText("quality-badge", report ? `${source} · ${report.status === "reviewing" ? "检查中" : report.status === "error" ? "未完整完成" : issues.length ? `${issues.length} 项建议` : "未发现已检查类型的问题"}` : "尚未检查");
+    setText("quality-summary", report?.summary || "检查重复钩子、卖点对应、页面重复与语言信号。先运行无模型费用的规则检查，需要时再选择 AI 检查。");
+    setText("quality-limits", report?.source === "ai" ? "AI 意见仍可能遗漏或误判，不是母语人工审校或功效认证。检查建议不会自动禁止复制或生图。" : "规则只能识别结构和文本信号，不能判断日文是否地道或画面最终质量。检查建议不会自动禁止复制或生图。");
+    setText("quality-meta", report ? `当前 v${state.project.revision} · ${report.checkedAt || "等待结果"}${report.director?.activeModel ? ` · 实际检查模型：${report.director.activeModel}` : ""}${report.status === "reviewing" && report.reviewTotal ? ` · 已检查 ${report.reviewCompleted || 0}/${report.reviewTotal} 页` : ""}${report.requiresFullRegeneration ? " · 存在整套层面问题，请重新生成整套后检查" : ""}` : "");
+    setText("quality-error", errorText(report?.error)); hidden("quality-error", !report?.error);
+    disabled("review-rules-btn", !ready || busy); disabled("review-ai-btn", !ready || busy);
+    const repairable = (report?.repairablePages?.length || 0) + (report?.repairableHookSources?.length || 0);
+    disabled("repair-quality-btn", !ready || busy || state.historical || !repairable || report?.requiresFullRegeneration);
+    const list = $("quality-issues");
+    if (list) {
+      list.innerHTML = issues.map((issue) => `<article class="quality-issue"><div class="quality-issue-heading"><span>${issue.severity === "info" ? "建议" : "需留意"} · ${esc(issue.code || "内容检查")}</span>${Number(issue.page) > 0 ? `<button class="small-copy-btn" type="button" data-quality-page="${Number(issue.page)}">查看第 ${Number(issue.page)} 页</button>` : `<span>${issue.field === "hooks" || issue.field?.startsWith("hooks") ? "钩子文案" : "整套内容"}</span>`}</div><p>${esc(issue.message || "请结合原始卖点检查此内容。")}</p>${issue.field ? `<small>检查字段：${esc(issue.field)}</small>` : ""}</article>`).join("");
+      list.querySelectorAll("[data-quality-page]").forEach((button) => button.addEventListener("click", () => { app.setFilter("all"); app.selectPage(Number(button.dataset.qualityPage)); selectTab("pages"); $("selected-prompt-title")?.scrollIntoView({ block: "nearest" }); }));
+    }
+  }
+  function renderGallery(state) {
+    const entries = materialEntries(state.project).sort((a, b) => a[0] - b[0]); setText("result-tab-count", entries.length);
+    const gallery = $("generated-gallery"); if (!gallery) return;
+    const errors = state.rendering?.errors || [];
+    gallery.innerHTML = (errors.length ? `<div class="generation-error">${errors.map((error) => `第${error.page}页：${esc(error.message)}`).join("<br>")}</div>` : "") + (!entries.length || state.hiddenGallery ? `<div class="gallery-empty"><span>○</span><strong>${state.hiddenGallery ? "已暂时收起成图" : "当前版本尚无成图"}</strong><small>${state.hiddenGallery ? "服务器存档未删除，点击显示可恢复。" : "完成提示词并绑定当前商品图后，可逐页或整套生成。"}</small></div>` : entries.map(([pageNumber, material]) => {
+      const url = safeImageUrl(material.assetUrl || material.previewUrl || material.previewDataUrl || material.remoteUrl || material.url), downloadUrl = safeImageUrl(material.downloadUrl) || url, page = sortedPages(state.project).find((item) => Number(item.page) === pageNumber);
+      const permanent = material.archiveStatus === "archived" || material.storage === "project-permanent", originRevision = Number(material.originRevision || material.revision || state.project.revision);
+      return `<article class="generated-card">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${esc(pageLabel(page))}，生成自v${originRevision}" loading="lazy"></a>` : `<p>图片记录已保留，预览暂不可用</p>`}<div class="generated-meta"><div><strong>${esc(pageLabel(page))} · 生成自 v${originRevision}</strong><small>${esc(page?.title || material.name || "AI 成图")}${originRevision !== Number(state.project.revision) ? ` · 当前查看 v${state.project.revision} 沿用` : ""}${state.dirty ? " · 旧版成图" : ""}</small><small class="asset-status${permanent ? " permanent" : ""}">${permanent ? "已长期保存在本机项目" : "仅历史链接 · 尚未长期保存"}${material.archiveError ? `：${esc(errorText(material.archiveError))}` : ""}</small></div>${downloadUrl ? `<a class="generated-download" href="${esc(downloadUrl)}" target="_blank" rel="noopener" download>保存</a>` : ""}</div></article>`;
+    }).join(""));
+    setText("clear-results-btn", state.hiddenGallery ? "显示已存档成图" : "暂时收起成图");
+    disabled("archive-images-btn", !entries.length || state.queueBusy);
+    const zip = $("download-images-btn"); if (zip) { zip.href = state.project ? `${API}/projects/${encodeURIComponent(state.project.id)}/images.zip?revision=${state.project.revision}` : "#"; zip.setAttribute("aria-disabled", String(!entries.length)); }
+  }
+  function renderImageStatus(state) {
+    const rendering = state.rendering, total = rendering?.total || totalCount(state.form), complete = rendering?.completed ?? new Set(materialEntries(state.project).map(([page]) => page)).size;
+    setText("generation-status", state.queueBusy ? "正在提交后台队列操作" : rendering ? `${QUEUE_STATUS[rendering.status] || rendering.status} · v${rendering.revision}${rendering.active ? ` / 第 ${rendering.active} 页` : ""}` : state.dirty && state.project ? "旧版图片保留 · 等待新 Prompt" : materialEntries(state.project).length ? "成图已存档" : "等待当前商品 Prompt 与参考图");
+    setText("generation-detail", rendering?.status === "needs_attention" ? "存在提交结果不明的任务。请先核实供应商结果，系统不会自动重提并重复计费。" : "后台队列随本地服务运行，关闭本网页或切换商品不影响队列；关闭本地服务会中断运行，重开后可恢复尚未提交页。已完成与进行中任务会复用。");
+    setText("queue-error", state.queueError || errorText(rendering?.error)); hidden("queue-error", !(state.queueError || rendering?.error));
+    setText("queue-settings", rendering ? `此轮设置：${rendering.settings?.model || "默认模型"} / ${rendering.settings?.quality || "默认质量"} / ${rendering.settings?.generationProfile || "默认策略"}。修改上方设置只影响新提交，不改变已保存队列。` : "生成与继续不会重画已有页；需要新图时使用“重新生成”，并明确确认可能计费。");
+    setText("generation-count", `${complete} / ${Number.isFinite(total) ? total : "—"}`);
+    if ($("generation-progress-bar")) $("generation-progress-bar").style.width = `${total ? Math.min(100, Math.round(complete / total * 100)) : 0}%`;
+    const ready = canUsePrompt(state, selectedPage(state)) && app.references().length && !state.queueBusy;
+    disabled("generate-current-btn", !ready); disabled("generate-suite-btn", !ready || !suiteComplete(state)); disabled("retry-failed-btn", !ready || !rendering?.errors?.length || rendering.running); hidden("retry-failed-btn", !rendering?.errors?.length);
+    disabled("redo-current-btn", !ready || rendering?.running); disabled("refresh-queues-btn", !state.project || state.queueBusy);
+    disabled("resume-image-queue-btn", !rendering || rendering.running || state.queueBusy || !["paused", "partial", "error"].includes(rendering.status));
+    hidden("resume-image-queue-btn", !rendering || !["paused", "partial", "error"].includes(rendering.status));
+    disabled("cancel-image-queue-btn", !rendering?.running || state.queueBusy); hidden("cancel-image-queue-btn", !rendering?.running);
+    hidden("redo-confirmation", !state.redoConfirmation);
+    setText("redo-confirmation-text", state.redoConfirmation ? `确认重生成第 ${state.redoConfirmation.pageNumbers.join("、")} 页？这会创建新的生图任务，可能再次计费；旧图不会删除。` : "");
+    disabled("confirm-redo-btn", state.queueBusy);
+    const select = $("image-queue-select");
+    if (select) { const html = state.queues.length ? state.queues.map((queue) => `<option value="${esc(queue.id)}">${esc(QUEUE_STATUS[queue.status] || queue.status)} · ${Number(queue.completed ?? queue.counts?.completed ?? 0)}/${Number(queue.total ?? queue.counts?.total ?? queue.pages?.length ?? 0)}页 · ${esc(queue.settings?.quality || "默认质量")} · ${esc(String(queue.id).slice(-8))}</option>`).join("") : `<option value="">此版本尚无后台队列</option>`; if (select.innerHTML !== html) select.innerHTML = html; select.value = state.queueId; }
+    const queuePages = $("image-queue-pages"); if (queuePages) queuePages.innerHTML = (rendering?.pages || []).map((page) => `<span class="queue-page-state" data-status="${esc(page.status)}" title="${esc(errorText(page.error) || page.jobId || page.status)}">${Number(page.page)} · ${esc({ queued: "待提交", waiting: "待提交", pending: "处理中", submitted: "已提交", running: "处理中", complete: "完成", completed: "完成", failed: "失败", error: "失败", skipped: "已复用", cancelled: "已暂停", needs_attention: "待核实" }[page.status] || page.status)}</span>`).join("");
+    const countSpan = $("generate-suite-btn")?.querySelector("span"); if (countSpan) countSpan.textContent = `${state.form.main} + ${state.form.detail}`;
+  }
+  function render(state) {
+    if (!uiReady) return;
+    writeForm(state.form);
+    const market = MARKET[state.form.market] || { label: state.form.market, language: "当地语言" };
+    setText("output-title", state.form.product ? `${state.form.product} · ${market.label} COD 套图` : "新商品 · 专属 AI Prompt");
+    setText("stat-total", Number.isFinite(totalCount(state.form)) ? totalCount(state.form) : "—"); setText("stat-hooks", state.form.points.length); setText("stat-locale", state.form.market); setText("stat-locale-label", `${market.language}可见文案`); setText("stat-ratio", ratioLabel(state.form.size)); setText("stat-size-label", state.form.size.replace(/[x×]/i, " × "));
+    setText("all-count", totalCount(state.form)); setText("main-count-label", state.form.main); setText("detail-count-label", state.form.detail); setText("pages-tab-label", `${totalCount(state.form)}页分镜`); setText("copy-tab-label", `${market.language}钩子文案`);
+    renderProjectControls(state); renderReferences(state); renderPages(state); renderPromptStatus(state); renderHooks(state); renderAnalysis(state); renderQuality(state); renderGallery(state); renderImageStatus(state); saveDraft(state);
+  }
+  async function copyText(value) {
+    if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+    const area = document.createElement("textarea"); area.value = value; document.body.appendChild(area); area.select();
+    const copied = document.execCommand("copy"); area.remove(); if (!copied) throw new Error("浏览器未允许复制，请手动选择 Prompt 复制。");
+  }
+  async function guardedCopy(kind) {
     try {
-      const plan = await ensureSuitePlan(form, { force: true });
-      render(form);
-      renderDirectorAnalysis(plan);
-      activateAnalysisTab();
-      toast(plan.promptBlueprint?.source === "model"
-        ? `已为「${form.product}」重新生成整套Prompt`
-        : plan.director?.source === "model"
-          ? `已完成 ${plan.director.model || "GPT‑5.6‑sol"} 分析`
-          : "已完成本地规则草稿");
-    } catch (error) {
-      analysisState.error = error.message || "AI 分析失败";
-      setDirectorModelDisplay("分析失败", analysisState.error, true);
-      setDirectorConfigStatus(analysisState.error, true);
-      toast("AI 分析失败，请查看模型状态");
-    } finally {
-      analysisState.running = false;
-      generationAbortController = null;
-      renderGenerationStatus();
-    }
-  }
-
-  function buildGenerationFormData(form, pageNumber, plan, runId) {
-    const formData = new FormData();
-    const suiteCount = Number(plan.suiteCount) || generationSuiteCount(form);
-    const referenceSet = generationReferenceSet(form, plan);
-    const generationFiles = referenceSet.files;
-    const bindings = referenceSet.bindings.length ? referenceSet.bindings : (plan.resolvedReferenceBindings || buildReferenceBindings(form));
-    const productIndexes = bindings.filter((item) => item.role === "product").map((item) => Number(item.index)).filter(Boolean);
-    const generationProfile = form.generationProfile || "standard";
-    const model = form.model || "gpt-image-2";
-    const quality = form.quality || (generationProfile === "fast" ? "medium" : "high");
-    formData.append("prompt", buildMasterPrompt(form, plan));
-    formData.append("mode", "edit");
-    formData.append("model", model);
-    formData.append("size", form.size);
-    formData.append("quality", quality);
-    formData.append("generationProfile", generationProfile);
-    formData.append("count", "1");
-    formData.append("lockLevel", "strict");
-    formData.append("suiteKey", GENERATION_SUITE_KEY);
-    formData.append("suiteCount", String(suiteCount));
-    formData.append("suiteCountry", form.market);
-    formData.append("suiteRunId", runId);
-    formData.append("suiteBrief", buildSuiteBrief(form));
-    formData.append("suitePlan", JSON.stringify(plan.suitePages || []));
-    formData.append("suitePageIndexes", JSON.stringify([pageNumber]));
-    formData.append("productReferenceIndexes", JSON.stringify(productIndexes.length ? productIndexes : [1]));
-    formData.append("referenceBindings", JSON.stringify(bindings));
-    formData.append("referenceUploadCount", String(generationFiles.length));
-    generationFiles.forEach((file, index) => formData.append(`reference${index}`, file, file.name));
-    return formData;
-  }
-
-  async function generateOnePage(form, pageNumber, plan, runId) {
-    generationState.active = pageNumber;
-    renderGenerationStatus();
-    const submitted = await apiRequest("/api/sku-board/ad-launch-ai-image-edit", {
-      method: "POST",
-      body: buildGenerationFormData(form, pageNumber, plan, runId),
-      signal: generationAbortController?.signal,
-    });
-    const payload = await waitForImageJob(submitted);
-    const materials = Array.isArray(payload.materials) ? payload.materials : payload.material ? [payload.material] : [];
-    const material = materials.find((item) => Number(item.suitePage) === pageNumber) || materials[0];
-    if (!material) throw new Error(`第${pageNumber}页没有返回图片`);
-    material.suitePage = pageNumber;
-    generatedMaterials.set(pageNumber, material);
-    generationState.completed += 1;
-    generationState.active = 0;
-    render(currentForm);
-    activateResultsTab();
-  }
-
-  function failedPageNumbers() {
-    return [...new Set(generationState.errors
-      .map((message) => Number(String(message).match(/第\s*(\d+)\s*页/)?.[1] || 0))
-      .filter(Boolean))].sort((a, b) => a - b);
-  }
-
-  async function generateImages(mode) {
-    if (generationAbortController) return;
-    const form = readForm();
-    currentForm = form;
-    if (!referenceFiles.length) { toast("请先上传至少一张商品参考图"); return; }
-    const localPages = currentPages.length ? currentPages : [...makeMainPages(form), ...makeDetailPages(form)];
-    const requestedPages = mode === "current"
-      ? [selectedPage]
-      : mode === "failed"
-        ? failedPageNumbers()
-        : localPages.map((page) => page.index);
-    if (mode === "failed" && !requestedPages.length) {
-      toast("当前没有失败页需要补图");
-      return;
-    }
-    generationAbortController = new AbortController();
-    generationState = { status: "running", requested: requestedPages.length, completed: 0, active: 0, errors: [], plan: null };
-    renderGenerationStatus();
-    try {
-      const plan = await ensureSuitePlan(form);
-      render(form);
-      const suiteCount = Number(plan.suiteCount) || generationSuiteCount(form);
-      const pages = requestedPages.filter((page) => page >= 1 && page <= suiteCount);
-      generationState.requested = pages.length;
-      if (!pages.length) throw new Error("当前页码不在生图套图范围内");
-      const runId = typeof crypto !== "undefined" && crypto.getRandomValues
-        ? Array.from(crypto.getRandomValues(new Uint8Array(6))).map((value) => value.toString(16).padStart(2, "0")).join("")
-        : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.replace(/[^a-f0-9]/gi, "").slice(0, 12).padEnd(12, "0");
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < pages.length) {
-          const page = pages[cursor]; cursor += 1;
-          try {
-            await generateOnePage(form, page, plan, runId);
-          } catch (error) {
-            if (generationAbortController?.signal.aborted) throw error;
-            generationState.errors.push(`第${page}页：${error.message || "生成失败"}`);
-            generationState.active = 0;
-            renderGenerationStatus();
-            renderGeneratedGallery();
-          }
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(3, pages.length) }, () => worker()));
-      generationState.status = generationState.completed ? "done" : "error";
-    } catch (error) {
-      generationState.status = "error";
-      if (!generationState.errors.length || generationState.errors[0] !== error.message) generationState.errors.unshift(error.message || "生图失败");
-    } finally {
-      generationState.active = 0;
-      generationAbortController = null;
-      renderGenerationStatus();
-      renderGeneratedGallery();
-      render(currentForm);
-      if (generationState.status === "done") toast(`已生成 ${generationState.completed} 张真实图片`);
-      else toast("生图未完成，请查看状态提示");
-    }
-  }
-
-  function activateResultsTab() {
-    const tab = document.querySelector('.output-tab[data-tab="results"]');
-    if (!tab) return;
-    document.querySelectorAll(".output-tab").forEach((item) => item.classList.toggle("active", item === tab));
-    document.querySelectorAll(".tab-content").forEach((content) => content.classList.toggle("active", content.id === "tab-results"));
-  }
-
-  function activateAnalysisTab() {
-    const tab = document.querySelector('.output-tab[data-tab="analysis"]');
-    if (!tab) return;
-    document.querySelectorAll(".output-tab").forEach((item) => item.classList.toggle("active", item === tab));
-    document.querySelectorAll(".tab-content").forEach((content) => content.classList.toggle("active", content.id === "tab-analysis"));
-  }
-
-  let promptRefreshTimer = 0;
-  function invalidatePromptSuite(nextForm, reason = "input") {
-    const hadGeneratedPrompt = Boolean(suitePlanCache);
-    suitePlanCache = null;
-    suitePlanCacheKey = "";
-    generationState.plan = null;
-    analysisState.error = "";
-    if (hadGeneratedPrompt || generatedMaterials.size) generatedMaterials.clear();
-    currentForm = nextForm;
-    render(currentForm);
-    if (hadGeneratedPrompt && reason !== "silent") {
-      setDirectorConfigStatus("商品资料已变化，旧Prompt已失效；点击“AI重新生成整套Prompt”创建当前商品的新版本", true);
-    }
-  }
-
-  function schedulePromptSuiteInvalidation(reason = "input") {
-    window.clearTimeout(promptRefreshTimer);
-    promptRefreshTimer = window.setTimeout(() => invalidatePromptSuite(readForm(), reason), 220);
-  }
-
-  let currentForm = null;
-  document.addEventListener("DOMContentLoaded", () => {
-    currentForm = loadDraft();
-    render(currentForm);
-    $("generate-btn").addEventListener("click", analyzeSuiteOnly);
-    $("reset-btn").addEventListener("click", () => {
-      generationAbortController?.abort();
-      localStorage.removeItem(STORAGE_KEY);
-      referenceFiles = [];
-      generatedMaterials.clear();
-      analysisState = { running: false, error: "" };
-      generationState = { status: "idle", requested: 0, completed: 0, active: 0, errors: [], plan: null };
-      suitePlanCache = null; suitePlanCacheKey = "";
-      currentForm = loadDraft(); render(currentForm); toast("已恢复 Watch4 Pro 示例");
-    });
-    $("copy-master-btn").addEventListener("click", () => copyText($("master-output").textContent).then(() => toast("总控 Prompt 已复制")));
-    $("copy-pages-btn").addEventListener("click", () => copyText(storyboardPages(currentForm).map((page) => page.prompt).join("\n\n")).then(() => toast("逐页 Prompt 已复制")));
-    $("download-btn").addEventListener("click", () => { downloadText(currentForm); toast("TXT 已下载"); });
-    $("analyze-ai-btn").addEventListener("click", analyzeSuiteOnly);
-    $("generate-current-btn").addEventListener("click", () => generateImages("current"));
-    $("generate-suite-btn").addEventListener("click", () => generateImages("suite"));
-    $("retry-failed-btn").addEventListener("click", () => generateImages("failed"));
-    $("cancel-generation-btn").addEventListener("click", () => {
-      if (!generationAbortController) return;
-      const cancellingAnalysis = analysisState.running;
-      generationAbortController.abort();
-      if (cancellingAnalysis) {
-        analysisState.error = "已停止 AI Director 分析";
-        setDirectorConfigStatus(analysisState.error, true);
-      } else {
-        generationState.status = "error";
-        generationState.errors.unshift("已停止当前生图任务；已经返回的成图仍会保留。");
+      const state = app.state; let text;
+      if (kind === "suite") text = fullPack(state);
+      else if (kind === "draft") text = state.pageEditorDirty ? state.pageEditorValue : "";
+      else {
+        const page = selectedPage(state);
+        if (!canUsePrompt(state, kind === "page" ? page : null)) throw new Error("当前 Prompt 已过期、未保存或未完成，不能复制。");
+        if (kind === "master") text = state.project.masterPrompt;
+        else if (kind === "page") text = page.executionPrompt;
+        else if (kind === "analysis") text = analysisText(state);
+        else text = visiblePages(state.project, state.filter).filter((item) => item.executionPrompt).map((item) => `===== ${pageLabel(item)} =====\n${item.executionPrompt}`).join("\n\n");
       }
-      renderGenerationStatus(); renderGeneratedGallery();
-    });
-    $("clear-results-btn").addEventListener("click", () => {
-      if (!generatedMaterials.size) { toast("当前没有可清空的成图"); return; }
-      generatedMaterials.delete(selectedPage);
-      render(currentForm);
-      toast(`已清空第${selectedPage}页成图`);
-    });
-    $("copy-analysis-btn").addEventListener("click", () => copyText(directorAnalysisText()).then(() => toast("AI 分析摘要已复制")));
-    const fileInput = $("reference-files");
-    const dropzone = document.querySelector(".upload-dropzone");
-    const acceptReferenceFiles = (files) => {
-      referenceFiles = Array.from(files || []).filter((file) => /^image\/(jpeg|png|webp)$/i.test(file.type)).slice(0, 12);
-      suitePlanCache = null; suitePlanCacheKey = "";
-      if (referenceFiles.length && !generationAbortController) generatedMaterials.clear();
-      if (referenceFiles.length && !generationAbortController) generationState = { status: "idle", requested: 0, completed: 0, active: 0, errors: [], plan: null };
-      currentForm = readForm();
-      render(currentForm);
-      if (referenceFiles.length) toast(`已载入 ${referenceFiles.length} 张参考图`);
+      if (!text) throw new Error("当前列表没有已完成的 Prompt。");
+      await copyText(text); toast(kind === "suite" ? `已复制${state.exportMode === "standalone" ? "逐张独立版" : "整套导入版"} Prompt。` : kind === "draft" ? "已复制本地未保存草稿；这不是已保存执行版。" : "已复制当前版本内容。");
+    } catch (error) { toast(error.message); }
+  }
+  function downloadPack() {
+    try {
+      const state = app.state, body = fullPack(state), url = URL.createObjectURL(new Blob([body], { type: "text/plain;charset=utf-8" })), link = document.createElement("a");
+      link.href = url; link.download = `${state.form.product.replace(/[<>:"/\\|?*]+/g, "-")}-v${state.project.revision}-${state.exportMode === "standalone" ? "逐张独立版" : "整套导入版"}.txt`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { toast(error.message); }
+  }
+  function selectTab(name) {
+    document.querySelectorAll(".output-tab").forEach((tab) => { tab.classList.toggle("active", tab.dataset.tab === name); tab.setAttribute("aria-selected", String(tab.dataset.tab === name)); });
+    document.querySelectorAll(".tab-content").forEach((content) => content.classList.toggle("active", content.id === `tab-${name}`));
+  }
+  async function loadConfig() {
+    try {
+      const payload = await apiRequest("/api/sku-board/ai-image-config"), config = payload.aiImage || {};
+      app.state.config = config; app.state.configError = "";
+      const preference = app.state.form, labels = { "gpt-image-2": "GPT Image 2", "codex-gpt-image-2": "Codex GPT Image 2", auto: "自动", high: "高质", medium: "平衡", low: "低质" };
+      [["render-model", config.models, preference.model, "model"], ["render-quality", config.qualities, preference.quality, "quality"]].forEach(([id, values, currentValue, key]) => {
+        if (!$(id) || !Array.isArray(values) || !values.length) return;
+        const options = [...new Set([...values, currentValue].filter(Boolean).map(String))];
+        $(id).innerHTML = options.map((value) => `<option value="${esc(value)}">${esc(labels[value] || value)}</option>`).join(""); $(id).value = currentValue || config[key] || options[0];
+      });
+      const nodes = Number(config.nodeCount || config.nodes?.length || 0);
+      setText("model-config-status", config.enabled && nodes ? `服务器已配置 ${nodes} 个生图节点。所选模型、质量和策略不会重新改写提示词。` : "尚未检测到可用生图节点；已生成的文字 Prompt 仍可复制导出。");
+    } catch (error) { app.state.configError = error.message; setText("model-config-status", error.message); }
+    app.emit();
+  }
+  function bindUI() {
+    Object.values(FIELDS).forEach((id) => { const input = $(id); if (input) input.addEventListener(input.type === "checkbox" || input.tagName === "SELECT" ? "change" : "input", () => app.updateForm(readForm())); });
+    const click = (id, handler) => $(id)?.addEventListener("click", handler);
+    click("new-product-btn", () => app.newProduct()); click("reset-btn", () => app.newProduct()); click("save-project-btn", () => app.saveProject());
+    click("load-project-btn", () => app.openProject($("project-select")?.value)); click("load-version-btn", () => app.openProject(app.state.project?.id, Number($("project-version")?.value)));
+    click("generate-btn", () => { selectTab("master"); void app.generate("fresh"); }); click("analyze-ai-btn", () => { selectTab("master"); void app.generate("fresh"); }); click("resume-prompts-btn", () => app.generate("resume")); click("cancel-generation-btn", () => app.stop());
+    [["copy-master-btn", "master"], ["copy-suite-btn", "suite"], ["copy-pages-btn", "pages"], ["copy-analysis-btn", "analysis"], ["copy-selected-page-btn", "page"], ["copy-execution-btn", "page"]].forEach(([id, kind]) => click(id, () => guardedCopy(kind)));
+    $("export-mode")?.addEventListener("change", (event) => { app.state.exportMode = event.target.value === "standalone" ? "standalone" : "compact"; app.emit(); });
+    click("download-btn", downloadPack); click("save-page-prompt-btn", () => app.savePage($("page-prompt-editor")?.value || "")); click("rewrite-page-btn", () => app.generate("page", $("page-rewrite-notes")?.value || "")); $("page-prompt-editor")?.addEventListener("input", (event) => app.setPageEditor(event.target.value));
+    click("discard-page-draft-btn", () => app.discardPageDraft()); click("copy-page-draft-btn", () => guardedCopy("draft"));
+    click("review-rules-btn", () => app.review("rules")); click("review-ai-btn", () => app.review("ai")); click("repair-quality-btn", () => app.generate("repair"));
+    click("generate-current-btn", () => { selectTab("results"); void app.renderImages("current"); }); click("generate-suite-btn", () => { selectTab("results"); void app.renderImages("suite"); }); click("retry-failed-btn", () => app.renderImages("retry")); click("clear-results-btn", () => { app.state.hiddenGallery = !app.state.hiddenGallery; app.emit(); });
+    click("redo-current-btn", () => app.requestRedo("current")); click("confirm-redo-btn", () => app.confirmRedo()); click("dismiss-redo-btn", () => { app.state.redoConfirmation = null; app.emit(); });
+    click("refresh-queues-btn", () => app.refreshQueues()); click("resume-image-queue-btn", () => app.queueAction("resume")); click("cancel-image-queue-btn", () => app.queueAction("cancel"));
+    $("image-queue-select")?.addEventListener("change", (event) => app.selectQueue(event.target.value));
+    click("archive-images-btn", () => app.archiveImages()); $("download-images-btn")?.addEventListener("click", (event) => { if (!materialEntries(app.state.project).length) event.preventDefault(); });
+    document.querySelectorAll(".small-copy-btn[data-copy-target]").forEach((button) => button.addEventListener("click", () => guardedCopy("master")));
+    document.querySelectorAll(".page-filter-btn").forEach((button) => button.addEventListener("click", () => app.setFilter(button.dataset.section)));
+    document.querySelectorAll(".output-tab").forEach((tab) => tab.addEventListener("click", () => selectTab(tab.dataset.tab)));
+    const files = $("reference-files"), dropzone = document.querySelector(".upload-dropzone");
+    const acceptFiles = (list) => {
+      const all = Array.from(list || []), accepted = all.filter((file) => ["image/jpeg", "image/png", "image/webp"].includes(file.type));
+      if (all.length !== accepted.length) toast("仅支持 JPG、PNG 与 WEBP，其它文件已忽略。");
+      if (accepted.length > 12) toast("最多绑定 12 张参考图，本次使用前 12 张。");
+      if (accepted.length) app.setReferences(accepted);
     };
-    fileInput?.addEventListener("change", () => acceptReferenceFiles(fileInput.files));
-    dropzone?.addEventListener("dragover", (event) => { event.preventDefault(); dropzone.classList.add("dragover"); });
-    dropzone?.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
-    dropzone?.addEventListener("drop", (event) => { event.preventDefault(); dropzone.classList.remove("dragover"); acceptReferenceFiles(event.dataTransfer.files); });
-    const promptSourceIds = [
-      "product-name", "target-market", "hook-intensity", "main-count", "detail-count", "canvas-size",
-      "reference-map", "selling-points", "discount", "sale-price", "cod-text", "deadline",
-      "allow-promo", "allow-medical", "style-notes", "avoid-notes",
-    ];
-    promptSourceIds.forEach((id) => {
-      const input = $(id);
-      if (!input) return;
-      input.addEventListener(input.matches("select,input[type=checkbox]") ? "change" : "input", () => schedulePromptSuiteInvalidation("input"));
-    });
-    document.querySelectorAll(".small-copy-btn[data-copy-target]").forEach((button) => button.addEventListener("click", () => copyText($(button.dataset.copyTarget).textContent).then(() => toast("已复制"))));
-    document.querySelectorAll(".output-tab").forEach((tab) => tab.addEventListener("click", () => {
-      document.querySelectorAll(".output-tab").forEach((item) => item.classList.toggle("active", item === tab));
-      document.querySelectorAll(".tab-content").forEach((content) => content.classList.toggle("active", content.id === `tab-${tab.dataset.tab}`));
-    }));
-    ["product-name", "target-market", "hook-intensity", "main-count", "detail-count", "canvas-size", "reference-map", "selling-points", "discount", "sale-price", "cod-text", "deadline", "style-notes", "avoid-notes", "allow-promo", "allow-medical", "render-model", "render-quality", "render-profile"].forEach((id) => {
-      const identityField = ["product-name", "target-market", "main-count", "detail-count", "canvas-size", "reference-map", "selling-points", "style-notes", "avoid-notes"].includes(id);
-      const update = () => {
-        currentForm = readForm(); suitePlanCache = null; suitePlanCacheKey = "";
-        if (identityField && !generationAbortController) {
-          generatedMaterials.clear();
-          generationState = { status: "idle", requested: 0, completed: 0, active: 0, errors: [], plan: null };
-        }
-        render(currentForm);
-      };
-      $(id).addEventListener("input", update);
-      $(id).addEventListener("change", update);
-    });
-    loadImageConfig();
+    files?.addEventListener("change", () => { acceptFiles(files.files); files.value = ""; });
+    dropzone?.addEventListener("dragover", (event) => { event.preventDefault(); dropzone.classList.add("dragover"); }); dropzone?.addEventListener("dragleave", () => dropzone.classList.remove("dragover")); dropzone?.addEventListener("drop", (event) => { event.preventDefault(); dropzone.classList.remove("dragover"); acceptFiles(event.dataTransfer.files); });
+    window.addEventListener("beforeunload", (event) => { if (app.state.referencesMode === "replace" && app.state.localReferences.length || app.state.draftError && Object.keys(app.state.pageDrafts).length) { event.preventDefault(); event.returnValue = ""; } });
+  }
+  document.addEventListener("DOMContentLoaded", async () => {
+    const stored = readDraft(); let pageStorage;
+    try { pageStorage = localStorage; } catch (_) { pageStorage = { getItem: () => "{}", setItem: () => { throw new Error("unavailable"); } }; }
+    app = createController({ request: apiRequest, notify: toast, changed: render, initialForm: stored.form, draftStorage: pageStorage }); app.state.dirty = Boolean(stored.dirty);
+    app.state.selectedPage = Math.max(1, Number(stored.selectedPage) || 1); app.state.exportMode = stored.exportMode === "standalone" ? "standalone" : "compact";
+    if (stored.legacy) app.state.notice = "已迁移之前保存的文字输入。旧模板结果未继承，请重新生成当前商品 AI Prompt。";
+    uiReady = true; bindUI(); app.emit();
+    const initialToken = app.state.token;
+    const configPromise = loadConfig(); await app.listProjects();
+    if (stored.projectId && app.state.token === initialToken) await app.openProject(stored.projectId, stored.historical ? stored.revision : null, { draft: stored });
+    await configPromise; restoringDraft = false; app.emit();
   });
 })();

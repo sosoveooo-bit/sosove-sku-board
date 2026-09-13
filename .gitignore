@@ -4,6 +4,9 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.run/
+tmp_*
+cod-chat-studio/test-*.png
 
 # Secrets and local panel state
 .env

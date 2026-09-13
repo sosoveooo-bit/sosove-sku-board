@@ -1,0 +1,71 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+(async()=>{
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[];
+    page.on('pageerror',e=>errors.push(e.message));
+    await page.route('**/api/sku-board/**',route=>{
+      if(new URL(route.request().url()).pathname==='/api/sku-board/session')return route.fulfill({json:{ok:true,user:{username:'history-fixture'}}});
+      errors.push('Unexpected backend request');return route.abort();
+    });
+    await page.goto('http://127.0.0.1:8795/');
+    await page.waitForFunction(()=>!document.querySelector('#suite').disabled);
+    await page.evaluate(async()=>{
+      const a={...current,id:'fixture-a',title:'原始对话A',brief:'原始产品卖点',jobs:{1:{id:'kept-job',state:'完成',url:'https://example.com/fixture.png'}}};
+      const b={...current,id:'fixture-b',title:'日本服装详情页',brief:'独立卖点B'};
+      await save(a);await save(b);await save({...b,id:'foreign',owner:'other-account'});
+    });
+    await page.reload();await page.waitForFunction(()=>!document.querySelector('#suite').disabled);
+    const row=id=>page.locator(`[data-history-id="${id}"]`);
+    assert.equal(await row('foreign').count(),0);
+    await row('fixture-a').locator('.history-open').click();
+    await row('fixture-b').click({button:'right'});
+    assert.equal(await page.locator('#historyMenu').isVisible(),true);
+    await page.screenshot({path:process.env.STUDIO_HISTORY_SCREENSHOT||'test-history-menu.png'});
+    await row('fixture-b').click({button:'right'});
+    await page.locator('[data-history-action="rename"]').click();
+    await page.locator('#historyName').fill('日本本土化服装 · 春季');
+    await page.locator('#historyConfirm').click();await page.waitForFunction(()=>!document.querySelector('#historyDialog').open);
+    assert.equal(await row('fixture-b').locator('.history-title').innerText(),'日本本土化服装 · 春季');
+    assert.equal(await page.locator('.history-row.active').getAttribute('data-history-id'),'fixture-a');
+    await row('fixture-b').locator('.history-more').click();await page.locator('[data-history-action="favorite"]').click();
+    await page.waitForFunction(()=>document.querySelector('.history-row').dataset.historyId==='fixture-b');
+    await page.reload();await page.waitForFunction(()=>!document.querySelector('#suite').disabled);
+    assert.equal(await page.locator('.history-row').first().getAttribute('data-history-id'),'fixture-b');
+    assert.match(await row('fixture-b').innerText(),/已收藏/);
+    assert.equal(await row('fixture-b').locator('.history-title').innerText(),'日本本土化服装 · 春季');
+    await page.locator('#searchHistory').fill('春季');assert.equal(await row('fixture-a').isVisible(),false);
+    await page.locator('#searchHistory').fill('');
+    await row('fixture-b').locator('.history-more').click();assert.equal(await page.locator('#favoriteLabel').innerText(),'取消收藏');
+    await page.keyboard.press('Escape');assert.equal(await page.locator('#historyMenu').isVisible(),false);
+    await row('fixture-b').locator('.history-open').focus();await page.keyboard.press('Shift+F10');
+    assert.equal(await page.locator('#historyMenu').isVisible(),true);
+    await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+    await page.waitForFunction(()=>!document.querySelector('[data-history-id="fixture-b"]').textContent.includes('已收藏'));
+    // A failed persistence operation leaves the original in-memory title unchanged.
+    await row('fixture-b').locator('.history-more').click();await page.locator('[data-history-action="rename"]').click();
+    await page.locator('#historyName').fill('未保存的名称');
+    await page.evaluate(()=>{window.testSave=save;save=async()=>{throw Error('fixture storage error');};});
+    await page.locator('#historyConfirm').click();await page.waitForFunction(()=>document.querySelector('#historyDialogError').textContent.includes('fixture'));
+    assert.equal(await row('fixture-b').locator('.history-title').innerText(),'日本本土化服装 · 春季');
+    await page.evaluate(()=>{save=window.testSave;});await page.locator('#historyCancel').click();
+    await page.evaluate(()=>{busy=true;render();});
+    assert.equal(await row('fixture-b').locator('.history-more').isDisabled(),true);
+    assert.match(await page.evaluate(async()=>{try{await changeHistory('delete','fixture-b');}catch(e){return e.message;}}),/处理任务/);
+    await page.evaluate(()=>{busy=false;render();});
+    await row('fixture-b').locator('.history-more').click();await page.locator('[data-history-action="delete"]').click();
+    await page.locator('#historyCancel').click();assert.equal(await row('fixture-b').count(),1);
+    await row('fixture-a').locator('.history-open').click();
+    await row('fixture-b').click({button:'right'});await page.locator('[data-history-action="delete"]').click();
+    await page.locator('#historyConfirm').click();await page.waitForFunction(()=>!document.querySelector('#historyDialog').open);
+    assert.equal(await row('fixture-b').count(),0);assert.equal(await page.locator('.history-row.active').getAttribute('data-history-id'),'fixture-a');
+    await row('fixture-a').locator('.history-more').click();await page.locator('[data-history-action="delete"]').click();
+    await page.locator('#historyConfirm').click();await page.waitForFunction(()=>!document.querySelector('#historyDialog').open);
+    assert.equal(await row('fixture-a').count(),0);assert.equal(await page.locator('.history-row').count(),1);
+    await page.reload();await page.waitForFunction(()=>!document.querySelector('#suite').disabled);
+    assert.equal(await row('fixture-a').count(),0);assert.equal(await row('fixture-b').count(),0);
+    assert.equal(await page.locator('.history-row').count(),1);assert.deepEqual(errors,[]);
+    console.log('history: target isolation, rename/favorite persistence, search, keyboard, storage failure, busy guard, confirmed deletion and last-session recovery passed');
+  }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

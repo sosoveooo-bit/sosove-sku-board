@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>COD Prompt Atelier · 电商生图提示词</title>
     <link rel="icon" href="/static/assets/sosove-logo.jpeg" />
-    <link rel="stylesheet" href="/static/cod-prompt-generator.css?v=20260901-v9" />
+    <link rel="stylesheet" href="/static/cod-prompt-generator.css?v=20260909-atelier-v11" />
   </head>
   <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
+    <a class="skip-link" href="#prompt-workspace">跳到产品工作区</a>
+    <div class="ambient ambient-a" aria-hidden="true"></div>
+    <div class="ambient ambient-b" aria-hidden="true"></div>
     <main class="atelier-shell">
       <header class="atelier-topbar">
         <a class="atelier-brand" href="/" aria-label="返回 SKU Board">
@@ -23,40 +24,67 @@
           <span class="status-dot"></span>
           <span>LOCAL / AI IMAGE API</span>
           <span class="topbar-divider"></span>
-          <span id="saved-state">草稿已自动保存</span>
+          <span id="saved-state" role="status">读取本地草稿…</span>
         </div>
-        <button class="text-btn" id="reset-btn" type="button">恢复示例</button>
+        <button class="text-btn" id="reset-btn" type="button">新建空白商品</button>
       </header>
 
       <section class="atelier-hero">
         <div>
-          <p class="eyebrow">PRODUCT → HOOK → IMAGE PROMPTS</p>
-          <h1>把产品噱头，<em>直接变成真实成图。</em></h1>
-          <p class="hero-copy">输入产品、市场和卖点后，由已配置的 GPT‑5.6‑sol 针对当前商品从零生成专属总控 Prompt、主图与详情图分镜；换品会让旧 Prompt 立即失效，不会继续套用上一件商品的内容。</p>
+          <p class="eyebrow">A NEW PRODUCT. A NEW CREATIVE SUITE.</p>
+          <h1>换一个产品，<br /><em>生成一整套新 Prompt。</em></h1>
+          <p class="hero-copy">产品和噱头交给 AI，重新策划总控、逐页画面与本土化文案。完整提示词一键复制，直接导入你熟悉的生图工具；也可以在这里继续生成图片。</p>
+          <ol class="workflow-steps" aria-label="使用流程">
+            <li><span>01</span> 输入产品与噱头</li>
+            <li><span>02</span> AI 生成整套提示词</li>
+            <li><span>03</span> 复制导出 / 继续生图</li>
+          </ol>
         </div>
         <div class="hero-orbit" aria-hidden="true">
           <span class="orbit-ring ring-one"></span>
           <span class="orbit-ring ring-two"></span>
-          <span class="orbit-core">37<br /><small>STATIC<br />FRAMES</small></span>
-          <span class="orbit-tag tag-one">JP</span>
+          <span class="orbit-core">AI<br /><small>YOUR PRODUCT<br />YOUR PROMPTS</small></span>
+          <span class="orbit-tag tag-one">LOCALIZE</span>
           <span class="orbit-tag tag-two">COD</span>
-          <span class="orbit-tag tag-three">750×1000</span>
+          <span class="orbit-tag tag-three">STATIC IMAGES</span>
         </div>
       </section>
 
-      <section class="workspace-grid">
+      <section class="project-bar" aria-labelledby="project-bar-title">
+        <div class="project-bar-heading">
+          <div>
+            <p class="eyebrow">PRODUCT LIBRARY</p>
+            <h2 id="project-bar-title">每个商品，独立保存</h2>
+          </div>
+          <p id="project-status" role="status" aria-live="polite">选择已有商品，或新建一个商品开始。</p>
+        </div>
+        <div class="project-controls">
+          <label class="project-field project-choice"><span>商品项目</span><select id="project-select"><option value="">新商品 · 尚未保存</option></select></label>
+          <button class="outline-btn" id="load-project-btn" type="button">打开商品</button>
+          <button class="outline-btn" id="new-product-btn" type="button">＋ 换品 / 新建</button>
+          <button class="outline-btn project-save-btn" id="save-project-btn" type="button">保存商品资料</button>
+          <div class="project-version-controls">
+            <label class="project-field"><span>历史版本</span><select id="project-version"><option value="">暂无版本</option></select></label>
+            <button class="outline-btn" id="load-version-btn" type="button">查看版本</button>
+          </div>
+        </div>
+        <p class="project-note">商品资料、参考图、提示词与成图按项目保存。重生成或单页修改会创建新版本，历史版本可随时查看。</p>
+        <p class="project-note" id="project-draft-note" role="status">单页编辑按商品、版本、页码自动暂存在本机。</p>
+      </section>
+
+      <section class="workspace-grid" id="prompt-workspace" aria-label="提示词工作区">
         <aside class="control-panel">
           <div class="panel-heading">
             <div>
               <p class="eyebrow">01 / INPUT BRIEF</p>
               <h2>产品与噱头</h2>
             </div>
-            <span class="live-pill"><i></i> LIVE</span>
+            <span class="live-pill"><i></i> 当前商品</span>
           </div>
 
           <label class="field field-product">
             <span>产品名称 <b>必填</b></span>
-            <input id="product-name" type="text" placeholder="例如：Watch4 Pro 钢带血糖手表" />
+            <input id="product-name" type="text" placeholder="输入商品名称与主款，例如：便携双层保温杯" autocomplete="off" />
           </label>
 
           <div class="field-row">
@@ -96,7 +124,7 @@
 
           <label class="field">
             <span>主 SKU / 参考图绑定</span>
-            <textarea id="reference-map" rows="3" placeholder="例如：参考图2为钢带主款；参考图4为钢带辅助角度；其他为变体，不得混用"></textarea>
+            <textarea id="reference-map" rows="3" placeholder="例如：参考图1为本次销售的主款；图2为同款细节；图3仅参考场景，不混用其他颜色或款式"></textarea>
           </label>
 
           <div class="reference-upload-block">
@@ -108,14 +136,15 @@
               <input id="reference-files" type="file" accept="image/jpeg,image/png,image/webp" multiple />
               <span class="upload-icon">＋</span>
               <strong>选择参考图，锁定产品外观</strong>
-              <small>建议上传当前商品正面、侧面、细节和真实使用图；文件顺序会作为参考图编号</small>
+              <small>正面、细节、模特或场景图<br />上传后逐张选择参考用途</small>
             </label>
             <div id="reference-preview" class="reference-preview" aria-live="polite"></div>
+            <p class="field-help">参考用途可选：商品主款、细节、人物、使用场景、版式。参考图编号与用途会一起保存。</p>
           </div>
 
           <label class="field field-tall">
             <span>核心噱头 / 卖点 <b>一行一条</b></span>
-            <textarea id="selling-points" rows="9" placeholder="一行一条卖点，例如：&#10;24h全天候心率追踪&#10;1.9英寸曲面无边大屏&#10;通话、LINE、邮件和导航推送"></textarea>
+            <textarea id="selling-points" rows="9" placeholder="写下这个商品的核心噱头和实际卖点，一行一条：&#10;最吸引人的使用体验&#10;区别于同类的设计或功能&#10;适合的人群与使用场景&#10;已有的规格、测试或材料依据"></textarea>
           </label>
 
           <div class="section-label">
@@ -123,148 +152,220 @@
             <small>有真实数据再填写</small>
           </div>
           <div class="promo-grid">
-            <label class="field"><span>折扣</span><input id="discount" type="text" placeholder="例如：70%OFF" /></label>
-            <label class="field"><span>活动价</span><input id="sale-price" type="text" placeholder="例如：9,980円" /></label>
-            <label class="field"><span>货到付款</span><input id="cod-text" type="text" placeholder="例如：代引きOK" /></label>
-            <label class="field"><span>活动期限</span><input id="deadline" type="text" placeholder="例如：本日限定" /></label>
+            <label class="field"><span>折扣</span><input id="discount" type="text" placeholder="填写本次真实折扣" /></label>
+            <label class="field"><span>活动价</span><input id="sale-price" type="text" placeholder="金额 + 当地货币" /></label>
+            <label class="field"><span>货到付款</span><input id="cod-text" type="text" placeholder="确实支持时填写" /></label>
+            <label class="field"><span>活动期限</span><input id="deadline" type="text" placeholder="本次活动截止日期" /></label>
           </div>
 
           <div class="toggle-row">
             <label class="switch-label"><input id="allow-promo" type="checkbox" checked /><span class="switch"></span><span>允许促销钩子</span></label>
-            <label class="switch-label"><input id="allow-medical" type="checkbox" checked /><span class="switch"></span><span>保留健康类噱头</span></label>
+            <label class="switch-label"><input id="allow-medical" type="checkbox" checked /><span class="switch"></span><span>包含健康类卖点</span></label>
           </div>
 
           <label class="field">
             <span>统一配色 / 特殊要求</span>
-            <textarea id="style-notes" rows="3" placeholder="例如：明亮、不太暗；象牙白、薄荷绿、钢银、珊瑚红；附带日本模特；页面无留白"></textarea>
+            <textarea id="style-notes" rows="3" placeholder="例如：明亮、强对比；米白、珊瑚红配色；本土模特与真实场景；信息丰富、统一排版"></textarea>
           </label>
 
           <label class="field">
             <span>禁止内容</span>
-            <textarea id="avoid-notes" rows="2" placeholder="例如：不要混合表带、不要动画、不要乱码"></textarea>
+            <textarea id="avoid-notes" rows="2" placeholder="例如：不混用其他款式或颜色，不要动画，不添加未提供的品牌标识"></textarea>
           </label>
 
           <button class="generate-btn" id="generate-btn" type="button">
             <span>AI 重新生成整套 Prompt</span>
             <b>⌁</b>
           </button>
-          <p class="form-note">每次点击都会把当前产品、卖点、国家和参考图重新交给 GPT‑5.6‑sol，从零生成总控与全部逐页 Prompt。输入发生变化后，上一版会立即标记失效；没有参考图也能先生成文字 Prompt，真实生图仍需商品参考图。</p>
+          <p class="form-note">使用下方显示的已配置模型，针对当前商品重新策划整套内容。没有参考图也能先写 Prompt；生成图片时再补充当前商品参考图。</p>
         </aside>
 
         <section class="output-panel">
           <div class="output-header">
             <div>
-              <p class="eyebrow">02 / PROMPT OUTPUT</p>
-              <h2 id="output-title">Watch4 Pro · 日本 COD 套图</h2>
+              <p class="eyebrow">02 / YOUR CREATIVE SUITE</p>
+              <h2 id="output-title">当前商品 · 专属提示词</h2>
             </div>
             <div class="output-actions">
+              <label class="export-choice" for="export-mode"><span>导出方式</span><select id="export-mode"><option value="compact">整套导入版</option><option value="standalone">逐张独立版</option></select></label>
+              <button class="outline-btn suite-copy-btn" id="copy-suite-btn" type="button">复制整套 Prompt</button>
               <button class="outline-btn" id="copy-master-btn" type="button">复制总控</button>
               <button class="outline-btn" id="download-btn" type="button">下载 TXT</button>
             </div>
           </div>
+          <p class="export-help" id="export-mode-help">总控与共享要求各一次，后接逐页创意，方便一次导入。</p>
 
-          <div class="generation-console" aria-live="polite">
-            <div class="generation-console-head">
-              <div>
-                <span class="console-kicker">03 / ACTUAL IMAGE RENDER</span>
-                <strong id="generation-status">等待上传参考图</strong>
-                <small id="generation-detail">选择页面后生成真实成图，结果会回显在“成图结果”中。</small>
-              </div>
-              <span class="generation-count" id="generation-count">0 / 37</span>
+          <div class="prompt-planning-console" aria-labelledby="prompt-progress-label">
+            <div class="director-model-display" id="director-model-display" aria-live="polite">
+              <span>提示词策划模型 · AI DIRECTOR</span>
+              <strong id="director-model-value">读取已配置模型…</strong>
+              <small id="director-model-source">显示实际用于本次提示词策划的模型</small>
             </div>
-            <div class="generation-progress"><i id="generation-progress-bar"></i></div>
-            <div class="generation-settings">
-              <label><span>生图模型</span><select id="render-model"><option value="gpt-image-2">GPT Image 2 · 默认</option><option value="codex-gpt-image-2">Codex GPT Image 2</option><option value="auto">自动选择可用模型</option></select></label>
-              <label><span>质量</span><select id="render-quality"><option value="high">高质</option><option value="medium">平衡</option><option value="auto">自动</option></select></label>
-              <label><span>生成策略</span><select id="render-profile"><option value="standard">标准 · 稳定</option><option value="quality">精审 · 更慢</option><option value="fast">快速 · 低等待</option></select></label>
-              <div class="director-model-display" id="director-model-display" aria-live="polite">
-                <span>提示词分析模型 · AI DIRECTOR</span>
-                <strong id="director-model-value">读取中…</strong>
-                <small id="director-model-source">套图生成前会先读取此模型的分析结果</small>
-              </div>
-              <small id="model-config-status">生图模型配置：读取中…</small>
-              <small id="director-config-status">AI 分析模型：读取中…</small>
+            <small id="director-config-status">AI 提示词模型：读取中…</small>
+            <div class="prompt-progress-copy">
+              <strong id="prompt-progress-label" role="status" aria-live="polite">等待生成 · 总控与大纲 → 分批编写逐页 Prompt</strong>
+              <p>每批完成即保存。AI 失败会显示原因，可继续补齐未完成页，不会自动改用模板。</p>
             </div>
-            <div class="generation-actions">
-              <button class="render-btn render-btn-analysis" id="analyze-ai-btn" type="button">AI 重写整套 Prompt <span>GPT‑5.6‑sol</span></button>
-              <button class="render-btn render-btn-secondary" id="generate-current-btn" type="button">生成当前页 <span id="selected-page-label">主图01</span></button>
-              <button class="render-btn render-btn-primary" id="generate-suite-btn" type="button">直接生成整套 <span>15 + 22</span></button>
-              <button class="render-btn render-btn-retry" id="retry-failed-btn" type="button" hidden>只补失败页</button>
-              <button class="render-btn render-btn-cancel" id="cancel-generation-btn" type="button" hidden>停止当前任务</button>
+            <div class="generation-actions prompt-actions">
+              <button class="render-btn render-btn-analysis" id="analyze-ai-btn" type="button">AI 重新生成整套 <span>当前商品</span></button>
+              <button class="render-btn render-btn-retry" id="resume-prompts-btn" type="button" hidden>继续生成未完成页</button>
+              <button class="render-btn render-btn-cancel" id="cancel-generation-btn" type="button" hidden>停止提示词任务</button>
             </div>
           </div>
 
           <div class="insight-strip">
             <div class="insight-card accent-card"><span>SET</span><strong id="stat-total">37</strong><small>张静态图</small></div>
-            <div class="insight-card"><span>HOOKS</span><strong id="stat-hooks">10</strong><small>条卖点已锁定</small></div>
+            <div class="insight-card"><span>HOOKS</span><strong id="stat-hooks">0</strong><small>条当前商品卖点</small></div>
             <div class="insight-card"><span>LOCALE</span><strong id="stat-locale">JP</strong><small id="stat-locale-label">日文可见文案</small></div>
-            <div class="insight-card"><span>RATIO</span><strong id="stat-ratio">3:4</strong><small>750 × 1000</small></div>
+            <div class="insight-card"><span>RATIO</span><strong id="stat-ratio">3:4</strong><small id="stat-size-label">750 × 1000</small></div>
           </div>
 
-          <div class="output-tabs" role="tablist">
-            <button class="output-tab active" data-tab="master" type="button">总控 Prompt</button>
-            <button class="output-tab" data-tab="pages" type="button">37页分镜</button>
-            <button class="output-tab" data-tab="analysis" type="button">AI 分析结果</button>
-            <button class="output-tab" data-tab="copy" type="button">日文钩子文案</button>
-            <button class="output-tab" data-tab="results" type="button">成图结果 <span class="result-tab-count" id="result-tab-count">0</span></button>
+          <div class="output-tabs" role="tablist" aria-label="整套创意内容">
+            <button class="output-tab active" data-tab="master" type="button" role="tab" aria-controls="tab-master" aria-selected="true">总控 Prompt</button>
+            <button class="output-tab" id="pages-tab-label" data-tab="pages" type="button" role="tab" aria-controls="tab-pages" aria-selected="false">逐页 Prompt</button>
+            <button class="output-tab" data-tab="analysis" type="button" role="tab" aria-controls="tab-analysis" aria-selected="false">AI 策划依据</button>
+            <button class="output-tab" id="copy-tab-label" data-tab="copy" type="button" role="tab" aria-controls="tab-copy" aria-selected="false">本土化钩子</button>
+            <button class="output-tab" data-tab="quality" type="button" role="tab" aria-controls="tab-quality" aria-selected="false">提示词质检</button>
+            <button class="output-tab" data-tab="results" type="button" role="tab" aria-controls="tab-results" aria-selected="false">生图与结果 <span class="result-tab-count" id="result-tab-count">0</span></button>
           </div>
 
-          <div class="tab-content active" id="tab-master">
-            <div class="prompt-toolbar"><span id="master-output-mode">本地规则草稿；完成 AI 分析后自动增强 · 可直接粘贴到 Cod / 图像模型</span><button class="small-copy-btn" data-copy-target="master-output" type="button">复制</button></div>
-            <pre class="prompt-output" id="master-output"></pre>
+          <div class="tab-content active" id="tab-master" role="tabpanel" aria-label="总控 Prompt">
+            <div class="prompt-toolbar"><span id="master-output-mode">尚未生成 · 点击 AI 重新生成整套，获得当前商品的专属总控</span><button class="small-copy-btn" data-copy-target="master-output" type="button">复制</button></div>
+            <pre class="prompt-output" id="master-output" tabindex="0" aria-label="AI 生成的总控提示词"></pre>
           </div>
 
-          <div class="tab-content" id="tab-pages">
+          <div class="tab-content" id="tab-pages" role="tabpanel" aria-label="逐页 Prompt 与单页编辑">
             <div class="pages-toolbar">
-              <div class="page-filter" role="tablist">
+              <div class="page-filter" role="group" aria-label="筛选页面类型">
                 <button class="page-filter-btn active" data-section="all" type="button">全部 <span id="all-count">37</span></button>
                 <button class="page-filter-btn" data-section="main" type="button">主图 <span id="main-count-label">15</span></button>
                 <button class="page-filter-btn" data-section="detail" type="button">详情 <span id="detail-count-label">22</span></button>
               </div>
-              <button class="small-copy-btn" id="copy-pages-btn" type="button">复制当前列表</button>
+              <button class="small-copy-btn" id="copy-pages-btn" type="button">复制列表执行版</button>
             </div>
             <div class="page-list" id="page-list"></div>
+            <section class="page-prompt-workbench" aria-labelledby="selected-prompt-title">
+              <div class="page-editor-heading">
+                <div>
+                  <p class="eyebrow">ONE PAGE, YOUR DIRECTION</p>
+                  <h3 id="selected-prompt-title">先选择一页 Prompt</h3>
+                  <p>仅修改这一页，其他页保持不变。保存后生成新版本。</p>
+                </div>
+                <button class="small-copy-btn" id="copy-selected-page-btn" type="button">复制当前页</button>
+              </div>
+              <label class="field page-editor-field">
+                <span>本页创意 Prompt <b>可直接编辑</b></span>
+                <textarea id="page-prompt-editor" rows="10" spellcheck="false" placeholder="AI 完成这页后，点击上方页面卡片查看和修改完整 Prompt。"></textarea>
+              </label>
+              <p class="page-draft-status" id="page-draft-status" role="status" aria-live="polite">选择已完成页后可编辑，修改自动暂存在本机。</p>
+              <div class="page-editor-save-row">
+                <p>只保存你的文字修改，不会重新调用模型。</p>
+                <div class="draft-actions"><button class="small-copy-btn" id="copy-page-draft-btn" type="button" disabled>复制草稿</button><button class="outline-btn" id="discard-page-draft-btn" type="button" disabled>放弃本页草稿</button><button class="outline-btn project-save-btn" id="save-page-prompt-btn" type="button">保存本页修改</button></div>
+              </div>
+              <div class="page-rewrite-block">
+                <label class="field">
+                  <span>或让 AI 重写这一页</span>
+                  <textarea id="page-rewrite-notes" rows="2" placeholder="例如：钩子更突出；换成本土家庭场景；保留当前配色，但重做四宫格布局。"></textarea>
+                </label>
+                <button class="render-btn render-btn-analysis" id="rewrite-page-btn" type="button">AI 仅重写本页</button>
+              </div>
+              <div class="execution-preview-heading">
+                <div>
+                  <h4>实际生图 / 导出提示词</h4>
+                  <p>包含总控、本页原文、画布与参考约束。这里显示已保存版本，修改后请先保存。</p>
+                </div>
+                <button class="small-copy-btn" id="copy-execution-btn" type="button">复制执行版</button>
+              </div>
+              <pre class="prompt-output execution-output" id="page-execution-output" tabindex="0" aria-label="已保存的实际生图提示词"></pre>
+            </section>
           </div>
 
-          <div class="tab-content" id="tab-copy">
+          <div class="tab-content" id="tab-quality" role="tabpanel" aria-label="提示词质量检查">
+            <section class="quality-panel" aria-labelledby="quality-title">
+              <p class="eyebrow">CHECK BEFORE YOU CREATE</p>
+              <div class="quality-heading"><h3 id="quality-title">把问题定位到页，修改更有方向</h3><span class="quality-badge" id="quality-badge">尚未检查</span></div>
+              <p id="quality-summary" role="status">重复钩子、卖点对应、页面重复与语言信号，逐项给出原因。</p>
+              <div class="generation-actions quality-actions"><button class="render-btn render-btn-secondary" id="review-rules-btn" type="button">规则检查 <span>不调用模型</span></button><button class="render-btn render-btn-analysis" id="review-ai-btn" type="button">AI 深入检查 <span>会调用模型</span></button><button class="render-btn render-btn-retry" id="repair-quality-btn" type="button">AI 只修问题页 / 钩子</button></div>
+              <p class="quality-limits" id="quality-limits">规则不能保证语言自然度；AI 建议也不是母语人工审校或功效认证。警告不会自动禁止复制与生图。</p>
+              <small id="quality-meta"></small>
+              <p class="generation-error" id="quality-error" hidden></p>
+            </section>
+            <div class="quality-issues" id="quality-issues"></div>
+          </div>
+
+          <div class="tab-content" id="tab-copy" role="tabpanel" aria-label="本土化钩子文案">
+            <p class="tab-intro">按当前商品卖点生成当地语言文案，分别提供痛点型、效果型与场景型钩子。</p>
             <div class="copy-board" id="copy-board"></div>
           </div>
 
-          <div class="tab-content" id="tab-analysis">
+          <div class="tab-content" id="tab-analysis" role="tabpanel" aria-label="AI 策划依据">
             <div class="analysis-toolbar">
               <div>
-                <strong>AI Director 分析</strong>
-                <span id="analysis-meta">尚未运行 GPT‑5.6‑sol 分析</span>
+                <strong>这套内容，为什么这样安排</strong>
+                <span id="analysis-meta">尚未运行 AI 商品分析</span>
               </div>
               <button class="small-copy-btn" id="copy-analysis-btn" type="button">复制分析摘要</button>
             </div>
             <div class="analysis-summary" id="analysis-summary">
-              <div class="analysis-empty"><strong>先分析，再生图</strong><small>上传参考图后点击“先用 AI 分析”，可先查看 GPT‑5.6‑sol 对产品、噱头和页面顺序的判断。</small></div>
+              <div class="analysis-empty"><strong>先理解商品，再编排整套画面</strong><small>点击“AI 重新生成整套”后，这里会展示商品定位、视觉风格、卖点覆盖与逐页安排。</small></div>
             </div>
             <div class="analysis-page-list" id="analysis-page-list"></div>
           </div>
 
-          <div class="tab-content" id="tab-results">
+          <div class="tab-content" id="tab-results" role="tabpanel" aria-label="图片生成与结果">
+            <div class="render-section-heading">
+              <p class="eyebrow">03 / OPTIONAL IMAGE RENDER</p>
+              <h3>提示词准备好了，再生成图片</h3>
+              <p>本步骤会调用生图服务。先确认参考图和已保存的执行版 Prompt，也可以只复制提示词到其他工具使用。</p>
+            </div>
+            <div class="generation-console" aria-live="polite">
+              <div class="generation-console-head">
+                <div>
+                  <span class="console-kicker">IMAGE RENDER STATUS</span>
+                  <strong id="generation-status">等待当前商品的 AI Prompt</strong>
+                  <small id="generation-detail">准备完成后，选择生成单页或整套图片。</small>
+                </div>
+                <span class="generation-count" id="generation-count">0 / 37</span>
+              </div>
+              <div class="generation-progress"><i id="generation-progress-bar"></i></div>
+              <div class="generation-settings">
+                <label><span>生图模型</span><select id="render-model"><option value="gpt-image-2">GPT Image 2 · 待读取配置</option><option value="codex-gpt-image-2">Codex GPT Image 2</option><option value="auto">自动选择可用模型</option></select></label>
+                <label><span>质量</span><select id="render-quality"><option value="high">高质</option><option value="medium">平衡</option><option value="auto">自动</option></select></label>
+                <label><span>生成策略</span><select id="render-profile"><option value="standard">标准 · 稳定</option><option value="quality">精审 · 更慢</option><option value="fast">快速 · 低等待</option></select></label>
+                <small id="model-config-status">生图模型配置：读取中…</small>
+              </div>
+              <div class="generation-actions">
+                <button class="render-btn render-btn-secondary" id="generate-current-btn" type="button">生成 / 续跑当前页 <span id="selected-page-label">未选择</span></button>
+                <button class="render-btn render-btn-secondary" id="generate-suite-btn" type="button">生成 / 续跑整套 <span>15 + 22</span></button>
+                <button class="render-btn render-btn-retry" id="retry-failed-btn" type="button" hidden>重试失败页…</button>
+                <button class="render-btn render-btn-cancel" id="redo-current-btn" type="button">重新生成本页…</button>
+              </div>
+              <div class="redo-confirmation" id="redo-confirmation" hidden role="group" aria-label="确认重新生图"><p id="redo-confirmation-text"></p><div class="generation-actions"><button class="render-btn render-btn-cancel" id="confirm-redo-btn" type="button">确认新任务，可能计费</button><button class="outline-btn" id="dismiss-redo-btn" type="button">返回，不重生成</button></div></div>
+              <div class="queue-toolbar"><label for="image-queue-select">查看后台队列<select id="image-queue-select"><option value="">此版本尚无后台队列</option></select></label><button class="small-copy-btn" id="refresh-queues-btn" type="button">刷新队列</button><button class="small-copy-btn" id="resume-image-queue-btn" type="button" hidden>继续尚未提交页</button><button class="render-btn render-btn-cancel" id="cancel-image-queue-btn" type="button" hidden>停止此生图队列</button></div>
+              <p class="queue-settings" id="queue-settings">已完成和进行中的任务会复用，不会因重复点击而重新生图。</p>
+              <p class="generation-error" id="queue-error" hidden role="status"></p>
+              <div class="image-queue-pages" id="image-queue-pages" aria-label="各页后台生成状态"></div>
+            </div>
             <div class="results-toolbar">
               <div>
                 <strong>真实生成图片</strong>
-                <span>点击缩略图查看大图；每张图可单独保存</span>
+                <span>显示每张图的真实生成版本和长期保存状态；ZIP 包附带清单及缺图说明。</span>
               </div>
-              <button class="small-copy-btn" id="clear-results-btn" type="button">清空本页结果</button>
+              <div class="asset-actions"><a class="outline-btn" id="download-images-btn" href="#" aria-disabled="true">下载整套图片 ZIP</a><button class="small-copy-btn" id="archive-images-btn" type="button">长期保存历史图片</button><button class="small-copy-btn" id="clear-results-btn" type="button">暂时收起成图</button></div>
             </div>
             <div class="generated-gallery" id="generated-gallery">
-              <div class="gallery-empty"><span>○</span><strong>还没有成图</strong><small>上传参考图后，点击“生成当前页”或“直接生成整套”</small></div>
+              <div class="gallery-empty"><span>○</span><strong>这件商品还没有成图</strong><small>生成提示词并上传参考图后，可先生成一页查看效果。</small></div>
             </div>
           </div>
         </section>
       </section>
 
       <footer class="atelier-footer">
-        <span>COD Prompt Atelier / v1.0</span>
-        <span>日本本土化 · 强钩子 · 静态落地页</span>
-        <span>输入改变即时重排 · 点击按钮才会提交生图</span>
+        <span>COD Prompt Atelier / v3.0</span>
+        <span>商品专属 · 本土化钩子 · 静态落地页</span>
+        <span>Prompt 与成图分步操作 · 每个商品独立存档</span>
       </footer>
     </main>
-    <script src="/static/cod-prompt-generator.js?v=20260901-v9"></script>
+    <script src="/static/cod-prompt-generator.js?v=20260909-atelier-v11"></script>
   </body>
 </html>

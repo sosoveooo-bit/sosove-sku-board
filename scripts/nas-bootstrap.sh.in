@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Self-contained Debian 12 ARM64 NAS installer; payload appended by build_nas_package.py.
+set -Eeuo pipefail
+umask 077
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+usage() {
+    cat <<'HELP'
+SOSOVE NAS installer — Debian 12, ARM64 / aarch64
+Usage: sudo bash sosove-nas-arm64.run [--dir /DATA/sosove-sku-board] [--port 8793]
+       bash sosove-nas-arm64.run --check [--dir /DATA/sosove-sku-board]
+Options: --config-file /path/to/private-config.json   Import private configuration
+         --help                                    Show this help without changes
+Put the .run file on your NAS data volume. The default install directory is
+sosove-sku-board beside the .run file. Root filesystem installs are excluded.
+--check is read-only apart from an automatically removed data-volume temp folder;
+it does not install packages, create users, or change services. Dependencies are
+installed from your configured signed APT repositories only during installation.
+HELP
+}
+target='' port=8793 config='' check=0
+while (( $# )); do
+    case "$1" in
+        --help|-h) usage; exit 0 ;;
+        --check) check=1; shift ;;
+        --dir|--port|--config-file)
+            (( $# >= 2 )) && [[ -n "$2" ]] || fail "Missing value for $1"
+            case "$1" in --dir) target=$2;; --port) port=$2;; --config-file) config=$2;; esac
+            shift 2 ;;
+        *) fail "Unknown option. Use --help." ;;
+    esac
+done
+[[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || fail 'Port must be 1-65535.'
+port=$((10#$port))
+[[ $(uname -s) == Linux ]] || fail 'This package targets Linux on an ARM64 NAS.'
+case "$(uname -m)" in aarch64|arm64) ;; *) fail 'Architecture mismatch: this package targets aarch64 / arm64, not an x86 VPS.';; esac
+os_id='' os_like='' os_version=''
+[[ -r /etc/os-release ]] || fail 'Missing /etc/os-release.'
+while IFS='=' read -r key value; do
+    value=${value#\"}; value=${value%\"}; value=${value#\'}; value=${value%\'}
+    case "$key" in ID) os_id=$value;; ID_LIKE) os_like=$value;; VERSION_ID) os_version=$value;; esac
+done < /etc/os-release
+[[ "$os_version" == 12 && ( "$os_id" == debian || " $os_like " == *' debian '* ) ]] || fail 'Debian 12 is required.'
+(( check )) || (( EUID == 0 )) || fail 'Run installation with sudo bash; --check works without root.'
+for tool in realpath dirname df findmnt sha256sum tail awk mktemp mkdir rm stat dpkg-query; do
+    command -v "$tool" >/dev/null 2>&1 || fail "Missing required tool: $tool"
+done
+self=$(realpath -e -- "${BASH_SOURCE[0]}")
+[[ -n "$target" ]] || target="$(dirname -- "$self")/sosove-sku-board"
+[[ "$target" == /* && "$target" != *$'\n'* && "$target" != *$'\r'* && "$target" != *$'\t'* ]] || fail 'Choose an absolute data-volume path without control characters.'
+cursor=''; IFS='/' read -r -a components <<< "$target"
+for component in "${components[@]}"; do
+    [[ -n "$component" ]] || continue
+    [[ "$component" != . && "$component" != .. ]] || fail 'Dot path components are excluded.'
+    cursor="$cursor/$component"
+    [[ ! -L "$cursor" ]] || fail 'Install path contains a symbolic link; choose its real data-volume path.'
+    [[ ! -e "$cursor" || -d "$cursor" ]] || fail 'Install path contains a non-directory.'
+done
+target=$(realpath -m -- "$target")
+case "$target" in /|/bin|/bin/*|/boot|/boot/*|/dev|/dev/*|/etc|/etc/*|/lib*|/opt|/opt/*|/proc|/proc/*|/root|/root/*|/run|/run/*|/sbin|/sbin/*|/sys|/sys/*|/tmp|/tmp/*|/usr|/usr/*|/var|/var/*) fail 'Choose a dedicated directory on a mounted data volume, not a system directory.';; esac
+parent=$(dirname -- "$target")
+while [[ ! -d "$parent" ]]; do parent=$(dirname -- "$parent"); done
+parent=$(realpath -e -- "$parent")
+root_device=$(findmnt -n -o MAJ:MIN -T /); data_device=$(findmnt -n -o MAJ:MIN -T "$parent")
+[[ -n "$root_device" && -n "$data_device" && "$root_device" != "$data_device" ]] || fail 'Install target is on the root filesystem. Move the package to a NAS data volume or set --dir.'
+mount_options=$(findmnt -n -o OPTIONS -T "$parent")
+[[ ",$mount_options," != *,noexec,* ]] || fail 'The target data volume has noexec enabled; select an executable data volume.'
+root_free=$(df -PB1 / | awk 'NR==2 {print $4}'); data_free=$(df -PB1 "$parent" | awk 'NR==2 {print $4}')
+[[ "$root_free" =~ ^[0-9]+$ && "$data_free" =~ ^[0-9]+$ ]] || fail 'Disk free space check failed.'
+(( root_free >= 536870912 )) || fail 'Root filesystem needs at least 512 MiB free for system dependencies.'
+(( data_free >= 3221225472 )) || fail 'Target data volume needs at least 3 GiB free.'
+[[ -z "$config" || ( -f "$config" && -r "$config" ) ]] || fail 'The configuration file must be a readable regular file.'
+missing=()
+for package in python3.11 python3.11-venv ca-certificates fonts-noto-cjk; do
+    [[ $(dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null || true) == ii* ]] || missing+=("$package")
+done
+printf 'Preflight: Debian 12 ARM64; target=%s; port=%s; data-free=%s bytes; root-free=%s bytes\n' "$target" "$port" "$data_free" "$root_free"
+if (( check && ${#missing[@]} )); then printf 'Missing system packages: %s\n' "${missing[*]}"; fail 'Read-only check complete. Installation will install the listed packages.'; fi
+if (( check )); then command -v python3.11 >/dev/null 2>&1 || fail 'Read-only check: python3.11 is missing.'; fi
+expected='__PAYLOAD_SHA256__'
+[[ "$expected" =~ ^[0-9a-f]{64}$ ]] || fail 'This is an unbuilt installer template.'
+payload_line=$(awk '/^__SOSOVE_PAYLOAD_BELOW__$/ {print NR+1; exit}' "$self")
+[[ "$payload_line" =~ ^[0-9]+$ ]] || fail 'Payload marker is missing.'
+actual=$(tail -n "+$payload_line" "$self" | sha256sum | awk '{print $1}')
+[[ "$actual" == "$expected" ]] || fail 'Package checksum mismatch; use an intact installer package.'
+stage=''
+cleanup() {
+    result=$?; trap - EXIT HUP INT TERM
+    if [[ -n "$stage" && -d "$stage" && ! -L "$stage" && -f "$stage/.bootstrap-owner" ]]; then
+        resolved=$(realpath -e -- "$stage" 2>/dev/null || true)
+        if [[ "$resolved" == "$parent"/.sosove-install.* && "$(dirname -- "$resolved")" == "$parent" && "$resolved" == "$stage" && $(stat -c %u -- "$stage") == "$EUID" ]]; then
+            rm -rf --one-file-system -- "$stage" || true
+        fi
+    fi
+    exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT; trap 'exit 143' HUP TERM
+stage=$(mktemp -d -- "$parent/.sosove-install.XXXXXXXX")
+: > "$stage/.bootstrap-owner"
+mkdir -p -- "$stage/unpack" "$stage/tmp" "$stage/pip" "$stage/cache" "$stage/apt/lists/partial" "$stage/apt/archives/partial"
+export TMPDIR="$stage/tmp" PIP_CACHE_DIR="$stage/pip" XDG_CACHE_HOME="$stage/cache" PYTHONDONTWRITEBYTECODE=1
+tail -n "+$payload_line" "$self" > "$stage/payload.tar.gz"
+[[ $(sha256sum -- "$stage/payload.tar.gz" | awk '{print $1}') == "$expected" ]] || fail 'Package changed during staging.'
+if (( ! check && ${#missing[@]} )); then
+    command -v apt-get >/dev/null 2>&1 || fail 'APT is required for missing system packages.'
+    apt_args=(-o "Dir::State::lists=$stage/apt/lists" -o "Dir::Cache::archives=$stage/apt/archives" -o "Dir::Cache::pkgcache=$stage/apt/pkgcache.bin" -o "Dir::Cache::srcpkgcache=$stage/apt/srcpkgcache.bin" -o Acquire::Languages=none -o DPkg::Lock::Timeout=120)
+    export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+    apt-get "${apt_args[@]}" update
+    apt-get "${apt_args[@]}" install -y --no-install-recommends "${missing[@]}"
+fi
+command -v python3.11 >/dev/null 2>&1 || fail 'python3.11 is required.'
+python3.11 -I - "$stage/payload.tar.gz" "$stage/unpack" <<'PY'
+import os, pathlib, shutil, sys, tarfile
+archive, destination = sys.argv[1:]
+root = pathlib.Path(destination).resolve()
+try:
+    with tarfile.open(archive, 'r:gz') as bundle:
+        members = bundle.getmembers()
+        if len(members) > 100000 or sum(m.size for m in members) > 3 * 1024**3:
+            raise ValueError('payload exceeds extraction limits')
+        seen = set()
+        for member in members:
+            name = member.name
+            path = pathlib.PurePosixPath(name)
+            if (not name or '\\' in name or '\x00' in name or path.is_absolute()
+                    or '..' in path.parts or not path.parts or ':' in path.parts[0]
+                    or path.parts[0] not in {'app', 'wheels', 'installer', 'manifest.json'}
+                    or not (member.isfile() or member.isdir()) or member.size < 0
+                    or str(path) in seen):
+                raise ValueError('unsafe or duplicate archive entry')
+            seen.add(str(path))
+            (root / path).resolve().relative_to(root)
+        for member in members:
+            target = root / pathlib.PurePosixPath(member.name)
+            if member.isdir():
+                target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with bundle.extractfile(member) as source, target.open('xb') as out:
+                shutil.copyfileobj(source, out, 1024 * 1024)
+            os.chmod(target, member.mode & 0o755)
+    if not (root / 'installer' / 'nas_installer.py').is_file():
+        raise ValueError('installer core is missing')
+except (OSError, ValueError, tarfile.TarError) as exc:
+    print('ERROR: Invalid installer payload: ' + str(exc), file=sys.stderr)
+    raise SystemExit(1)
+PY
+args=(--source "$stage/unpack" --dir "$target" --port "$port")
+[[ -z "$config" ]] || args+=(--config-file "$config")
+(( ! check )) || args+=(--check)
+python3.11 -I "$stage/unpack/installer/nas_installer.py" "${args[@]}"
+exit "$?"
+__SOSOVE_PAYLOAD_BELOW__
