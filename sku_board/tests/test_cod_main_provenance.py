@@ -149,12 +149,18 @@ class CodMainProvenanceTests(unittest.TestCase):
         self.assertEqual(server, before_server)
 
     def render_request(self, reference_bytes):
+        # This fixture tests reference provenance, not online page authorship.
+        # The GitHub implementation added a separate completeness gate; stub
+        # that prerequisite without bypassing the reference/hash checks below.
+        self.start_patch(patch.object(backend, "ai_image_cod_company_prompt_status",
+                                     return_value={"ready": True, "readyCount": 30}))
         fields = {
             "prompt": self.PROMPT,
             "model": "gpt-image-2",
             "mode": "edit",
             "size": "750x1000",
             "quality": "high",
+            "heroAB": "true",  # Stale browsers must not trigger COD post-render AI selection.
             "count": 1,
             "suiteKey": backend.AI_IMAGE_COD_SUITE_KEY,
             "suiteCount": 30,
@@ -193,6 +199,7 @@ class CodMainProvenanceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "MOCK_DISPATCH_REACHED"):
                 backend.generate_ad_launch_ai_image_edit(fields, files, {"role": "admin"})
             dispatch.assert_called_once()
+            self.assertEqual(dispatch.call_args.kwargs['count'], 1)
             sent_prompts = "\n".join(dispatch.call_args.kwargs.get("prompts") or [])
             self.assertNotIn("FDA認証", sent_prompts)
             for fact in self.SERVER_FACTS:

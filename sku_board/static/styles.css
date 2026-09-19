@@ -6181,6 +6181,32 @@ input {
   grid-column: 1 / -1;
 }
 
+.ai-director-custom-model-field {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-director-custom-model-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ai-director-custom-model-row input {
+  flex: 1;
+}
+
+.ai-director-custom-model-row button {
+  flex-shrink: 0;
+}
+
+.ai-director-custom-model-field small {
+  color: #776b5c;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .ai-director-settings-grid label.ai-director-fallback-field {
   gap: 5px;
 }

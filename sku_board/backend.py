@@ -34,7 +34,16 @@ from shopline_monitor.backend import ShoplineClient, load_local_env_files
 from sku_board import jp25_creative
 from sku_board import cod_content
 from sku_board import cod_main_density
+from sku_board import cod_copy_locale
 from sku_board import cod_visual_routes
+from sku_board import cod_visual_diversity
+from sku_board import cod_campaign_art
+from sku_board import cod_source_input
+from sku_board import cod_rich_graphics
+from sku_board.visual_agents import contracts as visual_contracts
+from sku_board.visual_agents import pipeline as visual_pipeline
+from sku_board.visual_agents import adapter as visual_adapter
+from sku_board.visual_agents.store import Store as VisualAgentStore
 from sku_board import market_localization
 from sku_board import cod_strip
 from sku_board import image_cancellation
@@ -107,6 +116,13 @@ AI_DIRECTOR_KNOWN_MODELS = (
     "gpt-5.6-terra",
     "gpt-5.6-sol",
 )
+# This catalog is independent of the retry chain above. Adding a choice must
+# not add another paid request when the primary model fails.
+AI_DIRECTOR_SELECTABLE_MODELS = (
+    "gpt-5.6-terra", "gpt-5.6-sol", "deepseek-v4.1-flash",
+    "gemini-3-flash-agent", "claude-sonnet-4-6",
+)
+AI_DIRECTOR_CUSTOM_MODEL_LIMIT = 50
 OPEN_IMAGE_PROMPTS_DEFAULT_ROOT = ROOT_DIR.parent / "open-image-prompts"
 ACORE_IMAGE_MODEL_PREFIX = "acore/"
 ACORE_IMAGE_MODELS = ("gpt-image-2", "nano-banana-2", "nano-banana-pro")
@@ -5919,6 +5935,43 @@ def normalize_ai_director_base_url(value: Any) -> str:
     return raw
 
 
+def validate_ai_director_model_name(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("模型名称须为文本")
+    model = value.strip()
+    if not model or len(model) > 120:
+        raise ValueError("模型名称长度须为 1–120 个字符")
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in model):
+        raise ValueError("模型名称请勿包含空格、换行或控制字符")
+    return model
+
+
+def normalize_ai_director_custom_models(value: Any, primary_model: str = "", *, strict: bool = False) -> list[str]:
+    if not isinstance(value, list):
+        if strict:
+            raise ValueError("自定义模型列表格式错误")
+        value = []
+    models: list[str] = []
+    # Retain unknown primary models from older settings without a migration or
+    # a model request. Never normalize provider aliases or change ID casing.
+    for item in [*value, primary_model]:
+        if item == "":
+            continue
+        try:
+            model = validate_ai_director_model_name(item)
+        except ValueError:
+            if strict:
+                raise
+            continue
+        if model not in AI_DIRECTOR_SELECTABLE_MODELS and model not in models:
+            models.append(model)
+    if len(models) > AI_DIRECTOR_CUSTOM_MODEL_LIMIT:
+        if strict:
+            raise ValueError(f"自定义模型最多保存 {AI_DIRECTOR_CUSTOM_MODEL_LIMIT} 个")
+        models = models[:AI_DIRECTOR_CUSTOM_MODEL_LIMIT]
+    return models
+
+
 def ai_director_default_settings() -> dict[str, Any]:
     base_url = normalize_ai_director_base_url(os.environ.get("AI_DIRECTOR_API_BASE_URL", ""))
     api_key = limited_text(os.environ.get("AI_DIRECTOR_API_KEY"), "", 500)
@@ -5928,6 +5981,7 @@ def ai_director_default_settings() -> dict[str, Any]:
         "baseUrl": base_url,
         "apiKey": api_key,
         "model": model,
+        "customModels": [],
         "fallbackModels": normalize_ai_director_fallback_models(
             os.environ.get("AI_DIRECTOR_FALLBACK_MODELS", ""),
             model,
@@ -5955,6 +6009,7 @@ def load_ai_director_settings() -> dict[str, Any]:
     settings["baseUrl"] = normalize_ai_director_base_url(settings.get("baseUrl"))
     settings["apiKey"] = limited_text(settings.get("apiKey"), "", 500)
     settings["model"] = limited_text(settings.get("model"), "gpt-5.6-terra", 120)
+    settings["customModels"] = normalize_ai_director_custom_models(settings.get("customModels"), settings["model"])
     settings["fallbackModels"] = normalize_ai_director_fallback_models(settings.get("fallbackModels"), settings["model"])
     settings["timeout"] = clamp(int(number(settings.get("timeout"), 60)), 5, 180)
     settings["visionEnabled"] = truthy(settings.get("visionEnabled"), True)
@@ -5971,12 +6026,17 @@ def public_ai_director_settings(settings: dict[str, Any] | None = None) -> dict[
     api_key_configured = bool(text(current.get("apiKey")))
     configured = bool(base_url and api_key_configured and text(current.get("model")))
     timeout_budget = ai_director_effective_timeouts(current)
+    custom_models = normalize_ai_director_custom_models(current.get("customModels"), text(current.get("model")))
     return {
         "enabled": truthy(current.get("enabled"), False),
         "configured": configured,
         "baseUrl": base_url,
         "model": text(current.get("model"), "gpt-5.6-terra"),
-        "fallbackModels": normalize_ai_director_fallback_models(current.get("fallbackModels"), text(current.get("model"), "gpt-5.6-terra")),
+        "customModels": custom_models,
+        "availableModels": list(dict.fromkeys([*AI_DIRECTOR_SELECTABLE_MODELS, *custom_models, text(current.get("model"), "gpt-5.6-terra")])),
+        # Show the effective chain, not stale saved aliases that are no longer
+        # selected for long vision requests.
+        "fallbackModels": ai_director_model_candidates(current)[1:],
         "modelChain": ai_director_model_candidates(current),
         "autoFallbackEnabled": True,
         "timeout": int(number(current.get("timeout"), 60)),
@@ -6040,9 +6100,10 @@ def save_ai_director_settings(payload: dict[str, Any], actor: dict[str, Any]) ->
         raise ValueError("只有管理员可以修改 AI 导演配置")
     current = load_ai_director_settings()
     base_url = normalize_ai_director_base_url(payload.get("baseUrl", current.get("baseUrl")))
-    model = limited_text(payload.get("model"), text(current.get("model"), "gpt-5.6-terra"), 120)
-    if not model:
-        raise ValueError("请填写导演模型名称")
+    model = validate_ai_director_model_name(payload.get("model", current.get("model", "gpt-5.6-terra")))
+    custom_models = normalize_ai_director_custom_models(
+        payload.get("customModels", current.get("customModels", [])), model, strict=True,
+    )
     api_key = text(current.get("apiKey"))
     submitted_key = limited_text(payload.get("apiKey"), "", 500)
     if submitted_key:
@@ -6054,6 +6115,7 @@ def save_ai_director_settings(payload: dict[str, Any], actor: dict[str, Any]) ->
         "baseUrl": base_url,
         "apiKey": api_key,
         "model": model,
+        "customModels": custom_models,
         "fallbackModels": normalize_ai_director_fallback_models(payload.get("fallbackModels", current.get("fallbackModels")), model),
         "timeout": clamp(int(number(payload.get("timeout"), number(current.get("timeout"), 60))), 5, 180),
         "visionEnabled": truthy(payload.get("visionEnabled"), truthy(current.get("visionEnabled"), True)),
@@ -6113,9 +6175,10 @@ def normalize_ai_director_fallback_models(value: Any, primary_model: Any) -> lis
     """Return a compact, de-duplicated failover chain for the director API."""
     primary = limited_text(primary_model, "gpt-5.6-terra", 120)
     source_values = value if isinstance(value, list) else re.split(r"[,;|\s]+", text(value))
+    aliases = {"gemini-3-flash-agent": "gemini-3-flash"}
     models: list[str] = []
     for item in source_values:
-        candidate = limited_text(item, "", 120)
+        candidate = aliases.get(limited_text(item, "", 120), limited_text(item, "", 120))
         if candidate and candidate != primary and candidate not in models:
             models.append(candidate)
     if not models:
@@ -6127,7 +6190,15 @@ def ai_director_model_candidates(settings: dict[str, Any]) -> list[str]:
     primary = limited_text(settings.get("model"), "gpt-5.6-terra", 120)
     if truthy(settings.get("_singleModel"), False):
         return [primary]
-    return [primary, *normalize_ai_director_fallback_models(settings.get("fallbackModels"), primary)]
+    peer = {"gpt-5.6-terra":"gpt-5.6-sol", "gpt-5.6-sol":"gpt-5.6-terra"}.get(primary, "")
+    configured = normalize_ai_director_fallback_models(settings.get("fallbackModels"), primary)
+    candidates = [primary]
+    for candidate in ([peer] if peer else []) + configured:
+        if candidate and candidate not in candidates:candidates.append(candidate)
+    # For long vision requests keep the regular chain to the two verified GPT
+    # peers. An unsupported emergency provider must not consume another full
+    # timeout before the page can resume on the next round.
+    return candidates[:2]
 
 
 def ai_director_jp25_runtime_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -6215,8 +6286,30 @@ def ai_director_retryable_transport_error(value: Any) -> bool:
     )
 
 
+def ai_director_json_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the JSON instruction in input, even when proxies move system to instructions."""
+    instruction = "Return one valid json object matching the requested schema. No Markdown or extra prose."
+    result = list(messages)
+    for index in range(len(result) - 1, -1, -1):
+        message = result[index]
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            if instruction not in content:
+                result[index] = {**message, 'content': content + '\n' + instruction}
+            return result
+        if isinstance(content, list):
+            if not any(isinstance(part, dict) and part.get('type') == 'text'
+                       and part.get('text') == instruction for part in content):
+                result[index] = {**message, 'content': [*content, {'type': 'text', 'text': instruction}]}
+            return result
+    return [*result, {'role': 'user', 'content': instruction}]
+
+
 def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[str, Any]]) -> tuple[str, int]:
     import requests
+    from .director_transport import DirectorHTTPAdapter, DirectorUploadTimeout
 
     api_key = text(settings.get("apiKey"))
     model = text(settings.get("model"))
@@ -6226,7 +6319,10 @@ def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[s
         raise ValueError("AI 导演模型未配置")
     endpoint = ai_director_completion_endpoint(settings)
     read_timeout = clamp(int(number(settings.get("timeout"), 60)), 5, 180)
-    connect_timeout = clamp(int(number(os.environ.get("AI_DIRECTOR_CONNECT_TIMEOUT"), 8)), 3, 30)
+    connect_timeout = min(read_timeout, clamp(int(number(os.environ.get("AI_DIRECTOR_CONNECT_TIMEOUT"), 8)), 3, 30))
+    write_timeout = clamp(int(number(os.environ.get("AI_DIRECTOR_WRITE_TIMEOUT"), 90)), 5, 180)
+    transport_deadline = min(float(settings.get('_transportDeadline') or settings.get('_absoluteDeadline') or float('inf')),
+                             time.monotonic() + connect_timeout + write_timeout + read_timeout)
     max_output_tokens = clamp(
         int(number(settings.get("_maxOutputTokens"), number(os.environ.get("AI_DIRECTOR_MAX_OUTPUT_TOKENS"), 7000))),
         512,
@@ -6234,6 +6330,11 @@ def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[s
     )
     started = time.perf_counter()
     session = requests.Session()
+    transport_stats: dict[str, Any] = {'uploadComplete': False}
+    settings['_lastDirectorTransport'] = transport_stats
+    adapter = DirectorHTTPAdapter(write_timeout=write_timeout, deadline=transport_deadline, stats=transport_stats)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
     # Director APIs are commonly direct-IP services. Inheriting a desktop HTTP
     # proxy can route a long vision request through Cloudflare and turn it into
     # a 524 page even though the API itself is healthy.
@@ -6248,21 +6349,25 @@ def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[s
             },
             json={
                 "model": model,
-                "messages": messages,
+                "messages": ai_director_json_messages(messages) if settings.get("_jsonObject") else messages,
                 "stream": False,
                 "max_tokens": max_output_tokens,
+                **({"response_format": {"type": "json_object"}} if settings.get("_jsonObject") else {}),
             },
             timeout=(connect_timeout, read_timeout),
         )
+    except DirectorUploadTimeout as exc:
+        raise ValueError(f"AI 导演上传超时：图片请求未发送完成（上传上限 {write_timeout} 秒，受本轮剩余时限约束）；已保留进度") from exc
     except requests.ConnectTimeout as exc:
         raise ValueError(f"AI 导演建立连接超时：{connect_timeout} 秒") from exc
     except requests.ReadTimeout as exc:
-        raise ValueError(f"AI 导演响应超时：{read_timeout} 秒") from exc
+        raise ValueError(f"AI 导演响应超时：等待回复上限 {read_timeout} 秒（受本轮剩余时限约束）") from exc
     except requests.Timeout as exc:
         raise ValueError(f"AI 导演请求超时：{read_timeout} 秒") from exc
     except requests.RequestException as exc:
         raise ValueError(f"AI 导演连接失败：{limited_text(exc, limit=260)}") from exc
     finally:
+        transport_stats['elapsedMs'] = round((time.perf_counter() - started) * 1000)
         session.close()
     latency_ms = int((time.perf_counter() - started) * 1000)
     if not response.ok:
@@ -6278,6 +6383,8 @@ def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[s
         body = response.json()
     except ValueError as exc:
         raise ValueError(f"AI 导演返回了非 JSON 内容：{limited_text(response.text, limit=300)}") from exc
+    choices = body.get("choices") if isinstance(body, dict) else None
+    settings['_responseFinishReason'] = choices[0].get('finish_reason') if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
     return ai_director_message_text(body), latency_ms
 
 
@@ -6290,6 +6397,7 @@ def invoke_ai_director_chat(settings: dict[str, Any], messages: list[dict[str, A
     candidates = ai_director_model_candidates(settings)
     requested_model = candidates[0]
     failures: list[dict[str, str]] = []
+    endpoint_transport_failed = False
     started = time.perf_counter()
     # Apply the saved panel timeout to every model. The older 40-second attempt
     # cap contradicted a 90-second panel setting and left only ~36 seconds for
@@ -6308,6 +6416,7 @@ def invoke_ai_director_chat(settings: dict[str, Any], messages: list[dict[str, A
             else clamp(int(number(os.environ.get("AI_DIRECTOR_STREAM_RETRIES"), 1)), 0, 2)
         )
         retry_index = 0
+        format_compat_retried = False
         while True:
             image_cancellation.check()
             remaining = int(deadline - time.monotonic())
@@ -6322,6 +6431,7 @@ def invoke_ai_director_chat(settings: dict[str, Any], messages: list[dict[str, A
             attempt_settings = {
                 **settings,
                 "model": model,
+                "_transportDeadline": deadline,
                 "timeout": min(
                     attempt_timeout,
                     remaining,
@@ -6337,10 +6447,29 @@ def invoke_ai_director_chat(settings: dict[str, Any], messages: list[dict[str, A
                     "model": model,
                     "fallbackUsed": attempt_index > 1,
                     "attempts": [*failures, success_attempt],
+                    "finishReason": attempt_settings.get('_responseFinishReason'),
+                    "transport": attempt_settings.get('_lastDirectorTransport'),
                 }
                 return content, max(latency_ms, int((time.perf_counter() - started) * 1000))
             except Exception as exc:
+                settings['_lastDirectorTransport'] = attempt_settings.get('_lastDirectorTransport')
                 message = limited_text(exc, "", 260)
+                lowered = message.lower()
+                unsupported_format = ('http 400' in lowered and 'response_format' in lowered
+                                      and any(v in lowered for v in ('unsupported', 'not supported', 'unknown', 'unrecognized')))
+                missing_json_input = (any(code in lowered for code in ('http 400', 'http 502'))
+                                      and 'input messages must contain' in lowered
+                                      and 'json' in lowered and 'json_object' in lowered)
+                if (settings.get('_jsonObject') and not format_compat_retried
+                        and (unsupported_format or missing_json_input)):
+                    # Compatibility fallback only for an explicit rejected format parameter.
+                    # Never retry auth/quota/transport failures through this branch.
+                    format_compat_retried = True
+                    settings['_jsonObject'] = False
+                    # Keep the textual contract when the gateway rejects the optional format parameter.
+                    messages = ai_director_json_messages(messages)
+                    failures.append({'model': model, 'status': 'format-compatibility', 'message': message})
+                    continue
                 retryable_stream = ai_director_retryable_transport_error(message) and "响应超时" not in message and "请求超时" not in message
                 if retryable_stream and retry_index < retry_limit and int(deadline - time.monotonic()) >= 8:
                     failures.append({"model": model, "status": "retrying", "message": message})
@@ -6349,10 +6478,17 @@ def invoke_ai_director_chat(settings: dict[str, Any], messages: list[dict[str, A
                     continue
                 failures.append({"model": model, "status": "failed", "message": message})
                 lowered = message.lower()
+                # A socket/TLS/upload failure belongs to this endpoint, not the
+                # selected model. Do not upload the same multi-MB body again to
+                # the same host under another model name.
+                endpoint_transport_failed = any(marker in lowered for marker in (
+                    '导演上传超时', '导演建立连接超时', '导演连接失败',
+                    'sslwantwriteerror', 'sslcertverificationerror', 'write operation timed out',
+                ))
                 # A gateway response is endpoint-wide rather than model-specific;
                 # sending the same large request to the fallback model repeats the
                 # same 524 wait and blocks the suite-plan HTTP request.
-                if any(
+                if endpoint_transport_failed or any(
                     marker in lowered
                     for marker in (
                         "http 502",
@@ -6375,7 +6511,8 @@ def invoke_ai_director_chat(settings: dict[str, Any], messages: list[dict[str, A
         "attempts": failures,
     }
     summary = "；".join(f"{item['model']}：{item['message']}" for item in failures)
-    raise ValueError(f"AI 导演模型链均未成功：{limited_text(summary, '', 720)}")
+    label = 'AI 导演接口传输未完成' if endpoint_transport_failed else 'AI 导演模型链均未成功'
+    raise ValueError(f"{label}：{limited_text(summary, '', 720)}")
 
 
 def test_ai_director_service(payload: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
@@ -7782,7 +7919,7 @@ AI_IMAGE_COD_KR_COUNT = 30
 # backwards compatible and continue to use the 8-main + 22-detail contract.
 AI_IMAGE_COD_COUNT_OPTIONS = (8, 12, 16, 20, 24, 30, 37)
 AI_IMAGE_COD_KR_SIZE = "750x1000"
-AI_IMAGE_COD_KR_PLAN_VERSION = "cod-country-v29-selected-market-lock"
+AI_IMAGE_COD_KR_PLAN_VERSION = "cod-country-v30-all-main"
 AI_IMAGE_COD_DETAIL_COUNT = 22
 AI_IMAGE_COD_DETAIL_COUNT_OPTIONS = (12, 16, 20, 22)
 AI_IMAGE_COD_HOOK_STRIP_SIZES = {"750x150", "750x100"}
@@ -9717,7 +9854,7 @@ def ai_image_cod_selected_product_sources(base_prompt: str) -> list[str]:
 
 
 def extract_ai_image_cod_kr_points(
-    base_prompt: str, brief: str, *, preserve_all_source: bool = False,
+    base_prompt: str, brief: str, *, preserve_all_source: bool = False, suite_key: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     source = text(brief)
     extracted = extract_ai_image_suite_points(source) or extract_ai_image_suite_points(base_prompt)
@@ -11429,19 +11566,8 @@ def build_ai_image_rakuten_plan(
 
 
 def ai_image_cod_country_section_counts(brief: str, suite_count: int) -> tuple[int, int]:
-    """Honor an explicit `12张主图 + 18张详情图` split when it matches the suite total."""
-    source = text(brief)
-    main_match = re.search(r"(?:主图\s*(\d{1,2})\s*张|(\d{1,2})\s*张\s*主图)", source, re.IGNORECASE)
-    detail_match = re.search(r"(?:详情(?:图|页)?\s*(\d{1,2})\s*张|(\d{1,2})\s*张\s*详情(?:图|页)?)", source, re.IGNORECASE)
-    main_count = int(next((item for item in (main_match.groups() if main_match else ()) if item), 0))
-    detail_count = int(next((item for item in (detail_match.groups() if detail_match else ()) if item), 0))
-    if main_count > 0 and detail_count > 0 and main_count + detail_count == suite_count:
-        return main_count, detail_count
-    # The company reference uses 15 main images followed by 22 detail images.
-    # Keep the established 8+22 layout for the default 30-image run, while a
-    # selected 37-image run adopts the company split automatically.
-    default_main = 15 if suite_count == 37 else min(8, suite_count)
-    return default_main, max(0, suite_count - default_main)
+    """Country COD is all main images; the separate detail suite is unchanged."""
+    return max(0, suite_count), 0
 
 
 def ai_image_cod_page_is_main(
@@ -12722,6 +12848,8 @@ def normalize_ai_image_suite_plan(value: Any, suite_count: int = AI_IMAGE_SUITE_
             return []
     if not isinstance(raw, list):
         return []
+    if visual_contracts.is_agent(raw):
+        return visual_adapter.normalize_pages(raw, suite_count)
     page_map: dict[int, dict[str, Any]] = {}
     for item in raw:
         if not isinstance(item, dict):
@@ -13392,6 +13520,10 @@ def ai_image_cod_source_point_coverage(
 
 
 def require_ai_image_cod_source_coverage(pages, base_prompt, brief, suite_key) -> None:
+    if visual_contracts.is_agent(pages):
+        if not all(p.get('agentSpec', {}).get('sourceIds') and p.get('sourcePointVerbatim') for p in pages):
+            raise ValueError('动态方案的原文引用尚未完整')
+        return  # Preserve historical saved plans; new COD planning uses GitHub's route.
     coverage = ai_image_cod_source_point_coverage(pages, base_prompt, brief, suite_key)
     if not coverage["complete"]:
         missing = "、".join(coverage["missing"][:6])
@@ -14084,6 +14216,9 @@ def build_ai_image_suite_prompts(
         size = AI_IMAGE_RAKUTEN_SIZE
     suite_count = normalize_ai_image_suite_count(resolved_suite_key, suite_count)
     pages = normalize_ai_image_suite_plan(plan, suite_count) if plan else []
+    if visual_contracts.is_agent(pages):
+        return visual_adapter.compile_pages(pages, base_prompt, brief, resolved_suite_key,
+                                            country, size, suite_count)
     if country and resolved_suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS:
         selected_country = normalize_ai_image_cod_country(country)
         for page_value in pages:
@@ -14201,6 +14336,9 @@ def build_ai_image_suite_prompts(
         resolved_suite_key == AI_IMAGE_LANDING_SUITE_KEY
         and ai_image_suite_product_is_fashion(base_prompt, brief)
     )
+    cod_diversity = {
+        record['page']: record for record in cod_visual_diversity.contracts(pages)
+    } if resolved_suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS else {}
     prompts: list[str] = []
 
     def append_locked_page_prompt(page_prompt: str, page_value: dict[str, Any]) -> None:
@@ -14397,6 +14535,7 @@ def build_ai_image_suite_prompts(
                 country=text(page.get("country")) or country,
                 has_style_anchor=has_style_anchor,
                 is_fashion_product=ai_image_suite_product_is_fashion(base_prompt, brief),
+                diversity_contract=cod_diversity.get(page.get('page')),
             )
             if company_page_prompt:
                 prompts.append(company_page_prompt)
@@ -14522,6 +14661,7 @@ def build_ai_image_suite_prompts(
                 country=text(page.get("country")) or country,
                 has_style_anchor=has_style_anchor,
                 is_fashion_product=ai_image_suite_product_is_fashion(base_prompt, brief),
+                diversity_contract=cod_diversity.get(page.get('page')),
             )
             if company_page_prompt:
                 prompts.append(company_page_prompt)
@@ -15048,6 +15188,8 @@ def ai_image_cod_company_prompt_status(
     pages: Any,
     expected_count: int,
 ) -> dict[str, Any]:
+    if visual_contracts.is_agent(pages):
+        return visual_pipeline.ready_status(pages, expected_count, visual_contracts.VERSION)
     base_status = ai_image_jp_company_prompt_status(pages, expected_count)
     duplicate_status = ai_image_cod_duplicate_company_prompt_pages(pages)
     duplicate_pages = set(duplicate_status["duplicatePages"])
@@ -17374,6 +17516,7 @@ def ai_image_cod_company_remote_authored_execution_prompt(
     country: str = "",
     has_style_anchor: bool = False,
     is_fashion_product: bool = False,
+    diversity_contract: dict[str, Any] | None = None,
 ) -> str:
     """Compile one concise company-style COD prompt from the online seven layers.
 
@@ -17397,14 +17540,6 @@ def ai_image_cod_company_remote_authored_execution_prompt(
     copy_mode = ai_image_cod_suite_copy_mode(brief, page_value)
     resolved_suite_key = normalize_ai_image_suite_key(suite_key)
     text_policy = ai_image_page_text_policy(brief, page_value, resolved_suite_key)
-    focus_title = clean_ai_image_suite_text(
-        page_value.get("localizedSellingPointTitle")
-        or page_value.get("headline")
-        or page_value.get("focusTitle"),
-        AI_IMAGE_SOURCE_TITLE_LIMIT,
-    )
-    if focus_title in (*AI_IMAGE_JP_HEADLINES, *AI_IMAGE_COD_DETAIL_JP_HEADLINES) and focus_title not in text(brief):
-        focus_title = clean_ai_image_suite_text(visual.get("localizedHeadline"), AI_IMAGE_SOURCE_TITLE_LIMIT)
     focus_description = clean_ai_image_suite_text(
         page_value.get("focusDescription"),
         AI_IMAGE_SOURCE_DESCRIPTION_LIMIT,
@@ -17420,6 +17555,18 @@ def ai_image_cod_company_remote_authored_execution_prompt(
         for value in (page_value.get("copyLabels") or [])[:5]
         if clean_ai_image_suite_text(value, 40)
     ]
+    # Source titles are not automatically approved localized artwork. This also
+    # repairs old cached/browser plans at dispatch without re-running analysis.
+    copy_page = {**page_value, 'copyLabels': labels}
+    for field in ('headline', 'localizedSellingPointTitle', 'focusTitle'):
+        if copy_page.get(field) in (*AI_IMAGE_JP_HEADLINES, *AI_IMAGE_COD_DETAIL_JP_HEADLINES) and copy_page[field] not in text(brief):
+            copy_page.pop(field, None)
+    focus_title, labels, copy_to_localize = cod_copy_locale.select(copy_page, resolved_country)
+    language_boundary = cod_copy_locale.boundary(resolved_country, language)
+    if copy_mode == "titleOnly":
+        copy_to_localize['supportingLabelSources'] = []
+    elif copy_mode == "priceOnly":
+        copy_to_localize = {}
     if copy_mode == "none" or text_policy == "none":
         copy_lock = "No visible added text, letter, numeral, label, logo or pseudo-glyph anywhere."
     elif copy_mode == "priceOnly":
@@ -17490,6 +17637,14 @@ def ai_image_cod_company_remote_authored_execution_prompt(
         if has_human
         else "Product-led frame with no decorative person; include one realistic demonstrative hand only when the correct use requires it."
     )
+    if diversity_contract and has_human:
+        human = (
+            "Human presence is permitted, not mandatory. Follow this page's peopleIntent: "
+            "show a person only for source-required interaction or explicit user casting; "
+            "otherwise use product-led evidence, or a cropped hand/body contact when correct use requires it. "
+            "Do not turn a detail or material page into another smiling full-person product portrait. "
+            "If a person is needed preserve the selected-market casting and realistic anatomy."
+        )
     restrictions = (
         f"No price, discount, coupon, COD badge, countdown, shipping promise, stock urgency, invented review, rating, ranking, award, competitor, URL, phone, QR code, purchase button, {profile.get('platforms', 'marketplace')} logo or interface unless that exact item is explicitly supplied for this page. "
         "One finished static ecommerce image only: no animation, video UI, timeline, watermark, outer frame, white margin or unused band."
@@ -17497,11 +17652,15 @@ def ai_image_cod_company_remote_authored_execution_prompt(
     blocks = [
         f"[COMPANY COD EXECUTION] Create one finished Page {page_number} of {suite_count} {profile.get('label', 'selected-market')} COD ecommerce image, vertical {page_value.get('size') or AI_IMAGE_COD_KR_SIZE}. First see the completed product-specific frame, then render it immediately.",
         ai_image_cod_market_localization(resolved_country, page_number)["instruction"],
+        language_boundary if copy_mode != "none" and text_policy != "none" else "",
         ai_image_jp_company_authored_prompt_instruction(page_value, visible_language=language),
         "[ONLINE PAGE DIRECTOR — primary positive execution] The seven AI-authored layers above control the finished scene, proof moment, action, lens, lighting, percentage layout, palette and local art direction. " + remote_verification,
         f"[CURRENT PAGE SOURCE — one binding selling point] {focus_title}. {focus_description}",
         source_contract,
         f"[EXACT VISIBLE COPY — {visible_language}] {copy_lock} Every visible glyph must be crisp, natural {language} and semantically consistent with the current source point. {profile.get('copyConvention', '')}",
+        ('[INTERNAL COPY SOURCES TO LOCALIZE — not literal visible text] '
+         + json.dumps(copy_to_localize, ensure_ascii=False, separators=(',', ':')))
+        if any(copy_to_localize.values()) and copy_mode != "none" and text_policy != "none" else "",
         f"[DIRECT VISUAL PROOF] {evidence}" if evidence else "",
         support_inventory,
         f"[EXACT PRODUCT AND REFERENCE LOCK] {product_identity}. Product/detail/usage references control identity and operation; person references control identity only; layout/style/scene references control craft only.",
@@ -17512,6 +17671,11 @@ def ai_image_cod_company_remote_authored_execution_prompt(
         f"[SELECTED-MARKET BINDING] {profile.get('marketStyle', '')} {profile.get('avoidCues', '')}",
         style_anchor,
         fidelity_contract,
+        cod_visual_diversity.render_instruction(diversity_contract),
+        (f"[FINAL ARTWORK LANGUAGE] Render added copy only in natural {language}; "
+         "translate foreign-language source wording instead of printing it verbatim. "
+         "Obey the page text policy and preserve all assigned supporting benefits.")
+        if copy_mode != "none" and text_policy != "none" else "",
         f"[Tool human-presence declaration] has_human={'true' if has_human else 'false'}. {human}",
         "[FULL-BLEED EDGE LOCK] One continuous photograph/design reaches all four edges of the exact 750x1000 canvas. No outer border, poster mockup, floating image tile or blank strip.",
         AI_IMAGE_NO_ADDED_MARKS_INSTRUCTION,
@@ -18570,10 +18734,27 @@ def build_ai_director_page_refinement_messages(
         if company_prompt_authoring_mode
         else '{"pages":[{"page":1,"visualEnhancement":{"shotConcept":"...","evidenceDirection":"...","actionDirection":"...","camera":"...","lighting":"...","spatialPlan":"...","modulePlan":"...","composition":"...","materialRendering":"...","riskControls":["...","..."]}}]}'
     )
+    if cod_company_prompt_mode:
+        # These inherited local photographs are not user-authored camera locks.
+        # Keep source/evidence and explicit requirements, not a template to polish.
+        for compact_page in compact_pages:
+            compact_page.pop('localPrevisualization', None)
+            compact_page['companyModulePlan'] = [
+                {'id': item['id'], 'content': item.get('content', '')}
+                for item in compact_page.get('companyModulePlan', [])
+            ]
+            compact_page['inheritedSceneSuggestions'] = {
+                field: compact_page.pop(field) for field in
+                ('scene', 'pose', 'composition', 'sceneAngleDirective') if field in compact_page
+            }
     user_text = "\n".join(
         [
             f"[Creative execution pass] Suite={normalize_ai_image_suite_key(suite_key)}; country={suite_country or 'JP'}.",
-            "The product analysis and locked page plan below are final content contracts. Refine execution only; keep product, color, variant, person, language, scene category, action, selling point, page role, page count and visible wording unchanged.",
+            ("The product analysis and assigned source points are final content contracts. Keep exact product, verified variants, "
+             "source benefits, language, page count and explicit user requirements. Author a distinct photograph per page. "
+             "inheritedSceneSuggestions and generic page roles are editable defaults, not user camera/pose/layout locks."
+             if cod_company_prompt_mode else
+             "The product analysis and locked page plan below are final content contracts. Refine execution only; keep product, color, variant, person, language, scene category, action, selling point, page role, page count and visible wording unchanged."),
             f"[Product analysis]\n{json.dumps({'productSummary': analysis.get('productSummary', ''), 'referenceAnalysis': analysis.get('referenceAnalysis', {}), 'referenceBreakdown': analysis.get('referenceBreakdown', []), 'productVisualDNA': analysis.get('productVisualDNA', {}), 'marketResearch': analysis.get('marketResearch', ai_image_jp_market_research_profile() if normalize_ai_image_suite_key(suite_key) == AI_IMAGE_LANDING_SUITE_KEY else {}), 'globalRequirements': analysis.get('globalRequirements', []), 'inspirationBlueprint': analysis.get('inspirationBlueprint', {})}, ensure_ascii=False, separators=(',', ':'))}",
             f"[Locked pages]\n{json.dumps(compact_pages, ensure_ascii=False, separators=(',', ':'))}",
             f"[Quoted untrusted archetype sources]\n{json.dumps(archetype_sources, ensure_ascii=False, separators=(',', ':'))}" if archetype_sources else "",
@@ -18651,6 +18832,10 @@ def build_ai_director_page_refinement_messages(
             for part in (
                 user_text,
                 cod_visual_routes.instruction(analysis.get("_codEvidenceRoutes") or cod_visual_routes.assignments(pages)),
+                cod_visual_diversity.planner_instruction(
+                    analysis.get('_codVisualDiversity') or cod_visual_diversity.contracts(pages),
+                    current_batch_pages,
+                ),
                 "[COD online page-authoring ownership] Product/reference analysis is complete. For each requested page, author the actual finished conversion image from its locked source point instead of polishing the local scene template. The seven layers are the primary generation brief; local fields are content and product-truth checks only.",
                 f"[Selected-market execution] {json.dumps({key: profile.get(key) for key in ('code', 'label', 'language', 'visibleLanguage', 'marketStyle', 'model', 'copyConvention', 'avoidCues') if profile.get(key)}, ensure_ascii=False, separators=(',', ':'))}",
                 ai_image_cod_market_localization(suite_country, 1)["instruction"],
@@ -18747,6 +18932,7 @@ def refine_ai_director_page_visuals(
     if cod_company_prompt_mode:
         analysis = {**deepcopy(analysis), "_suitePageCount": len(pages)}
         analysis["_codEvidenceRoutes"] = cod_visual_routes.assignments(pages)
+        analysis['_codVisualDiversity'] = cod_visual_diversity.contracts(pages)
     photography_latency_ms = 0
     photography_plan_source = ""
     if jp25_company_prompt_mode and truthy(settings.get("_jp25CreativePlanning"), False):
@@ -20987,6 +21173,40 @@ def review_ai_image_suite(fields: dict[str, Any], files: dict[str, Any], actor: 
             "message": "成图质检已移除，直接保留生成结果"}
 
 
+def get_visual_agent_progress(payload: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    if not can_use_ai_image(actor):
+        raise ValueError('当前账号没有图片创作权限')
+    operation = text(payload.get('operationId'))
+    if not image_cancellation.valid_id(operation):
+        raise ValueError('任务操作编号不正确')
+    state = VisualAgentStore(DATA_DIR).get(visual_pipeline.owner_key(actor), 'progress', operation)
+    return {'ok': True, 'progress': state}
+
+
+def sync_visual_agent_plan(payload: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    """Preflight one entire suite before scheduling paid page jobs."""
+    if not can_use_ai_image(actor):
+        raise ValueError('当前账号没有图片创作权限')
+    pages = payload.get('suitePages')
+    if not visual_contracts.is_agent(pages) or not all(isinstance(p, dict) for p in pages):
+        raise ValueError('请提供当前动态方案')
+    plan_ids = {p.get('agentPlanId') for p in pages}
+    if len(plan_ids) != 1:
+        raise ValueError('动态方案版本混用，请重新同步方案')
+    state, expected = visual_adapter.saved_submission(
+        VisualAgentStore(DATA_DIR), visual_pipeline.owner_key(actor), next(iter(plan_ids)), payload)
+    status = visual_adapter.ready_status(expected, state['payload']['suiteCount'], visual_contracts.VERSION)
+    if not status['ready']:
+        raise ValueError(f"动态方案尚未完整，已保存 {status['readyCount']}/{status['expectedCount']} 页，请继续策划")
+    differences = visual_adapter.submission_differences(pages, expected)
+    if differences:
+        log_ai_image_error('visual-plan-synchronized', {
+            'planId': state['planId'], 'differences': differences,
+        })
+    return {'ok': True, 'suitePages': expected, 'companyPromptStatus': status,
+            'synchronized': bool(differences), 'differences': differences}
+
+
 def plan_ai_image_suite(
     payload: dict[str, Any],
     actor: dict[str, Any],
@@ -21556,7 +21776,7 @@ def plan_ai_image_suite_upload(fields: dict[str, Any], files: dict[str, Any], ac
         result = plan_ai_image_jp25_singleflight(singleflight_key, execute_plan)
     else:
         result = execute_plan()
-    if truthy(fields.get("fullPromptRewrite"), False):
+    if truthy(fields.get("fullPromptRewrite"), False) and not visual_contracts.is_agent(result.get('suitePages')):
         blueprint = generate_cod_prompt_blueprint_with_director(fields, result)
         result["masterPrompt"] = blueprint["masterPrompt"]
         result["suitePages"] = blueprint["pages"]
@@ -21598,7 +21818,7 @@ def plan_ai_image_suite_upload(fields: dict[str, Any], files: dict[str, Any], ac
     suite_key = normalize_ai_image_suite_key(result.get("suiteKey"))
     pages = result.get("suitePages") if isinstance(result.get("suitePages"), list) else []
     suite_count = int(number(result.get("suiteCount"), len(pages)))
-    if product_reference_indexes and suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS:
+    if product_reference_indexes and suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS and not visual_contracts.is_agent(pages):
         variants = extract_ai_image_cod_product_variants(current_prompt, text(fields.get("suiteBrief")))
         for page in pages:
             page_number = int(number(page.get("page"), 1))
@@ -23180,7 +23400,7 @@ def compile_ai_image_cod_hook_text_prompt(payload: dict[str, Any], original_prom
         f"{canvas}。",
         cod_strip.instruction(size) if size in AI_IMAGE_COD_HOOK_STRIP_SIZES else "",
         f"目标市场：{profile['label']}。画面人物、场景、审美和电商视觉符合当地；所有可见文案只能使用{profile['visibleLanguage']}。文字由统一textPolicy控制。",
-        ai_image_cod_market_localization(profile["code"], 1)["instruction"],
+        market_localization.compact(profile),
         f"创意类型：{direction}",
         f"产品信息：{product_context}" if product_context else "严格按用户原始提示词识别并呈现真实主体，不要替换成模板里的其他品类。",
         f"[COD hook selling-point sources] {selling_sources}" if selling_sources else "",
@@ -23785,12 +24005,17 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
     suite_all_page_prompts: list[str] = []
     suite_target_indexes: list[int] = []
     page_reference_images_by_index: dict[int, list[tuple[str, bytes, str]]] = {}
+    agent_execution = False
     if suite_key:
         mode = "edit"
         quality = "medium" if generation_profile == "fast" else "high"
         suite_target_indexes = normalize_ai_image_suite_page_indexes(fields.get("suitePageIndexes"), suite_count)
         suite_brief = limited_text(fields.get("suiteBrief"), "", AI_IMAGE_SUITE_BRIEF_LIMIT)
         suite_plan = normalize_ai_image_suite_plan(fields.get("suitePlan"), suite_count)
+        agent_execution = visual_contracts.is_agent(suite_plan)
+        if agent_execution:
+            visual_adapter.verify_submission(VisualAgentStore(DATA_DIR), visual_pipeline.owner_key(actor), suite_plan,
+                {**fields, 'suiteCount': suite_count, 'suiteCountry': suite_country, 'size': size})
         if suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS and not truthy(fields.get("suiteEditSource"), False):
             coverage_pages = suite_plan or build_ai_image_suite_plan(
                 prompt, suite_brief, size, suite_key=suite_key, country=suite_country, count=suite_count,
@@ -23815,7 +24040,7 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
                     f"当前 {company_prompt_status['readyCount']}/{suite_count} 页，待完成页：{missing_text or '全部'}。"
                     "本次生图提交已暂停，请重新执行导演策划。"
                 )
-        style_anchor_requested = text(fields.get("suiteStyleAnchor")).lower() in {"1", "true", "yes", "on"}
+        style_anchor_requested = not agent_execution and text(fields.get("suiteStyleAnchor")).lower() in {"1", "true", "yes", "on"}
         # JP25 and both COD suites rely on independent online photography
         # briefs. A generated hero bitmap would overpower their page-specific
         # camera/action/evidence routes, so keep only textual suite DNA.
@@ -23867,6 +24092,13 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         if key == "image" or key.startswith("reference")
     ]
     reference_bindings = normalize_ai_image_reference_bindings(fields.get("referenceBindings"), len(reference_items))
+    agent_uploads = {}
+    if agent_execution and not truthy(fields.get('suiteEditSource'), False):
+        agent_uploads = {id(item): read_ai_image_upload(item, '参考图') for item in reference_items}
+        agent_original_images = [agent_uploads[id(item)] for item in reference_items]
+        visual_adapter.verify_submission(VisualAgentStore(DATA_DIR), visual_pipeline.owner_key(actor), suite_plan,
+            {**fields, 'suiteCount': suite_count, 'suiteCountry': suite_country, 'size': size},
+            visual_pipeline.assets_for(agent_original_images))
     if suite_key in AI_IMAGE_NO_GENERATED_STYLE_BITMAP_SUITE_KEYS and not truthy(fields.get("suiteEditSource"), False):
         reference_items, reference_bindings = strip_ai_image_cod_generated_style_anchor(
             reference_items,
@@ -23881,14 +24113,14 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         # plan (and reintroduce old badge copy) instead of making the requested small correction.
         reference_items = [reference_items[-1]] if reference_items else []
         reference_bindings = []
-    elif suite_key:
+    elif suite_key and not agent_execution:
         reference_items, reference_bindings = filter_ai_image_suite_generation_reference_items(
             reference_items,
             reference_bindings,
             suite_key,
             keep_unbound_style_anchor=truthy(fields.get("suiteStyleAnchor"), False),
         )
-    if suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS and reference_bindings and not truthy(fields.get("suiteEditSource")):
+    if suite_key in AI_IMAGE_COD_COUNTRY_SUITE_KEYS and reference_bindings and not truthy(fields.get("suiteEditSource")) and not agent_execution:
         cod_binding_instruction = ai_image_virtual_styling_binding_instruction(reference_bindings)
         cod_role_rule = (
             "[COD generation-reference isolation] 主商品/产品细节/使用方式 references lock exact product identity and operation. 排版风格/系列风格参考/场景参考 references teach only the analysed information architecture, typography rhythm, module density, lighting and scene composition. Do not import their text, logos, badges, people, colors or unrelated product attributes. Use all attached references according to these roles while keeping the current page's product and selling point unchanged."
@@ -23919,21 +24151,22 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         raise ValueError("多图合成需要上传至少 2 张参考图")
     if mode == "inpaint" and len(reference_items) != 1:
         raise ValueError("局部重绘需要且只需要 1 张原图")
-    reference_images = [read_ai_image_upload(item, "参考图") for item in reference_items]
+    # Validation already consumed Agent upload streams. Reuse the exact verified
+    # bytes; a second read would submit an empty image for real multipart uploads.
+    reference_images = [agent_uploads[id(item)] if id(item) in agent_uploads
+                        else read_ai_image_upload(item, "参考图") for item in reference_items]
+    if agent_execution and not truthy(fields.get('suiteEditSource'), False):
+        image_map = {hashlib.sha256(img[1]).hexdigest(): img for img in reference_images}
+        for page_index, page in enumerate(suite_pages):
+            chosen = page['agentSpec']['referenceAssetIds']
+            if any(asset_id not in image_map for asset_id in chosen):
+                raise ValueError('本页产品参考图缺失，请同步原始素材')
+            page_reference_images_by_index[page_index] = [image_map[asset_id] for asset_id in chosen]
+    # COD hook images use the original direct-render path. Product recognition
+    # is intentionally skipped so a single hook costs only the image request.
     hook_product_analysis: dict[str, Any] = {}
     hook_reference_route: dict[str, Any] = {}
     if template_key == "codHook" and not suite_key and not atelier_spec and mode != "inpaint" and not truthy(fields.get("suiteEditSource"), False):
-        from . import cod_hook_vision
-        full_hook_brief = text(fields.get("suiteBrief")) or ai_image_structured_prompt_section(text(fields.get("prompt")), "Current user prompt") or text(fields.get("prompt"))
-        hook_product_analysis = cod_hook_vision.analyze(
-            actor=actor, brief=full_hook_brief, references=reference_images,
-            submitted_bindings=fields.get("referenceBindings"),
-            country=normalize_ai_image_cod_country(fields.get("suiteCountry")),
-            hook_type=cod_hook_type, progress=progress_callback,
-        )
-        reference_bindings = [dict(item) for item in hook_product_analysis.get("referenceBindings") or []]
-        # Discard only browser-generated scaffolding, not the complete user
-        # brief or the selected SKU's original selling-point source block.
         prompt = compile_ai_image_cod_hook_text_prompt(fields, text(fields.get("prompt")), size)
     if atelier_spec:
         validate_references(atelier_spec, reference_images)
@@ -24011,7 +24244,7 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
             for page_index, page_prompt in zip(suite_target_indexes, page_prompts)
         ]
     single_prompt_blueprint: dict[str, Any] = {}
-    if not suite_key and not atelier_spec and not hook_product_analysis and shared_ai_director_open_prompts_enabled():
+    if not suite_key and template_key != "codHook" and not atelier_spec and not hook_product_analysis and shared_ai_director_open_prompts_enabled():
         prompt, single_prompt_blueprint = enhance_single_ai_image_prompt_with_open_prompts(
             prompt,
             template_key,
@@ -24037,6 +24270,9 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
 
     hero_ab_requested = bool(
         suite_key
+        and not agent_execution
+        # COD remains one render per page, without post-render AI selection.
+        and suite_key not in AI_IMAGE_COD_COUNTRY_SUITE_KEYS
         and suite_target_indexes == [0]
         and generation_profile != "fast"
         and truthy(fields.get("heroAB"), False)

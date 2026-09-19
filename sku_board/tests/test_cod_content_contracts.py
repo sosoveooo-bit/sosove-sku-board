@@ -192,8 +192,8 @@ class CodContentContractTests(unittest.TestCase):
                         dispatch.assert_not_called()
                         alternate_dispatch.assert_not_called()
 
-    def test_country_page_nine_stays_main_for_37_and_explicit_12_plus_18(self):
-        for count, split_brief, expected_main in ((37, "日本市场商品介绍。", 15), (30, "主图12张，详情18张。", 12)):
+    def test_country_pages_all_main_even_with_old_split_brief(self):
+        for count, split_brief, expected_main in ((37, "日本市场商品介绍。", 37), (30, "主图12张，详情18张。", 30)):
             with self.subTest(count=count, split=split_brief):
                 result = self.plan(backend.AI_IMAGE_COD_SUITE_KEY, count, split_brief)
                 page_nine = result["suitePages"][8]
@@ -211,9 +211,9 @@ class CodContentContractTests(unittest.TestCase):
                 self.assertIn("[COD MAIN SUPPORT CONTRACT]", prompts[8])
                 self.assertIn("[COD main core-and-support lock]", prompts[8])
                 self.assertIn("exact compact kitchen tool", prompts[8].lower())
-                self.assertFalse(compiled[expected_main].get("codMainRich", False))
-                self.assertIn(f"Detail image 1 of {count - expected_main}", prompts[expected_main])
-                self.assertNotIn("[COD MAIN SUPPORT CONTRACT]", prompts[expected_main])
+                self.assertTrue(all(page.get("codMainRich") for page in compiled))
+                self.assertTrue(all(page['section'] == '主图' for page in compiled))
+                self.assertIn("[COD MAIN SUPPORT CONTRACT]", prompts[-1])
 
     def test_cod_batch_narrative_stages_use_the_actual_suite_page_count(self):
         for suite_key, count in ((backend.AI_IMAGE_COD_SUITE_KEY, 30), (backend.AI_IMAGE_COD_SUITE_KEY, 37), (backend.AI_IMAGE_COD_DETAIL_SUITE_KEY, 22)):

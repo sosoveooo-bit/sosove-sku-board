@@ -15,8 +15,11 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from sku_board import cod_prompt_atelier, cod_prompt_render, cod_prompt_assets, cod_prompt_queue
+from sku_board.multipart import ByteFieldStorage
 
 from sku_board.backend import (
+    get_visual_agent_progress,
+    sync_visual_agent_plan,
     cancel_ai_image_operation,
     run_ai_operation,
     add_feedback,
@@ -324,6 +327,12 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/sku-board/ai-image-cancel":
             self.handle_auth_mutation(cancel_ai_image_operation)
+            return
+        if parsed.path == "/api/sku-board/visual-agent-progress":
+            self.handle_auth_mutation(get_visual_agent_progress)
+            return
+        if parsed.path == "/api/sku-board/visual-agent-plan-sync":
+            self.handle_auth_mutation(sync_visual_agent_plan)
             return
         if parsed.path == "/api/sku-board/ai-image-suite-review":
             self.handle_auth_upload(lambda fields, files, user: review_ai_image_suite(fields, files, user))
@@ -719,7 +728,7 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             raise ValueError("empty upload body")
         if length > 350 * 1024 * 1024:
             raise ValueError("upload file is too large")
-        form = cgi.FieldStorage(
+        form = ByteFieldStorage(
             fp=self.rfile,
             headers=self.headers,
             environ={
@@ -738,7 +747,8 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             if getattr(item, "filename", ""):
                 files[key] = item
             else:
-                fields[key] = item.value
+                value = item.value
+                fields[key] = value.decode('utf-8') if isinstance(value, bytes) else value
         return fields, files
 
     def serve_static(self, relative_path: str) -> None:

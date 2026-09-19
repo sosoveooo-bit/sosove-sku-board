@@ -117,18 +117,14 @@ class CodMainRichContractTests(unittest.TestCase):
         self.assertNotIn(compiled[0]["headline"], compiled[0]["copyLabels"])
         self.assertEqual(pages, original)
 
-    def test_public_pipeline_enriches_country_p15_but_keeps_p16_as_detail(self) -> None:
+    def test_public_pipeline_enriches_every_country_page_as_main(self) -> None:
         prompts, pages = self.compile()
         self.assertEqual(len(pages), 37)
-        for number in (1, 9, 15):
+        for number in range(1, 38):
             with self.subTest(main_page=number):
                 self.assertTrue(pages[number - 1].get("codMainRich"))
                 self.assertTrue(3 <= len(self.supports(pages[number - 1])) <= 5)
                 self.assertIn("[COD MAIN SUPPORT CONTRACT]", prompts[number - 1])
-        self.assertFalse(pages[15].get("codMainRich", False))
-        self.assertFalse(pages[15].get("codMainSupportingPoints"))
-        self.assertNotIn("[COD MAIN SUPPORT CONTRACT]", prompts[15])
-        self.assertNotIn("SUPPORTING_BENEFITS", json.dumps(pages[15].get("companyModulePlan") or []))
 
     def test_final_main_prompt_and_modules_share_the_approved_support_budget(self) -> None:
         prompts, pages = self.compile()

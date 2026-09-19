@@ -55,18 +55,24 @@ Promise.resolve(vm.runInContext(fixture.setup + '\\n' + fixture.source + '\\n(as
         "AI_IMAGE_SUITE_CONFIGS", "AI_IMAGE_SUITE_KEY_ALIASES",
     )
 
-    def test_country_37_routes_fifteen_main_then_twenty_two_detail_pages(self):
+    def test_country_all_main_but_saved_explicit_sections_are_preserved(self):
         self.run_js(
             ["aiImageSuiteConfig", "aiImageCodPageIsMain"],
             """
 const conversation = {suiteKey: 'cod-country-landing-30', suiteCount: 37};
 const config = aiImageSuiteConfig(conversation);
-assert.equal(config.mainCount, 15);
-assert.equal(config.detailCount, 22);
+assert.equal(config.mainCount, 37);
+assert.equal(config.detailCount, 0);
 assert.equal(aiImageCodPageIsMain(conversation, 9), true);
 assert.equal(aiImageCodPageIsMain(conversation, 15), true);
-assert.equal(aiImageCodPageIsMain(conversation, 16), false);
-assert.equal(aiImageCodPageIsMain({...conversation, suiteCount: 30}, 9), false);
+assert.equal(aiImageCodPageIsMain(conversation, 16), true);
+assert.equal(aiImageCodPageIsMain({...conversation, suiteCount: 30}, 9), true);
+for (const count of [24,30,37]) {
+ const c=aiImageSuiteConfig({...conversation,suiteCount:count});
+ assert.equal(c.mainCount,count);
+ assert.equal(c.detailCount,0);
+ assert.match(c.planHint,/全部为主图/);
+}
 assert.equal(aiImageCodPageIsMain(conversation, 17, {section: 'main', sectionIndex: 15}), true);
 assert.equal(aiImageCodPageIsMain(conversation, 4, {section: 'detail', sectionIndex: 1}), false);
 assert.equal(aiImageCodPageIsMain(conversation, 17, {role: '主图15'}), true);
@@ -87,7 +93,7 @@ for (let page=1; page<=8; page++) {
 }
 const main = {suiteKey:'cod-country-landing-30',suiteCount:37,referenceImages:refs,suitePages:[]};
 assert.equal(aiImageSuiteReferencesForPage(main,15).length,3);
-assert.equal(aiImageSuiteReferencesForPage(main,16).length,2);
+assert.equal(aiImageSuiteReferencesForPage(main,16).length,3);
 """,
             setup="""
 const AI_IMAGE_SUITE_HERO_REFERENCE_LIMIT=5, AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT=3;
@@ -235,7 +241,7 @@ for (const coverage of [{},{complete:true},{complete:undefined}]) {
     def test_only_cod_versions_and_opt_in_social_proof_copy_change(self):
         self.run_js(["aiImageSuiteConfig"], """
 assert.equal(AI_IMAGE_SUITE_CONFIGS['jp-landing-page-25'].planVersion,'director-v34-no-page1-bitmap-unique-routes');
-assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-landing-30'].planVersion,'cod-country-v28-source-driven-online-only');
+assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-landing-30'].planVersion,'cod-country-v30-all-main');
 assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-detail-12'].planVersion,'cod-detail-v20-source-driven-online-only');
 const detail=aiImageSuiteConfig({suiteKey:'cod-country-detail-12',suiteCount:22});
 assert.equal(detail.mainCount,0);
@@ -248,8 +254,8 @@ for (const count of [30,37]) {
   assert.match(country.planHint,/1个核心卖点/);
   assert.match(country.planHint,/3–5个有来源的辅助卖点/);
   assert.match(country.planHint,/1–2处证据/);
-  assert.match(country.planHint,/详情仍单点展开/);
-  assert.ok(country.planHint.includes(`${count===37 ? 15 : 8} 张主图 + 22 张详情图`));
+  assert.match(country.planHint,/全部为主图/);
+  assert.ok(country.planHint.includes(`${count} 张主图`));
 }
 for (const key of ['jp-landing-page-25','amazon-jp-aplus-9','rakuten-jp-product-9']) {
   assert.equal(aiImageSuiteConfig({suiteKey:key}).planHint,AI_IMAGE_SUITE_CONFIGS[key].planHint);
@@ -275,7 +281,7 @@ assert.equal(monitorHint('jp-landing-page-25',true,true),sourceHint);
 assert.equal(monitorHint('ordinary-image',false,false),sourceHint);
 """, setup="function monitorHint(key,companyEffectSuite,jpCreativeDirector){const suiteConfig={key};return (" + hint_match.group(1) + ");}")
         index_html = (APP_JS.parent / "index.html").read_text(encoding="utf-8-sig")
-        self.assertIn('<script src="/static/app.js?v=20260911-jp25-no-anchor-v1"></script>', index_html)
+        self.assertIn('<script src="/static/app.js?v=20260918-cod-all-main"></script>', index_html)
         self.assertIn('为每页分配一个卖点、场景、构图和参考图', index_html)
 
     def test_hook_dispatch_sends_policy_on_both_api_paths(self):

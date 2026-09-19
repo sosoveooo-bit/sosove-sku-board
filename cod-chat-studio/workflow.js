@@ -45,9 +45,14 @@
   function infer(text, defaults){
     const mode=suite(defaults);
     let count=Number(defaults.count)||mode.count, country=defaults.country||mode.country||'JP';
-    const main=text.match(/主图\s*[:：]?\s*(\d+)\s*[张页]?/), detail=text.match(/详情(?:图|页)?\s*[:：]?\s*(\d+)\s*[张页]?/);
+    const main=mode.key==='cod-country-landing-30'
+      ? text.match(/(?:(?:主图|轮播图)\s*[:：]?\s*(\d+)\s*[张页]?|(\d+)\s*张\s*(?:主图|轮播图))/)
+      : text.match(/主图\s*[:：]?\s*(\d+)\s*[张页]?/);
+    const detail=mode.key==='cod-country-landing-30'
+      ? text.match(/(?:详情(?:图|页)?\s*[:：]?\s*(\d+)\s*[张页]?|(\d+)\s*张\s*详情(?:图|页)?)/)
+      : text.match(/详情(?:图|页)?\s*[:：]?\s*(\d+)\s*[张页]?/);
     const total=text.match(/(?:共|总计|总共|合计|一套|生成|制作)\s*(\d+)\s*[张页]/);
-    if(main&&detail)count=Number(main[1])+Number(detail[1]);else if(total)count=Number(total[1]);else if(main)count=Number(main[1]);else if(detail)count=Number(detail[1]);
+    if(main&&detail)count=Number(main[1]||main[2])+Number(detail[1]||detail[2]);else if(total)count=Number(total[1]);else if(main)count=Number(main[1]||main[2]);else if(detail)count=Number(detail[1]||detail[2]);
     // The visible selector owns the market; reference-country mentions are not commands.
     return validateSettings({...defaults,count,country});
   }

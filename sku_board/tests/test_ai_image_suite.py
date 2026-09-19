@@ -3888,7 +3888,9 @@ class AiImageSuiteTests(unittest.TestCase):
         self.assertIn("自动切换已启用", app_source)
         self.assertIn("gpt-5.6-terra", html_source)
         self.assertIn("gpt-5.6-sol", html_source)
-        self.assertIn('const AI_DIRECTOR_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"]', app_source)
+        self.assertIn('const AI_DIRECTOR_DEFAULT_FALLBACK_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"]', app_source)
+        self.assertIn('value="deepseek-v4.1-flash"', html_source)
+        self.assertIn('id="ai-director-custom-model"', html_source)
         self.assertIn('id="ai-director-open-prompts"', html_source)
         self.assertIn('label: "灵感检索 Skill"', app_source)
         self.assertIn("Open Image Prompts", app_source)
@@ -7038,9 +7040,9 @@ USB供电
             [point["title"] for point in detail_points],
             [*expected_numbered_titles[5:], *expected_evidence_titles],
         )
-        self.assertEqual(backend.ai_image_cod_country_section_counts(brief, 30), (12, 18))
-        self.assertEqual(sum(page["section"] == "主图" for page in country_pages), 12)
-        self.assertEqual(sum(page["section"] == "详情" for page in country_pages), 18)
+        self.assertEqual(backend.ai_image_cod_country_section_counts(brief, 30), (30, 0))
+        self.assertEqual(sum(page["section"] == "主图" for page in country_pages), 30)
+        self.assertEqual(sum(page["section"] == "详情" for page in country_pages), 0)
         country_focuses = [page["focusTitle"] for page in country_pages]
         detail_focuses = [page["focusTitle"] for page in detail_pages]
         for title in [*expected_numbered_titles, *expected_evidence_titles]:

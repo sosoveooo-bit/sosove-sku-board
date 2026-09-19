@@ -252,7 +252,13 @@ class Jp25CreativeIntegrationTests(unittest.TestCase):
             with self.subTest(suite=suite_key):
                 messages = self.build_messages((1, 2, 3), suite_key=suite_key)
                 message_text = self.message_text(messages)
-                self.assertIn(self.LEGACY_FREEZE, message_text)
+                if suite_key in backend.AI_IMAGE_COD_COUNTRY_SUITE_KEYS:
+                    self.assertNotIn(self.LEGACY_FREEZE, message_text)
+                    self.assertIn('inheritedSceneSuggestions', message_text)
+                    self.assertIn('[COD WHOLE-SUITE SHOT ALLOCATION]', message_text)
+                    self.assertIn('Keep exact product, verified variants, source benefits', message_text)
+                else:
+                    self.assertIn(self.LEGACY_FREEZE, message_text)
                 self.assertIn(self.LEGACY_WORD_LIMIT, message_text)
                 self.assertNotIn("GLOBAL_ROUTE_25", message_text)
                 self.assertNotIn("BIBLE_MOOD_MARKER", message_text)

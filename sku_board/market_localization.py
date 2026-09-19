@@ -61,3 +61,11 @@ def direction(profile, page=1):
         profile.get('avoidCues', ''),
     ])
     return {'casting': casting, 'scene': scene, 'instruction': instruction}
+
+
+def compact(profile):
+    """Short lock for a single hook prompt; full pages use direction()."""
+    code=profile['code']; scene=SCENES[code][0]
+    return (f'[Selected-market identity lock] Selected market={code} ({profile["label"]}); language={profile["language"]}. '
+            f'Use {scene} when needed. Other-country references are style/product context only. '
+            f'{COPY[code]} Keep exact product, values and supplied copy; add no flags, landmarks or invented claims.')

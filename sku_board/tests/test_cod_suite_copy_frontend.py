@@ -182,24 +182,27 @@ for(const template of ['main','landing','amazonAplus','rakutenSuite']) {
 """, setup=self.PROMPT_SETUP)
 
     def test_per_page_transport_preserves_full_prompt_and_copy_plan(self):
-        self.run_js(["buildAiImageSuiteFormData"], """
+        self.run_js(["aiImageUsesVisualAgents", "buildAiImageSuiteFormData"], """
 for(const suiteKey of ['cod-country-landing-30','cod-country-detail-12']) {
+ for(const page of [1,12]) {
  const prompt='[COD suite selling-point sources]\\n'+JSON.stringify(Array.from({length:18},(_,i)=>'Fact '+i))+'\\nUSER FINAL TAIL';
  const fullText='Exact source 5kg 85% '.repeat(80);
  const pages=[{page:12,textPolicy:'requested',sourceVerbatim:fullText}];
  const conversation={suiteKey,referenceImages:[{file:{},name:'product.png',role:'product'}],suitePages:pages,size:'750x1000'};
- const form=buildAiImageSuiteFormData(conversation,prompt,'user brief',12,'mock-run');
+ const form=buildAiImageSuiteFormData(conversation,prompt,'user brief',page,'mock-run');
  assert.equal(form.get('prompt').startsWith(prompt),true);
  assert.equal(form.get('suiteBrief'),'user brief');
  assert.equal(form.get('companyEffectMode'),'true');
  assert.equal(JSON.parse(form.get('suitePlan'))[0].sourceVerbatim,fullText);
  assert.equal(JSON.parse(form.get('suitePlan'))[0].textPolicy,'requested');
+ assert.equal(form.get('heroAB'),undefined,'COD should not opt into post-render AI hero selection');
+ }
 }
 """, setup="""
 class FormData {constructor(){this.values={};}append(k,v){this.values[k]=v;}get(k){return this.values[k];}}
 function aiImageSuiteReferencesForPage(c){return c.referenceImages;}
 function aiImageReferenceRoleKey(r){return r.role;}
-function aiImageGenerationProfile(){return {key:'fast'};}
+function aiImageGenerationProfile(){return {key:'standard'};}
 function aiImageDirectorMode(){return 'company';}
 function aiImageSuiteCount(){return 22;}
 function aiImageSuiteUsesGeneratedStyleAnchor(){return false;}

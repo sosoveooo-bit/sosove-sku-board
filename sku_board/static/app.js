@@ -230,11 +230,9 @@ const AI_IMAGE_COMPANY_EFFECT_SUITE_KEYS = new Set([
   "cod-country-landing-30",
   "cod-country-detail-12",
 ]);
-const AI_DIRECTOR_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"];
-// The current gateway also exposes these verified chat/vision routes.  Keep
-// them in the form's automatic failover chain so a transient 408 or closed
-// GPT stream continues with online analysis instead of local photography.
-const AI_DIRECTOR_ONLINE_FALLBACK_MODELS = ["gemini-3-flash-agent", "claude-sonnet-4-6"];
+const AI_DIRECTOR_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol", "deepseek-v4.1-flash", "gemini-3-flash-agent", "claude-sonnet-4-6"];
+// Selectable/custom models are not automatically added to the retry chain.
+const AI_DIRECTOR_DEFAULT_FALLBACK_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"];
 const AI_IMAGE_GENERATION_PROFILES = [
   { key: "fast", label: "极速", hint: "最多8路智能并发 · 中质", workers: 8, perNode: 3, quality: "medium", review: "off", maxRetries: 1, autoRetryCycles: 1 },
   { key: "standard", label: "标准", hint: "最多6路智能并发 · 高质", workers: 6, perNode: 2, quality: "high", review: "off", maxRetries: 2, autoRetryCycles: 1 },
@@ -322,9 +320,9 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "图",
     label: "COD国家落地页 30图",
     planTitle: "COD国家落地页 30图导演脚本",
-    planHint: "默认带本地语言卖点文案：主图1核心＋3–5个有来源辅助＋1–2处证据；详情逐页单点展开，明确无字要求保留",
+    planHint: "全部生成主图：每张1个核心卖点＋3–5个有来源辅助卖点＋1–2处证据；保留本地语言、逐页差异化及明确无字要求",
     templateKey: "codKorea",
-    planVersion: "cod-country-v28-source-driven-online-only",
+    planVersion: "cod-country-v30-all-main",
     promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点和特殊要求；系统会按所选国家生成公司式COD套图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-landing",
@@ -334,12 +332,12 @@ const AI_IMAGE_SUITE_CONFIGS = {
     monitor: {
       eyebrow: "COUNTRY COD DIRECTOR",
       ariaLabel: "COD国家落地页导演监控",
-      description: "监控原始卖点视觉化、颜色/规格覆盖、8 张主图、22 张详情图、场景机位去重与国家本土化规则。",
-      planLabel: "8 主图 + 22 详情（37图可选15+22）",
+      description: "所选数量全部生成主图；监控原始卖点、辅助卖点、颜色/规格覆盖、场景机位去重与国家本土化规则。",
+      planLabel: "全部主图（张数可选）",
       sizeLabel: "COD 尺寸",
       sizeHint: "750×1000 竖图自动锁定",
       complianceLabel: "国家落地页规则",
-      complianceHint: "完整来源卖点分配到页面并默认显示本地语言文案；主图与详情预算分开，明确无字要求优先",
+      complianceHint: "每张主图保留核心卖点和有来源的辅助卖点，默认显示本地语言文案；明确无字要求优先",
     },
   },
   "cod-country-detail-12": {
@@ -2084,8 +2082,8 @@ function aiImageSuiteConfig(value = {}) {
   if (config.key !== "cod-country-landing-30") return config;
   const requestedCount = Number(value?.suiteCount || value?.count || config.count);
   const count = AI_IMAGE_COD_COUNT_OPTIONS.includes(requestedCount) ? requestedCount : config.count;
-  const mainCount = count === 37 ? 15 : Math.min(8, count);
-  const detailCount = Math.max(count - mainCount, 0);
+  const mainCount = count;
+  const detailCount = 0;
   const breakdown = detailCount ? `${mainCount} 张主图 + ${detailCount} 张详情图` : `${mainCount} 张主图`;
   return {
     ...config,
@@ -2094,7 +2092,7 @@ function aiImageSuiteConfig(value = {}) {
     detailCount,
     label: `COD国家落地页 ${count}图`,
     planTitle: `COD国家落地页 ${count}图导演脚本`,
-    planHint: `按目标国家生成 ${breakdown}；主图采用1个核心卖点＋3–5个有来源的辅助卖点＋1–2处证据，详情仍单点展开；覆盖产品颜色/规格并让场景机位逐页变化`,
+    planHint: `按目标国家生成 ${breakdown}，全部为主图；每张采用1个核心卖点＋3–5个有来源的辅助卖点＋1–2处证据；覆盖产品颜色/规格并让场景机位逐页变化`,
     promptPlaceholder: `填写当前产品名称、全部颜色/规格、主卖点、次卖点和特殊要求；系统会结合产品图按所选国家生成 ${breakdown}`,
     monitor: {
       ...config.monitor,
@@ -2969,6 +2967,60 @@ function mergeAiDirectorState(payload = {}) {
   return state.aiImages.director;
 }
 
+function aiDirectorModelOptions(director = state.aiImages.director || {}) {
+  return Array.from(new Set([
+    ...AI_DIRECTOR_MODELS,
+    ...(Array.isArray(director.availableModels) ? director.availableModels : []),
+    ...(Array.isArray(director.customModels) ? director.customModels : []),
+    director.model,
+  ].filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim())));
+}
+
+function renderAiDirectorModelOptions(selectedModel) {
+  const select = $("#ai-director-model");
+  if (!select) return;
+  select.innerHTML = aiDirectorModelOptions().map((model) => `<option value="${esc(model)}">${esc(model)}</option>`).join("");
+  select.value = selectedModel || "gpt-5.6-terra";
+}
+
+function addAiDirectorCustomModel() {
+  const director = state.aiImages.director || {};
+  if (!isAdmin() || director.loading || director.saving || director.testing) return;
+  const input = $("#ai-director-custom-model");
+  const model = input?.value.trim() || "";
+  if (!model || model.length > 120 || /[\s\x00-\x1f\x7f]/u.test(model)) {
+    showToast("请输入 1–120 个字符的完整模型 ID，去除空格、换行和控制字符");
+    input?.focus();
+    return;
+  }
+  const customModels = Array.from(new Set([
+    ...(Array.isArray(director.customModels) ? director.customModels : []),
+    director.model, model,
+  ].filter((candidate) => candidate && !AI_DIRECTOR_MODELS.includes(candidate))));
+  if (customModels.length > 50) {
+    showToast("自定义模型最多保存 50 个");
+    return;
+  }
+  state.aiImages.director = {
+    ...director, model, customModels, formDirty: true, status: "unknown",
+    message: `已选用 ${model}，点击“保存配置”后生效；添加模型不调用 AI。`,
+  };
+  renderAiDirectorModelOptions(model);
+  input.value = "";
+  renderAiDirectorSettings();
+  showToast("已添加并选用，请点击保存配置");
+}
+
+function bindAiDirectorCustomModelEvents() {
+  $("#ai-director-add-model-btn")?.addEventListener("click", addAiDirectorCustomModel);
+  $("#ai-director-custom-model")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (!event.isComposing) addAiDirectorCustomModel();
+    }
+  });
+}
+
 function renderAiDirectorSettings() {
   const section = $("#ai-director-settings");
   if (!section) return;
@@ -2978,7 +3030,7 @@ function renderAiDirectorSettings() {
   if (!admin) return;
   if (!director.formDirty) {
     $("#ai-director-base-url").value = director.baseUrl || "";
-    $("#ai-director-model").value = director.model || "gpt-5.6-terra";
+    renderAiDirectorModelOptions(director.model);
     $("#ai-director-timeout").value = String(director.timeout || 60);
     $("#ai-director-enabled").checked = Boolean(director.enabled);
     $("#ai-director-vision").checked = director.visionEnabled !== false;
@@ -2986,7 +3038,7 @@ function renderAiDirectorSettings() {
     if ($("#ai-director-review-enabled")) $("#ai-director-review-enabled").checked = false;
     $("#ai-director-api-key").value = "";
   }
-  const fallbackModels = Array.isArray(director.fallbackModels) ? director.fallbackModels.filter(Boolean) : [];
+  const fallbackModels = Array.isArray(director.fallbackModels) ? director.fallbackModels.filter((model) => model && model !== director.model) : [];
   const modelChain = [director.model || "gpt-5.6-terra", ...fallbackModels];
   const fallbackNote = $("#ai-director-fallback-note");
   if (fallbackNote) {
@@ -3024,6 +3076,8 @@ function renderAiDirectorSettings() {
       : "密钥仅保存在服务端；Open Image Prompts 完整案例只交给AI导演提炼视觉蓝图，原提示词与参考图保持锁定。");
   $("#ai-director-save-btn").disabled = busy;
   $("#ai-director-test-btn").disabled = busy || !configured && !director.formDirty;
+  if ($("#ai-director-add-model-btn")) $("#ai-director-add-model-btn").disabled = busy;
+  if ($("#ai-director-custom-model")) $("#ai-director-custom-model").disabled = busy;
 }
 
 async function loadAiDirectorSettings(silent = false) {
@@ -3060,16 +3114,13 @@ function aiDirectorSettingsFormPayload() {
   const model = $("#ai-director-model")?.value.trim() || "";
   const savedFallbacks = Array.isArray(state.aiImages.director?.fallbackModels)
     ? state.aiImages.director.fallbackModels
-    : [];
-  const fallbackModels = Array.from(new Set([
-    ...savedFallbacks,
-    ...AI_DIRECTOR_ONLINE_FALLBACK_MODELS,
-    ...AI_DIRECTOR_MODELS,
-  ])).filter((candidate) => candidate && candidate !== model);
+    : AI_DIRECTOR_DEFAULT_FALLBACK_MODELS;
+  const fallbackModels = Array.from(new Set(savedFallbacks)).filter((candidate) => candidate && candidate !== model);
   return {
     enabled: Boolean($("#ai-director-enabled")?.checked),
     baseUrl: $("#ai-director-base-url")?.value.trim() || "",
     model,
+    customModels: Array.isArray(state.aiImages.director?.customModels) ? [...state.aiImages.director.customModels] : [],
     fallbackModels,
     apiKey: $("#ai-director-api-key")?.value.trim() || "",
     timeout: Number($("#ai-director-timeout")?.value || 60),
@@ -3801,6 +3852,7 @@ function createAiImageConversation(seed = {}) {
     title: seed.title || "新的生图任务",
     prompt: seed.prompt ?? state.aiImages.prompt ?? "",
     productSku: seed.productSku ?? state.aiImages.productSku ?? "",
+    productFacts: seed.productFacts || "",
     mode: seed.mode ?? state.aiImages.mode ?? "text",
     lockLevel: seed.lockLevel ?? state.aiImages.lockLevel ?? skill.defaults?.lockLevel ?? "strict",
     model,
@@ -4148,6 +4200,11 @@ function aiImageJp25CompanyPromptStatus(pages = [], expectedCount = 25) {
 }
 
 function aiImageCodCompanyPromptStatus(pages = [], expectedCount = 30) {
+  if(pages.some(p=>p?.visualPipelineVersion==='cod-visual-agents-v1')){
+    const readyPages=[...new Set(pages.filter(p=>p.visualPipelineVersion==='cod-visual-agents-v1'&&p.agentSpec&&p.agentPlanId&&p.agentPrompt?.resolvedPrompt&&p.agentPrompt?.promptHash).map(p=>Number(p.page)))].filter(n=>Number.isInteger(n)&&n>=1&&n<=expectedCount);
+    const missingPages=Array.from({length:expectedCount},(_,i)=>i+1).filter(n=>!readyPages.includes(n));
+    return {ready:readyPages.length===expectedCount&&pages.length===expectedCount,readyCount:readyPages.length,readyPages,missingPages,duplicatePages:[],duplicatePairs:[]};
+  }
   const baseStatus = aiImageJp25CompanyPromptStatus(pages, expectedCount);
   const routeFields = (page = {}) => {
     const visual = page?.visualEnhancement || {};
@@ -4352,6 +4409,7 @@ function aiImageSuitePlanSignature(conversation, prompt = "", intent = "") {
   }));
   return JSON.stringify({
     productSku: conversation.productSku || "",
+    productFacts: conversation.productFacts ?? conversation.director?.productFacts ?? "",
     suiteKey: conversation.suiteKey || "",
     suiteCount: aiImageSuiteCount(conversation),
     country: conversation.suiteCountry || "KR",
@@ -4810,7 +4868,7 @@ function renderAiImageReferences() {
   }
   strip.innerHTML = `
     <div class="ai-image-reference-head">
-      <strong>输入素材 ${references.length} 张 · ${codHookActive ? "单次分析最多16张" : "不限数量"}${mask ? " · 蒙版已添加" : ""}</strong>
+      <strong>输入素材 ${references.length} 张 · ${codHookActive ? "直接按提示词生成，最多16张参考图" : "不限数量"}${mask ? " · 蒙版已添加" : ""}</strong>
       <button class="ghost-btn" type="button" data-ai-reference-clear>清空</button>
     </div>
     ${mode !== "inpaint" ? `<p class="ai-image-reference-guide">${esc(virtualTryOnActive
@@ -4916,7 +4974,7 @@ function addAiImageReferences(files = [], options = {}) {
   renderAiImageSidebar();
   renderAiImageResults();
   if (Number.isFinite(maxReferences) && selected.length > room) showToast(`已添加前 ${maxReferences} 张图片`);
-  if (conversation.templateKey === "codHook" && conversation.referenceImages.length > 16) showToast("图片已保留；COD噱头图单次分析最多16张，请移出多余图片后分批生成");
+  if (conversation.templateKey === "codHook" && conversation.referenceImages.length > 16) showToast("图片已保留；COD噱头图单次最多使用16张参考图，请移出多余图片后分批生成");
 }
 
 function removeAiImageReference(id) {
@@ -5129,6 +5187,27 @@ function revokeAiImageReferenceUrls(conversation) {
 
 function aiImageErrorDiagnosis(message = "") {
   const lower = String(message || "").toLowerCase();
+  if (String(message).includes('产品身份待确认')) {
+    return {title:'AI 策划待续接',reason:'这是旧版确认提示，该暂停步骤已移除。',
+      advice:['点击继续策划，复用已保存的产品分析',
+        '原任务和已生成图片保留；商品补充信息可继续填写在原始需求中'],actions:['retry']};
+  }
+  if (aiImageSavedPlanError(message)) {
+    return {
+      title: '生图前方案校验未通过',
+      reason: '浏览器方案与后台保存记录需要同步；这不是生图节点故障，当前队列已暂停。',
+      advice: ['重试时会先同步已保存方案，不调用 AI 重新分析', '已完成图片保留；本页修改请使用补充要求', '若需求、国家或尺寸有变化，请先完成对应策划'],
+      actions: ['retry'],
+    };
+  }
+  if (lower.includes('ai 策划') || lower.includes('directorbudgetexhausted') || lower.includes('导演响应超时') || lower.includes('策划进度已保存')) {
+    return {
+      title: lower.includes('时限') || lower.includes('进度已保存') ? 'AI 策划待续接' : 'AI 策划尚未完成',
+      reason: '这是分析或提示词策划阶段，不是图片生成节点故障；已完成阶段和页面会保留。',
+      advice: ['点击继续策划，只处理缺失部分', '无需重新分析产品或恢复远端图片', '若持续发生，请检查 AI 导演节点的实际错误'],
+      actions: ['retry'],
+    };
+  }
   const activeConversation = aiImageActiveConversation() || {};
   const activeModel = activeConversation.model || state.aiImages.model || aiImageDefaultModel();
   const providerLabel = aiImageProviderLabel(activeModel);
@@ -5352,6 +5431,7 @@ function renderAiImageErrorBlock(message = "", conversation = aiImageActiveConve
     : diagnosis.actions;
   const actionButtons = actions.map((action) => {
     const labels = { retry: "重试", "count-one": "改成1张", "clear-reference": "清空参考图", "recover-suite": "恢复远端套图", "recover-hook": "找回已生成图片" };
+    if (diagnosis.title.startsWith('AI 策划')) labels.retry = '继续策划';
     const busy = action === "recover-hook" && aiImageCodHookRecoveryRequest?.conversationId === conversation.id;
     return `<button class="ghost-btn" type="button" data-ai-error-action="${esc(action)}"${busy ? " disabled" : ""}>${esc(busy ? "正在查询已保存图片…" : labels[action] || action)}</button>`;
   }).join("");
@@ -5371,7 +5451,119 @@ function renderAiImageErrorBlock(message = "", conversation = aiImageActiveConve
   `;
 }
 
+let visualAgentProgressPending=false;
+async function syncVisualAgentProgress(conversation){
+  if(visualAgentProgressPending||conversation.status!=='planning'||!conversation.activeOperationId)return;
+  visualAgentProgressPending=true;
+  const operation=conversation.activeOperationId;
+  try{
+    const result=await api('/api/sku-board/visual-agent-progress',{method:'POST',body:JSON.stringify({operationId:operation})});
+    if(!result.progress||conversation.status!=='planning'||operation!==conversation.activeOperationId)return;
+    conversation.director={...(conversation.director||{}),...result.progress};
+    renderAiImageResults();
+  }finally{visualAgentProgressPending=false;}
+}
+
+function renderAgentDecisionCards(d, pages=[]){
+  const list=(items,format)=>Array.isArray(items)&&items.length
+    ? '<ul>'+items.map(item=>'<li>'+esc(format(item))+'</li>').join('')+'</ul>'
+    : '<p>暂无已确认资料</p>';
+  const text=value=>typeof value==='string'?value:JSON.stringify(value);
+  const p=d.productIntelligence||{},s=d.strategy||{};
+  const adviceActions=d.failureAdvice?.codes?.includes('product_identity')
+    ? ['旧版确认暂停步骤已移除，点击继续策划即可复用已保存分析。'] : d.failureAdvice?.actions;
+  const advice=adviceActions?.length
+    ? '<section class="analysis-card"><h3>当前问题与处理方式</h3>'+list(adviceActions,text)+'</section>':'';
+  const product=d.productIntelligence?'<details class="analysis-card"><summary>产品档案 · 事实与待确认信息</summary>'
+    +'<h4>目标用户（分析假设）</h4>'+list(p.audienceProfiles,x=>x.description||text(x))
+    +'<h4>产品事实与资料来源</h4>'+list(p.facts,x=>x.statement+' ['+x.status+']')
+    +'<h4>产品外观与使用限制</h4>'+list(p.prohibitedVisualDirections,text)
+    +'<h4>待补充资料</h4>'+list(p.missingInformation,text)+'</details>':'';
+  const strategy=d.strategy?'<details class="analysis-card" open><summary>营销决策 · 为什么这样设计</summary>'
+    +'<p>'+esc(s.positioning||'')+'</p><h4>购买理由</h4>'+list(s.purchaseReasons,x=>x.reason)
+    +'<h4>转化重点</h4>'+list(s.conversionPriorities,x=>x.objective)
+    +'<h4>购买顾虑 → 解释方式</h4>'+list(s.objectionResponses,x=>x.objection+' → '+x.response)
+    +'<h4>尚待验证的判断</h4>'+list(s.assumptions,text)+'</details>':'';
+  const labels={product:'产品',person:'人物',detail:'细节',environment:'环境',diagram:'图解',hero:'主视觉',demonstration:'演示',macro:'微距',comparison:'对比',sequence:'步骤',montage:'多场景',specification:'规格',single:'单主体',split:'分屏',grid:'网格',layered:'分层',editorial:'图文编排'};
+  const plan=pages.filter(p=>p.agentSpec).map(p=>{
+    const a=p.agentSpec,v=a.visualDesign||{};
+    return '<details><summary>第'+esc(p.page)+'页 · '+esc(a.purpose)+'</summary>'
+      +'<p><b>用户顾虑：</b>'+esc(a.userPsychology)+'</p>'
+      +'<p><b>视觉形式：</b>'+esc([v.primarySubject,v.method,v.layoutFamily].filter(Boolean).map(x=>labels[x]||x).join(' / '))+'</p>'
+      +'<p><b>画面创意：</b>'+esc(v.visualHook||a.scene)+'</p>'
+      +(v.buyingReason?'<p><b>购买理由：</b>'+esc(v.buyingReason)+'</p>':'')
+      +(v.benefitVisualization?'<p><b>卖点如何画：</b>'+esc(v.benefitVisualization)+'</p>':'')
+      +(Array.isArray(v.informationHierarchy)?'<p><b>信息层级：</b>'+esc(v.informationHierarchy.join(' → '))+'</p>':'')
+      +'<p><b>构图：</b>'+esc(a.composition)+'</p>'
+      +'<p><b>文案方向：</b>'+esc(a.copyDirection)+'</p>'
+      +'<p><b>素材理由：</b>'+esc(v.referenceReason||'按本页产品素材选择')+'</p>'
+      +'<p><b>与其他页的区别：</b>'+esc(a.difference)+'</p></details>';
+  }).join('');
+const knowledge=d.marketKnowledge;
+  const market=knowledge?'<details class="analysis-card"><summary>市场资料 · '+esc(knowledge.evidence?.length||0)+' 条观察 / '+esc(knowledge.feedback?.length||0)+' 组反馈</summary>'
+    +'<p>用户提供的有日期资料，来源未自动核验；没有资料时使用明确标注的假设，不表示已完成市场搜索。</p>'
+    +list(knowledge.evidence,x=>x.platform+' · '+x.observedAt+' · '+x.finding+'（来源：'+x.source+'）')
+    +'<h4>未采用的资料</h4>'+list(knowledge.excluded,x=>'第'+x.record+'条：'+x.reason)
+    +'<p>可在需求中附加【市场资料】JSON数组【/市场资料】或【投放反馈】JSON数组【/投放反馈】。字段说明见下方。</p>'
+    +'<pre>市场资料：country、platform、category（匹配产品档案）、observedAt（YYYY-MM-DD）、source、finding\n投放反馈：上述范围与来源字段 + testId、comparisonContext、variants\n每组 variant：direction、impressions、clicks、conversions（真实整数计数）</pre></details>':'';
+  const feedback=d.feedbackReview?'<section class="analysis-card"><h4>市场反馈 → 策略与视觉</h4><p>'
+    +esc(({keep:'保留原方向',adjust:'依据反馈调整',skipped:'未触发额外调用'})[d.feedbackReview.decision]||d.feedbackReview.decision)
+    +'：'+esc(d.feedbackReview.reason)+'</p></section>':'';
+  const dna=d.visualDNA?'<details class="analysis-card"><summary>整套视觉 DNA 锁 · 已注入各页 Prompt</summary>'
+    +'<p>锁定配色、字体和摄影语言；人物按页面需要出现，场景、动作、构图逐页变化。</p>'
+    +'<p><b>配色：</b>'+esc(text(d.visualDNA.palette))+'</p><p><b>字体：</b>'+esc(d.visualDNA.typography)
+    +'</p><p><b>人物策略：</b>'+esc(d.visualDNA.castingPolicy)+'</p><p><b>光影质感：</b>'+esc(d.visualDNA.photographicLanguage)
+    +'</p><small>DNA版本：'+esc(d.visualDNA.id)+'</small></details>':'';
+  return advice+product+market+strategy+feedback+dna+(plan?'<details class="analysis-card"><summary>逐页分镜 · 查看画面与文案设计</summary>'+plan+'</details>':'');
+}
+
+const AI_VISUAL_DESIGN_REVISION = 'commercial-design-v5-rich-visual-execution';
+
+function aiImageVisualDesignOutdated(conversation = {}) {
+  if (!['cod-country-landing-30', 'cod-country-detail-12'].includes(conversation.suiteKey)) return false;
+  return conversation.director?.visualPipelineVersion === 'cod-visual-agents-v1'
+    || (conversation.suitePages || []).some(p => p?.visualPipelineVersion === 'cod-visual-agents-v1');
+}
+
+function renderVisualAgentDesignUpgrade(conversation = {}) {
+  if (!aiImageVisualDesignOutdated(conversation)) return '';
+  const busy = ['planning', 'generating'].includes(conversation.status) || Number(conversation.remoteSummary?.running || 0) > 0;
+  return `<section class="ai-image-alert partial" style="display:block">
+    <strong>COD 已恢复 GitHub 版 · 当前任务保留原 Agent 方案</strong>
+    <p>新建 COD 任务使用 GitHub 064a6b5 的卖点策划和七层 Prompt。当前任务的图片、原方案和补图记录保留；使用下方按钮另存一份 GitHub 版任务。</p>
+    <button type="button" class="ghost-btn" data-agent-upgrade-design ${busy ? 'disabled' : ''}>另存 GitHub 版任务</button>
+    <small>此按钮只复制需求与参考图，不调用模型、不删除原图。新任务先按 GitHub 流程策划，确认后再生图；缓存按该流程的匹配规则复用。</small>
+  </section>`;
+}
+
+function startVisualAgentDesignUpgrade(conversation) {
+  if (['planning', 'generating'].includes(conversation.status) || Number(conversation.remoteSummary?.running || 0) > 0) {
+    throw new Error('请先结束当前策划或生成，再另存新版方案');
+  }
+  if (!aiImageVisualDesignOutdated(conversation)) throw new Error('当前任务已经使用 GitHub 版流程');
+  const references = (conversation.referenceImages || []).map(r => ({...r,
+    previewDataUrl: r.file && r.previewDataUrl?.startsWith('blob:') ? URL.createObjectURL(r.file) : r.previewDataUrl}));
+  // Explicit opt-in only: retries/recovery keep the original saved prompts and run.
+  // createAiImageConversation initializes empty materials, operation state and edits.
+  return createAiImageConversation({...conversation,
+    title: (conversation.title || 'COD 套图') + ' · GitHub版',
+    productFacts: conversation.productFacts ?? conversation.director?.productFacts ?? '',
+    referenceImages: references, directorMode: 'review',
+    suitePages: [], suiteRunId: '', suitePlanVersion: '', suitePlanSignature: '',
+    director: {}, remoteSummary: {}, review: {}, pageEditPrompts: {},
+  });
+}
+
+function renderVisualAgentMonitor(conversation){
+  const d=conversation.director||{},labels={cached:'已复用',complete:'完成',running:'处理中',waiting:'待续接',needs_confirmation:'待续接'};
+  const stages=[['product','产品分析'],['strategy','商品策略'],['direction','视觉导演'],['planning','图片规划'],['prompts','动态 Prompt']];
+  const count=aiImageSuiteConfig(conversation)?.count||30;
+  const ready=aiImageCodCompanyPromptStatus(conversation.suitePages||[],count).readyCount;
+  return `${renderAgentDecisionCards(d,conversation.suitePages||[])}<section class="ai-image-alert" style="display:block"><h3>AI 电商视觉团队</h3><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:16px">${stages.map(([id,name])=>`<div><b>${name}</b><br><small>${esc(labels[d.stages?.[id]?.status]||'待开始')}</small></div>`).join('')}<div><b>图片生成</b><br><small>${(conversation.materials||[]).length} 张已返回</small></div></div><p>${esc(d.productSummary||'产品分析结果会独立保存，后续策划复用。')}</p><p>${d.productCacheHit?'产品分析：缓存命中，无需重复分析图片。':'产品分析：首次完成即持久保存。'} 独立 Prompt：${ready}/${count}</p>${d.strategy?`<details><summary>商品策略</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(d.strategy,null,2))}</pre></details>`:''}${d.creativeDirection?`<details><summary>视觉导演方案</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(d.creativeDirection,null,2))}</pre></details>`:''}${d.creativePassWarning||d.error?`<p>${esc(d.creativePassWarning||d.error)}</p>`:''}<small>逐页独立设计 · 保留产品一致性 · 沿用原生图节点 · 生成后不追加 AI 分析</small></section>`;
+}
+
 function renderAiImageDirectorMonitor(conversation = {}) {
+  if(conversation.director?.visualPipelineVersion==='cod-visual-agents-v1')return renderVisualAgentMonitor(conversation);
   const suiteConfig = aiImageSuiteConfig(conversation);
   const monitorConfig = suiteConfig?.monitor;
   if (!monitorConfig) return "";
@@ -6137,7 +6329,7 @@ function renderAiImageResults() {
     : "";
   const errorBlock = conversation.status === "error" ? renderAiImageErrorBlock(conversation.error || "请稍后重试", conversation) : "";
   const recoveryBlock = renderAiImageRecoveryBlock(conversation);
-  const directorMonitorBlock = renderAiImageDirectorMonitor(conversation);
+  const directorMonitorBlock = renderVisualAgentDesignUpgrade(conversation)+renderAiImageDirectorMonitor(conversation);
   const hookProductAnalysisBlock = renderAiImageCodHookProductAnalysis(conversation);
   const factAuditBlock = renderAiImageFactAudit(conversation);
   const suitePlanBlock = renderAiImageSuitePlan(conversation);
@@ -6166,7 +6358,7 @@ function renderAiImageResults() {
       <div class="ai-image-generating">
         <span class="ai-image-generating-spinner"></span>
         <div class="ai-image-generating-copy">
-          <strong>${suiteActive ? esc(suiteSummary.message || `正在通过${providerLabel}分批生成整套${suiteConfig.label}`) : conversation.templateKey === "codHook" && conversation.referenceImages?.length && conversation.productAnalysis?.status !== "ready" ? esc(conversation.productAnalysis?.message || "等待线上AI识别产品、颜色与结构，识别通过后再生图") : `正在调用 ${esc(providerLabel)} 执行${esc(modeLabel)}，生成 ${esc(conversation.count || 1)} 张图片`}</strong>
+          <strong>${suiteActive ? esc(suiteSummary.message || `正在通过${providerLabel}分批生成整套${suiteConfig.label}`) : conversation.templateKey === "codHook" ? `正在直接调用 ${esc(providerLabel)} 生成噱头图` : `正在调用 ${esc(providerLabel)} 执行${esc(modeLabel)}，生成 ${esc(conversation.count || 1)} 张图片`}</strong>
           ${suiteActive ? `
             <small>完成 ${esc(suiteSummary.succeeded || 0)}/${suiteCount} · 生成或待恢复 ${esc(suiteSummary.running || 0)} · 失败 ${esc(suiteSummary.failed || 0)}</small>
             <div class="ai-image-generation-progress" aria-label="${esc(suiteConfig.label)}生成进度"><i style="width:${suiteProgress}%"></i></div>
@@ -6704,7 +6896,27 @@ function setAiImageDirectorStage(conversation, stageIndex = 0, message = "") {
 
 function enforceAiImageCodSourceCoverage(conversation, payload = {}, suiteConfig = {}) {
   if (!["cod-country-landing-30", "cod-country-detail-12"].includes(suiteConfig.key || conversation.suiteKey)) return;
+  if (payload.visualPipelineVersion === 'cod-visual-agents-v1'
+      && payload.companyPromptStatus?.ready !== true
+      && (payload.continuation || payload.director?.creativePassWarning)) {
+    const message = payload.continuation
+      ? `AI 策划进度已保存：${payload.continuation.message}。点击继续策划，无需重新分析产品。`
+      : `AI 策划尚未完成：${payload.director.creativePassWarning}。已完成阶段已保留，请稍后继续策划；无需增加图片数量。`;
+    conversation.status = 'error';
+    conversation.error = message;
+    if (Array.isArray(payload.suitePages)) conversation.suitePages = payload.suitePages;
+    conversation.director = {...payload.director, status: 'warning', message};
+    conversation.suitePlanVersion = payload.suitePlanVersion || conversation.suitePlanVersion || '';
+    conversation.suitePlanSignature = '';
+    conversation.updatedAt = new Date().toISOString();
+    syncAiImageStateFromConversation(conversation);
+    renderAiImageSidebar();
+    renderAiImageForm();
+    renderAiImageResults();
+    throw new Error(message);
+  }
   const coverage = payload.director?.sellingPointCoverage || payload.sellingPointCoverage;
+  if (coverage?.checked === false) return;
   if (coverage?.complete !== false) return;
   const assigned = Math.max(0, Number(coverage.assigned || 0));
   const total = Math.max(assigned, Number(coverage.total || 0));
@@ -7108,6 +7320,7 @@ async function reportAiImageQualityTelemetry(conversation, results = []) {
 }
 
 async function reviewAiImageSuitePageNumbers(conversation, pageNumbers = [], attempt = 1) {
+  if (aiImageUsesVisualAgents(conversation)) return { reviewed: false, results: [], status: "skipped" };
   const productReferences = aiImageSuiteGenerationReferences(conversation).slice(0, 12);
   if (!productReferences.length || !pageNumbers.length) return { reviewed: false, results: [], status: "skipped" };
   const allResults = [];
@@ -7219,7 +7432,7 @@ function aiImageCodPageIsMain(conversation = {}, page = 1, pagePlan = {}) {
   // A reset section index identifies detail pages in older serialized plans
   // that omit the section name. Otherwise use this suite's real main count.
   if (sectionIndex > 0 && sectionIndex < pageNumber) return false;
-  const mainCount = Number(config.mainCount ?? (config.count === 37 ? 15 : Math.min(8, config.count)));
+  const mainCount = Number(config.mainCount ?? config.count);
   return pageNumber <= mainCount;
 }
 
@@ -7346,10 +7559,17 @@ function aiImageSuiteReferencesForPage(conversation = {}, page = 1) {
   return selected.slice(0, AI_IMAGE_SUITE_PAGE_REFERENCE_LIMIT);
 }
 
+function aiImageUsesVisualAgents(conversation) {
+  return conversation.director?.visualPipelineVersion === "cod-visual-agents-v1"
+    || conversation.suitePages?.some((page) => page.visualPipelineVersion === "cod-visual-agents-v1");
+}
+
 function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, runId, styleAnchor = null, reviewInstruction = "", editSource = null) {
   const formData = new FormData();
+  const agentPipeline = aiImageUsesVisualAgents(conversation);
   const allReferences = (conversation.referenceImages || []).filter((reference) => reference.file);
-  const references = editSource?.file ? [] : aiImageSuiteReferencesForPage(conversation, page);
+  // The server verifies the original assets, then routes only each PageSpec's selected assets to the provider.
+  const references = editSource?.file ? [] : agentPipeline ? allReferences : aiImageSuiteReferencesForPage(conversation, page);
   const selectedReferenceMap = references.map((reference, index) => {
     const role = aiImageReferenceRoleKey(reference, index);
     const filename = String(reference.name || reference.file?.name || "").replace(/[\r\n;]/g, " ").slice(0, 100);
@@ -7381,6 +7601,11 @@ function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, 
   formData.append("skillVersion", conversation.skillVersion);
   formData.append("lockLevel", conversation.lockLevel);
   formData.append("suiteKey", conversation.suiteKey);
+  if (agentPipeline) {
+    formData.append("visualPipelineVersion", "cod-visual-agents-v1");
+    const facts = conversation.productFacts ?? conversation.director?.productFacts;
+    if (facts !== undefined) formData.append("productFacts", facts);
+  }
   formData.append("suiteCount", String(aiImageSuiteCount(conversation)));
   formData.append("suiteCountry", conversation.suiteCountry || "KR");
   formData.append(
@@ -7391,11 +7616,12 @@ function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, 
   formData.append("suiteBrief", effectiveIntent);
   formData.append("suitePlan", JSON.stringify(conversation.suitePages || []));
   formData.append("suitePageIndexes", JSON.stringify([page]));
-  if (page === 1 && aiImageGenerationProfile(conversation).key !== "fast" && !reviewInstruction && !editSource?.file) {
+  if (!agentPipeline && !["cod-country-landing-30", "cod-country-detail-12"].includes(conversation.suiteKey)
+      && page === 1 && aiImageGenerationProfile(conversation).key !== "fast" && !reviewInstruction && !editSource?.file) {
     formData.append("heroAB", "true");
   }
   if (reviewInstruction) formData.append("suiteReviewInstruction", reviewInstruction);
-  const activeStyleAnchor = editSource?.file
+  const activeStyleAnchor = agentPipeline || editSource?.file
     || !aiImageSuiteUsesGeneratedStyleAnchor(conversation)
     || conversation.suiteKey === "rakuten-jp-product-9"
     ? null
@@ -7554,7 +7780,35 @@ async function cancelAiImageGeneration() {
   return true;
 }
 
+function aiImageSavedPlanError(message = '') {
+  return /动态页面|动态方案|原始需求、国家或尺寸已变化|产品参考图已变化/.test(String(message));
+}
+
+async function syncAiImageSavedPlan(conversation, effectiveIntent) {
+  if (!aiImageUsesVisualAgents(conversation)) return;
+  const payload = await api('/api/sku-board/visual-agent-plan-sync', {
+    method: 'POST',
+    body: JSON.stringify({
+      suitePages: conversation.suitePages, suiteKey: conversation.suiteKey,
+      suiteCount: aiImageSuiteCount(conversation), suiteCountry: conversation.suiteCountry || 'KR',
+      size: conversation.size, suiteBrief: effectiveIntent,
+      ...((conversation.productFacts ?? conversation.director?.productFacts) !== undefined
+        ? {productFacts: conversation.productFacts ?? conversation.director.productFacts} : {}),
+    }),
+    signal: aiImageGenerationAbortController?.signal,
+  });
+  if (!payload.companyPromptStatus?.ready || !Array.isArray(payload.suitePages)
+      || payload.suitePages.length !== aiImageSuiteCount(conversation)) {
+    throw new Error('动态方案同步未完成，请继续策划');
+  }
+  conversation.suitePages = payload.suitePages;
+  syncAiImageStateFromConversation(conversation);
+}
+
 async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent, targetPages, forcePages = [], button, startedAt, pageInstructions = new Map(), pageEditSources = new Map() }) {
+  // One local preflight for the whole suite, including retry/single-page edit paths.
+  // Never re-run product analysis and never relax the provider submission checks.
+  await syncAiImageSavedPlan(conversation, effectiveIntent);
   const suiteConfig = aiImageSuiteConfig(conversation);
   const suiteCount = suiteConfig.count;
   const suiteUnit = suiteConfig.unit;
@@ -7594,7 +7848,9 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
     : null;
   updateAiImageSuiteProgress(conversation, progress, button);
 
+  let planFailure = null;
   const runPage = async (page, options = {}) => {
+    if (planFailure) return false;
     throwIfAiImageGenerationAborted();
     const requestedInstruction = String(pageInstructions.get(page) || "").trim();
     const qualityInstruction = String(options.reviewInstruction || "").trim();
@@ -7643,6 +7899,7 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
         }
         const pending = Array.isArray(payload.suiteSummary?.pending) && payload.suiteSummary.pending.length > 0;
         const message = aiImageSuitePayloadError(payload) || payload.suiteSummary?.message || "远端没有返回图片";
+        if (aiImageSavedPlanError(message)) throw new Error(message);
         if (pending) {
           pageMeta.finishedAt = Date.now();
           pageMeta.elapsedMs = Math.max(1, pageMeta.finishedAt - pageMeta.startedAt);
@@ -7675,6 +7932,7 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
       } catch (error) {
         if (isAiImageGenerationAborted(error)) throw error;
         const message = error.message || "生成失败";
+        if (aiImageSavedPlanError(message)) planFailure = error;
         const transient = aiImageSuiteTransientError(message);
         if (attempt < generationProfile.maxRetries && aiImageSuiteQuotaError(message)) {
           progress.pageStates[page] = "retrying";
@@ -7714,7 +7972,7 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
   const runPageBatch = async (pages, reviewInstructions = new Map()) => {
     let cursor = 0;
     const worker = async () => {
-      while (cursor < pages.length) {
+      while (cursor < pages.length && !planFailure) {
         throwIfAiImageGenerationAborted();
         const page = pages[cursor];
         cursor += 1;
@@ -7739,6 +7997,7 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
   };
 
   await runDirectedPageBatch(safeTargetPages);
+  if (planFailure) throw planFailure;
   for (let cycle = 1; cycle <= generationProfile.autoRetryCycles; cycle += 1) {
     throwIfAiImageGenerationAborted();
     const retryPages = Array.from(progress.retryablePages)
@@ -7980,7 +8239,7 @@ async function generateAiImage(event) {
       aiImageGenerationStartedAt = 0;
       button.disabled = false;
       button.textContent = original;
-      $("#ai-image-status").textContent = "套图策划失败";
+      $("#ai-image-status").textContent = String(error.message||'').includes('策划进度已保存') ? '策划进度已保存，等待继续' : '套图策划失败';
       showToast(error.message);
       return;
     }
@@ -8034,7 +8293,6 @@ async function generateAiImage(event) {
     ? `正在通过 ${aiImageRendererLabel(conversation)} 分批生成 ${suiteConfig.label}（${suiteConfig.count}${suiteConfig.unit}）`
     : `正在调用 ${aiImageProviderLabel(conversation.model || aiImageDefaultModel())}`;
   const startedAt = performance.now();
-  const codHookReferenceSnapshot = conversation.templateKey === "codHook" ? aiImageCodHookReferenceSnapshot(conversation) : null;
   try {
     const references = conversation.referenceImages || [];
     const productReferenceIndexes = references
@@ -8120,7 +8378,6 @@ async function generateAiImage(event) {
         $("#ai-image-status").textContent = message;
       },
       onProgress: (progress) => {
-        if (codHookReferenceSnapshot) applyAiImageCodHookProductAnalysis(conversation, progress, codHookReferenceSnapshot);
       },
     });
     const previews = payload.previewDataUrls?.length ? payload.previewDataUrls : [payload.previewDataUrl].filter(Boolean);
@@ -8206,7 +8463,6 @@ async function generateAiImage(event) {
       }
     }
     conversation.status = "error";
-    if (codHookReferenceSnapshot) applyAiImageCodHookProductAnalysis(conversation, error, codHookReferenceSnapshot);
     conversation.error = error.message;
     conversation.updatedAt = new Date().toISOString();
     syncAiImageStateFromConversation(conversation);
@@ -10746,6 +11002,7 @@ function bindEvents() {
   });
   $("#ai-director-save-btn").addEventListener("click", () => saveAiDirectorSettings(false));
   $("#ai-director-test-btn").addEventListener("click", () => testAiDirectorConnection());
+  bindAiDirectorCustomModelEvents();
   ["#ai-director-base-url", "#ai-director-model", "#ai-director-timeout", "#ai-director-api-key", "#ai-director-enabled", "#ai-director-vision", "#ai-director-open-prompts", "#ai-director-review-enabled", "#ai-director-review-threshold"].forEach((selector) => {
     const field = $(selector);
     const eventName = field?.type === "checkbox" || field?.tagName === "SELECT" ? "change" : "input";
@@ -10753,14 +11010,8 @@ function bindEvents() {
       const director = { ...(state.aiImages.director || {}), formDirty: true, message: "配置尚未保存", status: "unknown" };
       if (selector === "#ai-director-model") {
         director.model = field.value;
-        // Keep the verified online vision routes in the chain whenever the
-        // administrator changes the primary model.  Previously this handler
-        // replaced the chain with the two GPT entries, so a temporary GPT
-        // stream failure immediately fell back to local previsualization.
-        director.fallbackModels = Array.from(new Set([
-          ...AI_DIRECTOR_ONLINE_FALLBACK_MODELS,
-          ...AI_DIRECTOR_MODELS,
-        ])).filter((candidate) => candidate !== field.value);
+        // Preserve the configured backup list. The server computes the short
+        // runtime chain; the model catalog itself never becomes a retry list.
       }
       state.aiImages.director = director;
       renderAiDirectorSettings();
@@ -10776,6 +11027,17 @@ function bindEvents() {
     if (taskButton) setAiImageConversation(taskButton.dataset.aiConversation);
   });
   $("#ai-image-results").addEventListener("click", (event) => {
+    if (event.target.closest('[data-agent-upgrade-design]')) {
+      try {
+        if (aiImageGenerationAbortController) throw new Error('请先结束当前任务再另存方案');
+        const next = startVisualAgentDesignUpgrade(ensureAiImageConversation());
+        renderAiImageSidebar(); renderAiImageForm(); renderAiImageResults();
+        showToast(next.referenceImages.some(r => r.file)
+          ? '已另存 GitHub 版任务。点击生成先策划，确认方案后再生图；原图与补图任务保持原样。'
+          : '已另存 GitHub 版任务。请重新附上原产品图，再点击生成先策划；原图保留在原任务。');
+      } catch (error) { showToast(error.message); }
+      return;
+    }
     const errorActionButton = event.target.closest("[data-ai-error-action]");
     if (errorActionButton) {
       const action = errorActionButton.dataset.aiErrorAction;
