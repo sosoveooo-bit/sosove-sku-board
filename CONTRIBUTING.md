@@ -24,14 +24,19 @@ Run the suites that cover your change:
 python -m unittest discover -s sku_board/tests -p "test_*.py"
 python -m unittest discover -s cod-chat-studio -p "test_*.py"
 python -m unittest discover -s shopline_monitor/tests -p "test_*.py"
+python -m unittest discover -s tests -p "test_*.py"
+(cd open-image-prompts && python -m unittest discover -s tests -p "test_*.py")
 node --check sku_board/static/app.js
 ```
 
+That is the same set CI runs; see `.github/workflows/ci.yml`. The installer
+suite needs Bash, and `open-image-prompts/` must run from its own directory.
+
 The `sku_board/tests/*.cjs` files are standalone Node harnesses. Run each one
-directly, for example:
+directly, or run them all:
 
 ```bash
-node sku_board/tests/test_visual_agent_frontend.cjs
+for file in sku_board/tests/*.cjs; do echo "== $file"; node "$file"; done
 ```
 
 ## Ground rules
