@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Analyze TikTok ad CSV exports and print an action-oriented report."""
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ import argparse
 import csv
 import glob
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,8 +18,8 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_EXPORTER = Path(r"C:\Users\Administrator\.qclaw\scripts\tiktok_export_all_ads.ps1")
-DEFAULT_DATA_DIR = Path(r"C:\Users\Administrator\.qclaw\scripts")
+DEFAULT_EXPORTER = Path(os.environ.get("TIKTOK_ADS_EXPORTER", "tiktok_export_all_ads.ps1"))
+DEFAULT_DATA_DIR = Path(os.environ.get("TIKTOK_ADS_DATA_DIR", "tiktok_ads_exports"))
 TEXT_FIELDS = [
     "AccountName",
     "CampaignName",

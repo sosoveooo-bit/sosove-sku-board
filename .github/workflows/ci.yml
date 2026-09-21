@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r sku_board/requirements.txt
+
+      - name: Main panel tests
+        run: python -m unittest discover -s sku_board/tests -p "test_*.py"
+
+      - name: Chat studio tests
+        run: python -m unittest discover -s cod-chat-studio -p "test_*.py"
+
+      - name: Shopline monitor tests
+        run: python -m unittest discover -s shopline_monitor/tests -p "test_*.py"
+
+      - name: Frontend contract harnesses
+        run: |
+          node --check sku_board/static/app.js
+          for file in sku_board/tests/*.cjs; do
+            echo "== $file"
+            node "$file"
+          done
+
+      - name: Compile check
+        run: python -m compileall -q sku_board shopline_monitor cod-chat-studio

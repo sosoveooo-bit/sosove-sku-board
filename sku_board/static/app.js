@@ -349,7 +349,7 @@ const AI_IMAGE_SUITE_CONFIGS = {
     planTitle: "COD详情图 22张导演脚本",
     planHint: "先分析全部参考图与完整来源卖点，再逐页创作场景、证据和对应的本地语言标题说明；默认有字，明确无字要求保留",
     templateKey: "codDetail",
-    planVersion: "cod-detail-v20-source-driven-online-only",
+    planVersion: "cod-detail-v21-selected-market-lock",
     promptPlaceholder: "填写当前产品名称、全部颜色/规格、主卖点、次卖点和使用效果；促销、背书、好评仅在有资料时加入，系统按品类与国家生成动态COD详情图",
     resultClass: "cod-country",
     anchorPrefix: "cod-country-detail",

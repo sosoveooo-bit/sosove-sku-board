@@ -120,14 +120,32 @@ docker compose logs -f --tail=100
 
 ```bash
 python -m unittest discover -s sku_board/tests -p "test_*.py"
+python -m unittest discover -s cod-chat-studio -p "test_*.py"
+python -m unittest discover -s shopline_monitor/tests -p "test_*.py"
 node --check sku_board/static/app.js
 ```
 
+`sku_board/tests/*.cjs` 是独立的 Node 契约脚本，需要逐个执行，例如
+`node sku_board/tests/test_visual_agent_frontend.cjs`。仓库根的
+`tests/test_nas_bootstrap.py` 需要 Bash，并只在 Linux 上完整通过。
+
+少数测试带有明确的跳过标记：它们断言的是已移除的五 Agent COD 路线，
+现已被 GitHub 版规划器取代（见 `docs/plans/2026-09-18-cod-github-restore.md`）。
+断言保留在代码里，等待随功能重写。
+
 部分集成测试需要本机环境变量或远端服务；未配置时应跳过对应测试，而不是提交真实凭证。
+
+## 参与贡献
+
+提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。安全问题按
+[SECURITY.md](SECURITY.md) 私下报告，不要开公开 issue。
 
 ## 开源边界
 
 本仓库只包含面板源码、测试和部署模板，不包含任何账号凭证、客户商品数据、生成结果或私有素材。接入第三方平台时，请自行确认平台条款、广告政策和素材授权。
+`open-image-prompts/` 是随仓库捆绑的第三方项目，遵循其自身的
+[LICENSE](open-image-prompts/LICENSE) 与
+[DATA_LICENSE.md](open-image-prompts/DATA_LICENSE.md)，不在本仓库的 MIT 授权范围内。
 
 ## License
 

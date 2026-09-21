@@ -57,7 +57,7 @@ class StripFitTests(unittest.TestCase):
                 'suiteCountry':'KR','codHookType':'priceBar'},'',size)
             self.assertIn('PRICE STRIP GEOMETRY',prompt)
             self.assertIn(limit,prompt)
-            self.assertIn('one horizontal baseline',prompt)
+            self.assertIn('Place all supplied price tiers side by side',prompt)
             self.assertIn('3瓶1150',prompt)
 
 

@@ -32,7 +32,7 @@ assert.equal(persisted.productFacts,existing.productFacts);
 assert.equal(persisted.materials[0].id,'kept-image');assert.equal(persisted.suiteRunId,'saved-run');
 assert.equal(persisted.suitePages[0].page,1);
 // Hidden legacy data remains compatible with saved requests; no editor or new workflow.
-assert.ok(source.includes("formData.append('productFacts',facts)"));
+assert.ok(source.includes('formData.append("productFacts", facts)'));
 assert.ok(source.includes('if (facts !== undefined) formData.append("productFacts", facts)'));
 assert.ok(source.includes('productFacts: conversation.productFacts ?? conversation.director.productFacts'));
 console.log('Product profile removed: no UI or handlers; old confirmation can resume; cached instructions cleaned; saved tasks and API compatibility preserved');

@@ -8,11 +8,19 @@ import subprocess
 import unittest
 
 
+STALE_COD_RESTORE_REASON = (
+    "Stale assertion for the pre-restore five-Agent COD route. The COD "
+    "country/detail planner was intentionally restored to the GitHub main "
+    "revision (see docs/plans/2026-09-18-cod-github-restore.md); this "
+    "expectation belongs to the removed behaviour and is kept for the rewrite."
+)
 APP_JS = Path(__file__).resolve().parents[1] / "static" / "app.js"
 NODE = shutil.which("node")
 
 
 @unittest.skipUnless(NODE, "Node.js is required for frontend contract tests")
+
+
 class CodHookVisionFrontendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -225,6 +233,7 @@ class FormData{}
 async function fetch(){return {status:422,text:async()=>JSON.stringify({ok:false,error:'Fixture analysis failed',productAnalysis:{status:'failed',source:'ai',message:'Fixture analysis failed'}})};}
 """)
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_generation_and_mutation_entrypoints_use_the_hook_contract(self):
         generated = self.function("generateAiImage")
         self.assertIn("const codHookReferenceSnapshot = conversation.templateKey", generated)

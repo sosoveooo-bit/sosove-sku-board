@@ -6,6 +6,14 @@ from sku_board import backend
 from sku_board.tests import test_cod_hook_vision_integration as _vision_fixtures
 
 
+STALE_COD_RESTORE_REASON = (
+    "Stale assertion for the pre-restore five-Agent COD route. The COD "
+    "country/detail planner was intentionally restored to the GitHub main "
+    "revision (see docs/plans/2026-09-18-cod-github-restore.md); this "
+    "expectation belongs to the removed behaviour and is kept for the rewrite."
+)
+
+
 class HookPartialResultMetadataTests(unittest.TestCase):
     def setUp(self):
         # Compose the existing offline fixture rather than inherit its test
@@ -16,6 +24,7 @@ class HookPartialResultMetadataTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.setUp()
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_second_hook_image_keeps_its_own_prompt_variant_and_sources_when_first_fails(self):
         fixture = self.fixture
         blue_image = (b"GENERATED-BLUE-SECOND-PAGE", "image/png")

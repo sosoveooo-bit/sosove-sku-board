@@ -3,6 +3,14 @@ from copy import deepcopy
 from sku_board import backend, cod_campaign_art as art
 
 
+STALE_COD_RESTORE_REASON = (
+    "Stale assertion for the pre-restore five-Agent COD route. The COD "
+    "country/detail planner was intentionally restored to the GitHub main "
+    "revision (see docs/plans/2026-09-18-cod-github-restore.md); this "
+    "expectation belongs to the removed behaviour and is kept for the rewrite."
+)
+
+
 class CampaignArtTests(unittest.TestCase):
     def test_source_specific_routes_and_variation(self):
         points=['提拉紧致，改善面部松垮','焕亮匀肤','淡化细纹干纹','胶原蛋白生成','修护弹性',
@@ -64,6 +72,7 @@ class CampaignArtTests(unittest.TestCase):
         parts=art.routes(pages[3:6],'连衣裙')
         self.assertEqual([r['layoutSuggestion'] for r in parts],[r['layoutSuggestion'] for r in whole[3:6]])
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_full_chain_uses_vision_category_without_new_model_call(self):
         key=backend.AI_IMAGE_COD_SUITE_KEY
         pages=backend.build_ai_image_suite_plan('Exact dress','卖点：弹力面料','750x1000',suite_key=key,country='TH',count=8)
@@ -75,6 +84,7 @@ class CampaignArtTests(unittest.TestCase):
         prompt=backend.ai_image_cod_company_remote_authored_execution_prompt(page,'Exact dress',8,'卖点：弹力面料',suite_key=key,country='TH')
         self.assertIn('Category suggestion=apparel',prompt)
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_online_analysis_refinement_and_compiler_receive_direction(self):
         key=backend.AI_IMAGE_COD_SUITE_KEY
         pages=backend.build_ai_image_suite_plan('Blue skincare applicator','卖点：提拉紧致','750x1000',suite_key=key,country='TH',count=8)

@@ -13,7 +13,7 @@
 ### Task 1: Add regression coverage
 
 **Files:**
-- Modify: `D:\Backup\Documents\New project\sosove-sku-board\sku_board\tests\test_ai_image_suite.py`
+- Modify: `sku_board\tests\test_ai_image_suite.py`
 
 1. Add a test that `10` is a supported Japan landing-page count and produces exactly ten coherent pages.
 2. Add a test that the upload planner sends every uploaded product reference to the director in stable order.
@@ -24,7 +24,7 @@
 ### Task 2: Expand multi-image director input
 
 **Files:**
-- Modify: `D:\Backup\Documents\New project\sosove-sku-board\sku_board\backend.py`
+- Modify: `sku_board\backend.py`
 
 1. Normalize a list of up to eight director reference images.
 2. Hash all reference images in the product-analysis cache key.
@@ -35,7 +35,7 @@
 ### Task 3: Let the director own product-specific execution
 
 **Files:**
-- Modify: `D:\Backup\Documents\New project\sosove-sku-board\sku_board\backend.py`
+- Modify: `sku_board\backend.py`
 
 1. Expand the director JSON contract with scene, pose, composition, visual effect, headline, and reference indexes.
 2. For Japanese landing pages, merge these product-specific fields into locked base pages.
@@ -45,8 +45,8 @@
 ### Task 4: Correct selectable counts
 
 **Files:**
-- Modify: `D:\Backup\Documents\New project\sosove-sku-board\sku_board\backend.py`
-- Modify: `D:\Backup\Documents\New project\sosove-sku-board\sku_board\static\app.js`
+- Modify: `sku_board\backend.py`
+- Modify: `sku_board\static\app.js`
 
 1. Add ten images as a supported Japan landing-page count.
 2. Add a ten-page subset to the fixed fallback recipe.
@@ -55,9 +55,9 @@
 ### Task 5: Focus the AI workspace
 
 **Files:**
-- Modify: `D:\Backup\Documents\New project\sosove-sku-board\sku_board\static\index.html`
-- Modify: `D:\Backup\Documents\New project\sosove-sku-board\sku_board\static\app.js`
-- Modify: `D:\Backup\Documents\New project\sosove-sku-board\sku_board\static\styles.css`
+- Modify: `sku_board\static\index.html`
+- Modify: `sku_board\static\app.js`
+- Modify: `sku_board\static\styles.css`
 
 1. Hide board-only summaries, filters, insights, search, import, Facebook sync, clear-product, and add-SKU actions while AI Creative is active.
 2. Update the header identity to “AI 创意工坊” in the AI view and restore the board title elsewhere.

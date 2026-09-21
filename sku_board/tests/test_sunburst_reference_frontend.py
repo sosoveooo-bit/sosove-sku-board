@@ -8,11 +8,19 @@ import subprocess
 import unittest
 
 
+STALE_COD_RESTORE_REASON = (
+    "Stale assertion for the pre-restore five-Agent COD route. The COD "
+    "country/detail planner was intentionally restored to the GitHub main "
+    "revision (see docs/plans/2026-09-18-cod-github-restore.md); this "
+    "expectation belongs to the removed behaviour and is kept for the rewrite."
+)
 APP_JS = Path(__file__).resolve().parents[1] / "static" / "app.js"
 NODE = shutil.which("node")
 
 
 @unittest.skipUnless(NODE, "Node.js is required for reference selection tests")
+
+
 class SunburstReferenceFrontendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -149,6 +157,7 @@ assert.equal(selected[0].file.bytes,original.bytes);
 assert.equal(JSON.stringify(c.referenceImages),before);
 """)
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_selected_original_file_is_submitted_directly_in_multipart_form(self):
         self.run_js("""
 const c=fixture('cod-country-detail-12');

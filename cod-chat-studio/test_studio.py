@@ -1,8 +1,17 @@
 import http.client
+import os
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
+
+
+# The allowlists are environment-driven so a deployment can publish the studio
+# behind any hostname.  Configure a fixture origin before importing the module.
+PUBLIC_HOST = 'panel.example.com'
+os.environ.setdefault('COD_STUDIO_ALLOWED_HOSTS', f'{PUBLIC_HOST},{PUBLIC_HOST}:443')
+os.environ.setdefault('COD_STUDIO_ALLOWED_ORIGINS', f'https://{PUBLIC_HOST}')
+
 from server import Handler
 
 
@@ -36,28 +45,28 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(self.request('/health')[0], 200)
 
     def test_public_home_and_assets(self):
-        for host in ('manage.sosove.ggff.net', 'manage.sosove.ggff.net:443'):
+        for host in (PUBLIC_HOST, f'{PUBLIC_HOST}:443'):
             for path in ('/', '/app.js', '/style.css', '/workflow.js', '/history-menu.js', '/history-menu.css', '/health'):
                 with self.subTest(host=host, path=path):
                     self.assertEqual(self.request(path, {'Host': host})[0], 200)
 
     def test_public_origin(self):
-        for host in ('manage.sosove.ggff.net', '127.0.0.1:8795'):
+        for host in (PUBLIC_HOST, '127.0.0.1:8795'):
             self.assertEqual(self.request('/health', {
-                'Host': host, 'Origin': 'https://manage.sosove.ggff.net',
+                'Host': host, 'Origin': f'https://{PUBLIC_HOST}',
             })[0], 200)
 
     def test_public_host_still_rejects_other_origins(self):
-        for origin in ('https://example.com', 'https://manage.sosove.ggff.net.attacker.example',
-                       'http://manage.sosove.ggff.net', 'null'):
+        for origin in ('https://example.com', f'https://{PUBLIC_HOST}.attacker.example',
+                       f'http://{PUBLIC_HOST}', 'null'):
             with self.subTest(origin=origin):
                 self.assertEqual(self.request('/health', {
-                    'Host': 'manage.sosove.ggff.net', 'Origin': origin,
+                    'Host': PUBLIC_HOST, 'Origin': origin,
                 })[0], 403)
 
     def test_public_host_still_restricts_routes(self):
         self.assertEqual(self.request('/api/sku-board/users', {
-            'Host': 'manage.sosove.ggff.net',
+            'Host': PUBLIC_HOST,
         })[0], 404)
 
     def test_no_arbitrary_proxy(self):

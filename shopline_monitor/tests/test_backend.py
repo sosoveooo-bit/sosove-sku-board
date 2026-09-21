@@ -59,7 +59,7 @@ class BackendTests(unittest.TestCase):
                     "order_id": "fb-1",
                     "total_price": "100",
                     "source_name": "Shopline",
-                    "source_url": "https://jp-sosove.myshopline.com/products/a?utm_source=fb&utm_medium=cpc",
+                    "source_url": "https://example-shop.myshopline.com/products/a?utm_source=fb&utm_medium=cpc",
                 },
                 {
                     "order_id": "ig-1",
@@ -324,25 +324,25 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(url, "https://example.com/api/orders?limit=1")
 
     def test_normalize_shopline_short_config(self):
-        bare_base_url = normalize_base_url("jp-sosove.myshopline.com")
-        base_url = normalize_base_url("https://jp-sosove.myshopline.com")
+        bare_base_url = normalize_base_url("example-shop.myshopline.com")
+        base_url = normalize_base_url("https://example-shop.myshopline.com")
         orders_path = normalize_endpoint_path("/orders", "orders")
         products_path = normalize_endpoint_path("/products", "products")
 
         self.assertEqual(
             bare_base_url,
-            "https://jp-sosove.myshopline.com/admin/openapi/v20260301",
+            "https://example-shop.myshopline.com/admin/openapi/v20260301",
         )
         self.assertEqual(
             base_url,
-            "https://jp-sosove.myshopline.com/admin/openapi/v20260301",
+            "https://example-shop.myshopline.com/admin/openapi/v20260301",
         )
         self.assertEqual(orders_path, "/orders.json")
         self.assertEqual(products_path, "/products/products.json")
 
     def test_shopline_config_from_env_normalizes_short_values(self):
         env = {
-            "SHOPLINE_API_BASE_URL": "jp-sosove.myshopline.com",
+            "SHOPLINE_API_BASE_URL": "example-shop.myshopline.com",
             "SHOPLINE_ACCESS_TOKEN": "token-value",
             "SHOPLINE_ORDERS_ENDPOINT": "/orders",
             "SHOPLINE_PRODUCTS_ENDPOINT": "/products",
@@ -354,7 +354,7 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(config.live_ready)
         self.assertEqual(
             config.base_url,
-            "https://jp-sosove.myshopline.com/admin/openapi/v20260301",
+            "https://example-shop.myshopline.com/admin/openapi/v20260301",
         )
         self.assertEqual(config.orders_path, "/orders.json")
         self.assertEqual(config.products_path, "/products/products.json")

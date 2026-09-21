@@ -6,20 +6,38 @@ import http.client
 import json
 import time
 import sys
+import os
 import logging
 import uuid
 import re
 from plan_preview import text_fields, enrich_plan, load_engine, compile_existing_plan
 
 ROOT = Path(__file__).parent
-ALLOWED_HOSTS = {
-    '127.0.0.1:8795', 'localhost:8795',
-    'manage.sosove.ggff.net', 'manage.sosove.ggff.net:443',
-}
-ALLOWED_ORIGINS = {
-    'http://127.0.0.1:8795', 'http://localhost:8795',
-    'https://manage.sosove.ggff.net',
-}
+
+
+def _split_env_set(name):
+    """Comma-separated allowlist entries from the environment."""
+    return {item.strip() for item in os.environ.get(name, '').split(',') if item.strip()}
+
+
+# Loopback is always allowed.  Publish a custom panel through a tunnel or
+# reverse proxy by listing the extra hosts and origins in the environment,
+# e.g. COD_STUDIO_ALLOWED_HOSTS=panel.example.com,panel.example.com:443
+#      COD_STUDIO_ALLOWED_ORIGINS=https://panel.example.com
+LOOPBACK_HOSTS = {'127.0.0.1:8795', 'localhost:8795'}
+LOOPBACK_ORIGINS = {'http://127.0.0.1:8795', 'http://localhost:8795'}
+
+
+def allowed_hosts():
+    """Resolve the host allowlist on each request so deployment config applies."""
+    return LOOPBACK_HOSTS | _split_env_set('COD_STUDIO_ALLOWED_HOSTS')
+
+
+def allowed_origins():
+    """Resolve the origin allowlist on each request so deployment config applies."""
+    return LOOPBACK_ORIGINS | _split_env_set('COD_STUDIO_ALLOWED_ORIGINS')
+
+
 ALLOWED = {
     '/api/sku-board/session', '/api/sku-board/login',
     '/api/sku-board/ai-image-config', '/api/sku-board/ai-image-suite-plan-upload',
@@ -56,11 +74,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self):
         path = urlsplit(self.path).path
-        if self.headers.get('Host') not in ALLOWED_HOSTS:
+        if self.headers.get('Host') not in allowed_hosts():
             self.send_error(403)
             return
         origin = self.headers.get('Origin')
-        if origin and origin not in ALLOWED_ORIGINS:
+        if origin and origin not in allowed_origins():
             self.send_error(403)
             return
         if path == '/health':

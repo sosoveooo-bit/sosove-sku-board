@@ -94,7 +94,9 @@ class PipelineTests(unittest.TestCase):
         self.images = [('product.png', b'product-bytes', 'image/png')]
 
     def run_plan(self, **changes):
-        return engine.plan_ai_image_suite({**self.payload, **changes}, self.actor, reference_images=self.images)
+        # Exercise the Agent pipeline directly. The HTTP planning route now uses
+        # the GitHub COD planner; these tests cover the Agent stage contracts.
+        return pipeline.run(engine, {**self.payload, **changes}, self.actor, self.images)
 
     def test_complete_flow_and_persistent_product_cache(self):
         first = self.run_plan()

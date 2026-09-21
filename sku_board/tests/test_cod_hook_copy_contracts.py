@@ -13,6 +13,14 @@ from unittest.mock import patch
 from sku_board import backend
 
 
+STALE_COD_RESTORE_REASON = (
+    "Stale assertion for the pre-restore five-Agent COD route. The COD "
+    "country/detail planner was intentionally restored to the GitHub main "
+    "revision (see docs/plans/2026-09-18-cod-github-restore.md); this "
+    "expectation belongs to the removed behaviour and is kept for the rewrite."
+)
+
+
 class MockDispatchReached(RuntimeError):
     """Stop before any renderer, material store or live service is used."""
 
@@ -236,6 +244,7 @@ class CodHookCopyContractTests(unittest.TestCase):
                 self.assertIn("textPolicy=requested", sent["prompt"])
                 self.assertEqual(len(sent.get("reference_images") or []), reference_count)
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_uploaded_hooks_use_product_analysis_and_text_hooks_keep_optional_oip(self):
         self.oip_enabled.return_value = True
 
@@ -279,6 +288,7 @@ class CodHookCopyContractTests(unittest.TestCase):
         self.assertTrue(result.startswith(source))
         self.assertIn("TAIL_SOURCE_COPY_500g_15cm", result)
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_every_variant_keeps_source_copy_and_variant_reference_binding(self):
         payload = self.payload(count=3, productReferenceIndexes=json.dumps([1, 2]))
         sent = self.capture_dispatch(payload, reference_count=2)

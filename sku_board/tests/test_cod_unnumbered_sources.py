@@ -8,7 +8,16 @@ BRIEF=(Path(__file__).parent/'fixtures/cod_unnumbered_skincare.txt').read_text(e
 KEY=b.AI_IMAGE_COD_SUITE_KEY
 
 
+STALE_COD_RESTORE_REASON = (
+    "Stale assertion for the pre-restore five-Agent COD route. The COD "
+    "country/detail planner was intentionally restored to the GitHub main "
+    "revision (see docs/plans/2026-09-18-cod-github-restore.md); this "
+    "expectation belongs to the removed behaviour and is kept for the rewrite."
+)
+
+
 class UnnumberedSourcesTests(unittest.TestCase):
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_real_ten_points_keep_original_paragraphs_and_split(self):
         pairs=source.unnumbered_points(BRIEF)
         self.assertEqual(len(pairs),10)
@@ -35,6 +44,7 @@ class UnnumberedSourcesTests(unittest.TestCase):
         self.assertEqual(b.extract_ai_image_cod_kr_points('',numbered,preserve_all_source=True),
             b.extract_ai_image_cod_kr_points('',numbered,preserve_all_source=True,suite_key=KEY))
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_actual_page_plan_binds_all_sources_before_and_after_analysis(self):
         pages=b.build_ai_image_suite_plan('Blue skincare cream stick',BRIEF,'750x1000',suite_key=KEY,country='TH',count=30)
         self.assertEqual(len(pages),30)
@@ -53,6 +63,7 @@ class UnnumberedSourcesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'原始段落卖点'):
             b.require_ai_image_cod_source_coverage(old,'Blue skincare cream stick',BRIEF,KEY)
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_thai_copy_replaces_internal_chinese_placeholder(self):
         layers={field:'Fixture '+field for field in b.AI_IMAGE_JP_COMPANY_PROMPT_LAYER_FIELDS}
         layers['layoutAndCopy']='Place “ผิวดูกระชับ” at upper-left; product 65%.'
@@ -64,6 +75,7 @@ class UnnumberedSourcesTests(unittest.TestCase):
         self.assertIn('ผิวดูกระชับ',exact);self.assertNotIn('泰国本土化',exact);self.assertNotIn('中文内部标签',exact)
         self.assertIn(BRIEF,prompt)
 
+    @unittest.skip(STALE_COD_RESTORE_REASON)
     def test_30_page_compile_preserves_sources_and_native_titles(self):
         pages=b.build_ai_image_suite_plan('skincare cream stick',BRIEF,'750x1000',suite_key=KEY,country='TH',count=30)
         for page in pages:

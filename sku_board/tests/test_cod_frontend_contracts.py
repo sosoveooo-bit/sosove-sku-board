@@ -242,7 +242,7 @@ for (const coverage of [{},{complete:true},{complete:undefined}]) {
         self.run_js(["aiImageSuiteConfig"], """
 assert.equal(AI_IMAGE_SUITE_CONFIGS['jp-landing-page-25'].planVersion,'director-v34-no-page1-bitmap-unique-routes');
 assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-landing-30'].planVersion,'cod-country-v30-all-main');
-assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-detail-12'].planVersion,'cod-detail-v20-source-driven-online-only');
+assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-detail-12'].planVersion,'cod-detail-v21-selected-market-lock');
 const detail=aiImageSuiteConfig({suiteKey:'cod-country-detail-12',suiteCount:22});
 assert.equal(detail.mainCount,0);
 assert.equal(detail.detailCount,22);

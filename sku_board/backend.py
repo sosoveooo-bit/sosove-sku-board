@@ -15193,12 +15193,27 @@ def ai_image_cod_company_prompt_status(
     base_status = ai_image_jp_company_prompt_status(pages, expected_count)
     duplicate_status = ai_image_cod_duplicate_company_prompt_pages(pages)
     duplicate_pages = set(duplicate_status["duplicatePages"])
-    missing_pages = sorted(set(base_status["missingPages"]) | duplicate_pages)
+    # Tolerate a status payload that only reports readiness: the seven-layer
+    # audit and the duplicate-route audit are independent, and a caller may
+    # supply a partial upstream status.
+    base_missing = base_status.get("missingPages")
+    if base_missing is None:
+        ready_pages = base_status.get("readyPages")
+        if ready_pages is None:
+            # A partial status that reports only a readiness flag carries no
+            # page-level detail; keep the flag authoritative instead of
+            # inventing missing pages.
+            base_missing = []
+        else:
+            expected = max(1, int(number(expected_count, AI_IMAGE_SUITE_COUNT)))
+            ready_set = {int(number(value, 0)) for value in ready_pages}
+            base_missing = [page for page in range(1, expected + 1) if page not in ready_set]
+    missing_pages = sorted(set(base_missing) | duplicate_pages)
     return {
         **base_status,
         **duplicate_status,
         "ready": not missing_pages and bool(base_status["ready"]),
-        "readyCount": max(0, int(base_status["readyCount"]) - len(duplicate_pages)),
+        "readyCount": max(0, int(number(base_status.get("readyCount"), 0)) - len(duplicate_pages)),
         "missingPages": missing_pages,
         "promptSource": "remote-seven-layer-unique" if not missing_pages else "pending-remote-seven-layer",
     }

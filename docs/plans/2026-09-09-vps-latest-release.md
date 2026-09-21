@@ -1,6 +1,6 @@
 # Latest Local Project VPS Deployment Plan
 
-**Goal:** Deploy the current tested local source snapshot, including uncommitted modules and static assets, to the existing panel on `3.142.111.181`.
+**Goal:** Deploy the current tested local source snapshot, including uncommitted modules and static assets, to the existing panel on `VPS_IP`.
 
 **Architecture:** Reuse the verified native systemd service, Python 3.12 virtual environment and `/opt/sosove/sosove-sku-board` directory. Stage and hash-check a source snapshot before maintenance, back up the existing server application/configuration/data, publish only manifest-listed files, and verify health and external access. Roll back code and the small environment change if startup verification fails.
 

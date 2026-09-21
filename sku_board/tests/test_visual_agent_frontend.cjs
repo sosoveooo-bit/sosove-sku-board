@@ -40,7 +40,8 @@ assert.equal(edit.get('reference0').name, 'edit.png');
 assert.equal(edit.get('suiteEditSource'), 'true');
 const legacy = context.buildAiImageSuiteFormData({...conversation, suitePages: [{page: 1}]}, 'prompt', 'brief', 1, 'fixture');
 assert.equal(legacy.get('referenceUploadCount'), '1');
-assert.equal(legacy.get('heroAB'), 'true');
+// COD suites never request hero A/B selection: one render per page, no post-render pick.
+assert.equal(legacy.get('heroAB'), null);
 context.reviewAiImageSuitePageNumbers(conversation, [1]).then(result => {
   assert.equal(result.status, 'skipped');
   console.log('Agent references, direct edit, legacy submission and zero-review dispatch passed');
