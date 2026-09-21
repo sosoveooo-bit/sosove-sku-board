@@ -24,6 +24,7 @@ Run the suites that cover your change:
 python -m unittest discover -s sku_board/tests -p "test_*.py"
 python -m unittest discover -s cod-chat-studio -p "test_*.py"
 python -m unittest discover -s shopline_monitor/tests -p "test_*.py"
+python -m unittest discover -s facebook_ads_monitor/tests -t . -p "test_*.py"
 python -m unittest discover -s tests -p "test_*.py"
 (cd open-image-prompts && python -m unittest discover -s tests -p "test_*.py")
 node --check sku_board/static/app.js

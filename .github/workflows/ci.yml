@@ -42,6 +42,9 @@ jobs:
       - name: Shopline monitor tests
         run: python -m unittest discover -s shopline_monitor/tests -p "test_*.py"
 
+      - name: Facebook ads monitor tests
+        run: python -m unittest discover -s facebook_ads_monitor/tests -t . -p "test_*.py"
+
       - name: Bootstrap installer tests
         run: python -m unittest discover -s tests -p "test_*.py"
 

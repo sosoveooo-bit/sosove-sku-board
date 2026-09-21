@@ -23,6 +23,11 @@ data/
 *.p12
 *.pfx
 
+# Facebook ads monitor: local reports, tokens and captures
+facebook_ads_monitor/reports/
+facebook_ads_monitor/fb_token.txt
+facebook_ads_monitor/*.png
+
 # Source tests are safe to version even though their filenames mention credentials.
 !sku_board/tests/test_meta_credentials.py
 

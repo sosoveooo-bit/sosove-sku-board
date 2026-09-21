@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Facebook Ads Monitor</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <main class="app">
+      <section class="topbar" id="top-section">
+        <div class="title-block">
+          <p class="eyebrow">Facebook Ads Monitor</p>
+          <h1>FB 广告自动拉数与决策面板</h1>
+          <p class="subtitle">集中查看账户、系列、广告、转化和漏斗数据，快速完成止损、放量与系列复制。</p>
+        </div>
+        <div class="toolbar">
+          <div class="segmented" aria-label="时间范围">
+            <button data-range="today" type="button">今天</button>
+            <button data-range="yesterday" type="button">昨天</button>
+            <button class="active" data-range="last_7d" type="button">7D</button>
+            <button data-range="last_30d" type="button">30D</button>
+          </div>
+          <label class="sync-mode">
+            <span>同步模式</span>
+            <select id="sync-mode-select">
+              <option value="cache" selected>读取缓存</option>
+              <option value="refresh">实时重拉当前范围</option>
+              <option value="today">只刷新今天</option>
+            </select>
+          </label>
+          <button id="sync-btn" class="primary" type="button">立即同步</button>
+          <span id="sync-status" class="sync-status">待同步</span>
+          <label class="auto-refresh">
+            <span>自动同步</span>
+            <select id="auto-refresh-select">
+              <option value="0" selected>关闭</option>
+              <option value="300000">5 分钟</option>
+              <option value="900000">15 分钟</option>
+              <option value="1800000">30 分钟</option>
+            </select>
+          </label>
+          <label class="display-mode">
+            <span>显示模式</span>
+            <select id="display-mode-select">
+              <option value="daily" selected>日常决策</option>
+              <option value="settings">数据对账</option>
+              <option value="detail">详细分析</option>
+              <option value="all">全部展开</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <nav class="quick-nav" aria-label="面板导航">
+        <a href="#daily-ops-section" data-display-preset="daily">今日决策</a>
+        <a href="#summary-section">数据概览</a>
+        <a href="#detail-section" data-display-preset="detail">广告明细</a>
+        <a href="#diagnosis-section" data-display-preset="detail">诊断分析</a>
+        <button type="button" data-display-preset="settings" data-scroll-target="summary-section">数据对账</button>
+        <button type="button" data-display-preset="daily" data-scroll-target="daily-ops-section">日常模式</button>
+        <button type="button" data-display-preset="all" data-scroll-target="detail-section">全部详情</button>
+      </nav>
+
+      <section class="panel control-panel" id="control-section">
+        <div class="panel-head">
+          <h2>投放控制台</h2>
+          <p>搜索、筛选、同步状态、数据新鲜度和最近操作集中管理。</p>
+        </div>
+        <div id="data-health-banner" class="data-health-banner" role="status" aria-live="polite">
+          <div>
+            <strong>正在检查数据状态</strong>
+            <span>正在读取 Facebook 报表与同步时间。</span>
+          </div>
+        </div>
+        <div class="control-grid">
+          <label class="control-field control-search">
+            <span>搜索广告 / Campaign / 账户</span>
+            <input id="control-search-input" type="search" placeholder="输入账户、Campaign、Adset、广告 ID">
+          </label>
+          <label class="control-field">
+            <span>建议动作</span>
+            <select id="control-action-filter">
+              <option value="all">全部动作</option>
+              <option value="scale">放量</option>
+              <option value="reduce">降预算</option>
+              <option value="fix_landing">查承接</option>
+              <option value="warning">警告</option>
+            </select>
+          </label>
+          <label class="control-field">
+            <span>排序</span>
+            <select id="control-sort-select">
+              <option value="spend:desc">花费高到低</option>
+              <option value="purchase:desc">购买高到低</option>
+              <option value="roas:desc">ROAS 高到低</option>
+              <option value="cpa:asc">CPA 低到高</option>
+              <option value="clicks:desc">点击高到低</option>
+            </select>
+          </label>
+          <label class="control-check">
+            <input id="control-spend-only" type="checkbox">
+            <span>只看有花费</span>
+          </label>
+          <button id="clear-filters-btn" class="ghost-btn" type="button">清空筛选</button>
+        </div>
+        <div class="operation-bar">
+          <div class="operation-summary">
+            <strong id="filtered-summary">-</strong>
+            <span id="selected-count">当前自动展示 1 条广告</span>
+          </div>
+          <div class="operation-actions">
+            <button class="success-link" data-action-filter="scale" type="button">看放量</button>
+            <button class="danger-link" data-action-filter="reduce" type="button">看降预算</button>
+            <button class="ghost-btn" data-action-filter="fix_landing" type="button">查承接</button>
+          </div>
+        </div>
+        <div class="ops-grid">
+          <div>
+            <h3>数据新鲜度</h3>
+            <div id="freshness-grid" class="mini-stat-grid"></div>
+          </div>
+          <div>
+            <h3>最近操作</h3>
+            <ul id="operation-log" class="operation-log"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel summary-panel" id="summary-section">
+        <div class="panel-head">
+          <h2>总览</h2>
+          <div class="meta-line">
+            <span id="report-name">-</span>
+            <span id="report-range">-</span>
+            <span id="report-time">-</span>
+          </div>
+        </div>
+        <div id="decision-banner" class="decision-banner"></div>
+        <div id="decision-actions" class="decision-actions"></div>
+        <div id="compare-strip" class="compare-strip" aria-live="polite"></div>
+        <div class="trust-grid">
+          <div id="freshness-card" class="trust-card"></div>
+          <div id="api-contract-card" class="trust-card"></div>
+          <div id="reconcile-card" class="trust-card reconcile-card">
+            <div>
+              <span>后台订单对账</span>
+              <strong id="reconcile-summary">-</strong>
+              <small id="reconcile-detail">输入店铺后台订单数，自动和 FB 归因订单对比</small>
+            </div>
+            <label>
+              <span>后台订单</span>
+              <input id="backend-orders-input" type="number" min="0" step="1" placeholder="例如 66">
+            </label>
+          </div>
+        </div>
+        <div class="kpi-grid">
+          <article class="kpi" data-kpi="spend"><span>花费</span><strong>-</strong><small>-</small></article>
+          <article class="kpi" data-kpi="purchase"><span>购买</span><strong>-</strong><small>-</small></article>
+          <article class="kpi" data-kpi="roas"><span>ROAS</span><strong>-</strong><small>-</small></article>
+          <article class="kpi" data-kpi="cpa"><span>CPA</span><strong>-</strong><small>-</small></article>
+          <article class="kpi" data-kpi="ctr"><span>CTR</span><strong>-</strong><small>-</small></article>
+          <article class="kpi" data-kpi="warning"><span>警告</span><strong>-</strong><small>-</small></article>
+          <article class="kpi" data-kpi="opportunity"><span>机会</span><strong>-</strong><small>-</small></article>
+          <article class="kpi" data-kpi="ads"><span>广告</span><strong>-</strong><small>-</small></article>
+        </div>
+      </section>
+
+      <section class="panel daily-ops-panel" id="daily-ops-section" data-display-group="daily">
+        <div class="panel-head">
+          <h2>每日调优台</h2>
+          <p>每天先看这里：先处理什么、今天到昨天哪里变了、哪些广告需要放量或止损。</p>
+        </div>
+        <div class="daily-ops-grid">
+          <article class="daily-card daily-verdict-card">
+            <span class="daily-label">今日结论</span>
+            <strong id="daily-verdict-title">-</strong>
+            <p id="daily-verdict-note">-</p>
+          </article>
+          <article class="daily-card">
+            <span class="daily-label">优先动作</span>
+            <div id="daily-priority-list" class="daily-priority-list"></div>
+          </article>
+          <article class="daily-card">
+            <span class="daily-label">昨天 vs 今天</span>
+            <div id="daily-change-list" class="daily-change-list"></div>
+          </article>
+          <article class="daily-card">
+            <span class="daily-label">放量 / 止损候选</span>
+            <div id="daily-candidate-list" class="daily-priority-list"></div>
+          </article>
+          <article class="daily-card spend-close-card">
+            <span class="daily-label">无单花费止损</span>
+            <div class="spend-close-controls">
+              <label>
+                <span>无单花费超过 USD</span>
+                <input id="campaign-spend-threshold" type="number" inputmode="decimal" step="0.01" placeholder="10">
+              </label>
+              <button id="check-no-order-spend-campaigns-btn" class="danger-link" type="button">一键检查</button>
+              <button id="pause-no-order-spend-campaigns-btn" class="danger-link campaign-bulk-pause-btn" type="button" disabled>关闭系列</button>
+            </div>
+            <strong id="campaign-spend-summary">-</strong>
+            <div id="no-order-spend-campaign-list" class="no-order-spend-candidate-list"></div>
+          </article>
+          <article class="daily-card quality-copy-card">
+            <span class="daily-label">优质系列复制</span>
+            <div class="quality-copy-controls">
+              <label>
+                <span>ROAS 不低于</span>
+                <input id="quality-roas-threshold" type="number" inputmode="decimal" step="0.1" placeholder="2">
+              </label>
+              <label>
+                <span>购买至少</span>
+                <input id="quality-purchase-threshold" type="number" inputmode="numeric" step="1" placeholder="1">
+              </label>
+              <button id="check-quality-campaigns-btn" class="success-link" type="button">一键检查</button>
+              <button id="copy-quality-campaigns-btn" class="success-link campaign-bulk-copy-btn" type="button" disabled>复制系列</button>
+            </div>
+            <strong id="quality-campaign-summary">-</strong>
+            <div id="quality-campaign-list" class="quality-candidate-list"></div>
+          </article>
+        </div>
+        <div class="daily-action-layout">
+          <div>
+            <h3>今日操作建议表</h3>
+            <div id="daily-action-summary" class="daily-action-summary"></div>
+            <div class="table-wrap daily-table-wrap">
+              <table class="daily-action-table">
+                <thead>
+                  <tr>
+                    <th>优先级</th>
+                    <th>广告 / ID</th>
+                    <th>关键数据</th>
+                    <th>判断原因</th>
+                    <th>建议动作</th>
+                  </tr>
+                </thead>
+                <tbody id="daily-action-table"></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h3>素材家族取舍</h3>
+            <div id="daily-family-groups" class="campaign-creative-groups"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="layout" id="diagnosis-section" data-display-group="detail">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>漏斗承接</h2>
+            <p>展示到购买的关键断点</p>
+          </div>
+          <div id="funnel" class="funnel"></div>
+        </section>
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>动作分布</h2>
+            <p>按广告当前动作分类</p>
+          </div>
+          <div id="action-breakdown" class="meter-list"></div>
+        </aside>
+      </section>
+
+      <section class="layout" data-display-group="detail">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>层级表现</h2>
+            <p>账户、Campaign 和 Adset 层级一起看</p>
+          </div>
+          <div class="group-grid level-grid">
+            <div>
+              <h3>账户</h3>
+              <div class="table-wrap compact-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>账户</th>
+                      <th>花费</th>
+                      <th>购买</th>
+                      <th>ROAS</th>
+                      <th>点击</th>
+                      <th>警告</th>
+                      <th>机会</th>
+                    </tr>
+                  </thead>
+                  <tbody id="account-table"></tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h3>Campaign</h3>
+              <div class="table-wrap compact-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>广告数</th>
+                      <th>花费</th>
+                      <th>购买</th>
+                      <th>ROAS</th>
+                      <th>CPA</th>
+                      <th>CTR</th>
+                    </tr>
+                  </thead>
+                  <tbody id="campaign-table"></tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h3>Adset</h3>
+              <div class="table-wrap compact-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>广告数</th>
+                      <th>花费</th>
+                      <th>购买</th>
+                      <th>ROAS</th>
+                      <th>CPA</th>
+                      <th>CTR</th>
+                    </tr>
+                  </thead>
+                  <tbody id="adset-table"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>优先处理</h2>
+            <p>按影响排序</p>
+          </div>
+          <div id="priority-list" class="signal-list"></div>
+        </aside>
+      </section>
+
+      <section class="layout" data-display-group="detail">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>素材家族</h2>
+            <p>同一命名前缀聚合</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>素材家族</th>
+                  <th>广告数</th>
+                  <th>花费</th>
+                  <th>购买</th>
+                  <th>ROAS</th>
+                  <th>CPA</th>
+                  <th>CTR</th>
+                </tr>
+              </thead>
+              <tbody id="family-table"></tbody>
+            </table>
+          </div>
+        </section>
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>机会池</h2>
+            <p>低频高 ROAS</p>
+          </div>
+          <div id="scale-list" class="signal-list"></div>
+        </aside>
+      </section>
+
+      <section class="panel" id="detail-section" data-display-group="detail">
+        <div class="panel-head">
+          <h2>广告动作表</h2>
+          <p>支持搜索、动作筛选、排序、分页和点击查看详情</p>
+        </div>
+        <div class="table-controls">
+          <div id="scope-chip" class="scope-chip" hidden></div>
+          <div class="segmented compact" aria-label="快速筛选">
+            <button class="active" data-quick="all" type="button">全部广告</button>
+            <button data-quick="spent" type="button">有花费</button>
+            <button data-quick="purchase" type="button">有购买</button>
+            <button data-quick="no_purchase" type="button">花费无购买</button>
+            <button data-quick="risk" type="button">高风险</button>
+          </div>
+          <label class="select-control">
+            <span>排序</span>
+            <select id="ad-sort-select">
+              <option value="spend:desc">花费高到低</option>
+              <option value="purchase:desc">购买高到低</option>
+              <option value="roas:desc">ROAS 高到低</option>
+              <option value="cpa:asc">CPA 低到高</option>
+              <option value="clicks:desc">点击高到低</option>
+            </select>
+          </label>
+          <label class="select-control">
+            <span>每页</span>
+            <select id="page-size-select">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <div class="pager">
+            <button id="prev-page-btn" type="button">上一页</button>
+            <span id="ad-page-info">-</span>
+            <button id="next-page-btn" type="button">下一页</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>广告</th>
+                <th>账户</th>
+                <th>素材家族</th>
+                <th>花费</th>
+                <th>购买</th>
+                <th>ROAS</th>
+                <th>CPA</th>
+                <th>ATC</th>
+                <th>动作</th>
+              </tr>
+            </thead>
+            <tbody id="ad-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" data-display-group="detail">
+        <div class="panel-head">
+          <h2>诊断明细</h2>
+          <p>来自 skill 的完整诊断</p>
+        </div>
+        <div id="finding-list" class="finding-grid"></div>
+      </section>
+
+      <section class="panel footer-panel" data-display-group="detail">
+        <div class="footer-grid">
+          <div><span>报表目录</span><strong id="report-dir">-</strong></div>
+          <div><span>API</span><strong id="api-version">-</strong></div>
+          <div><span>数据来源</span><strong id="source-mode">-</strong></div>
+          <div><span>状态</span><strong id="status-text">等待数据</strong></div>
+        </div>
+        <p id="error-panel" class="error" hidden></p>
+      </section>
+    </main>
+
+    <aside id="ad-detail-drawer" class="detail-drawer" hidden>
+      <div class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+        <div class="detail-head">
+          <div>
+            <span>广告详情</span>
+            <strong id="detail-title">-</strong>
+          </div>
+          <button id="close-detail-btn" type="button" aria-label="关闭广告详情" title="关闭广告详情">×</button>
+        </div>
+        <div id="detail-body" class="detail-body"></div>
+      </div>
+    </aside>
+  </body>
+</html>

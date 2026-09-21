@@ -15,6 +15,7 @@
 - AI 生图工作台：参考图角色、导演分镜、套装生成、失败重试、取消与恢复。
 - 多平台套图：日本落地页、Amazon A+、乐天、COD 国家专区与 COD 详情图。
 - 对话创作室：复用面板账号、模型和生成引擎，支持提示词编译与任务历史。
+- Meta 广告监控：独立子模块，汇总账户与素材层级的花费转化，支持批量暂停与复制系列。
 - 可选集成：Shopline 商品导入、GA4、OpenAI 兼容导演接口和远程生图节点。
 
 ## 本地启动
@@ -51,6 +52,16 @@ python -m sku_board.server --host 127.0.0.1 --port 8793
 ```
 
 支持 COD 国家专区、COD 详情图、日本 25 图、多市场生成、缺页续写、取消任务与历史管理。
+
+## Meta 广告监控
+
+`facebook_ads_monitor/` 是独立的广告监控面板，读取已拉取好的广告报表并给出
+放量 / 降预算 / 查承接判断。它通过环境变量指向你自己的报表目录与令牌文件，
+详见 [facebook_ads_monitor/README.md](facebook_ads_monitor/README.md)：
+
+```bash
+python -m facebook_ads_monitor.server --host 127.0.0.1 --port 8790
+```
 
 ## Docker 部署
 
@@ -125,6 +136,7 @@ docker compose logs -f --tail=100
 python -m unittest discover -s sku_board/tests -p "test_*.py"
 python -m unittest discover -s cod-chat-studio -p "test_*.py"
 python -m unittest discover -s shopline_monitor/tests -p "test_*.py"
+python -m unittest discover -s facebook_ads_monitor/tests -t . -p "test_*.py"
 python -m unittest discover -s tests -p "test_*.py"
 (cd open-image-prompts && python -m unittest discover -s tests -p "test_*.py")
 node --check sku_board/static/app.js
@@ -137,8 +149,8 @@ node --check sku_board/static/app.js
 `open-image-prompts/` 需要在它自己的目录里执行，因为它从该目录解析模块。
 
 上述命令即 [CI](.github/workflows/ci.yml) 在 Linux 上运行的完整集合，
-当前结果：面板 856 项、对话创作室 42 项、Shopline 22 项、安装包 14 项、
-open-image-prompts 13 项，全部通过。
+当前结果：面板 856 项、对话创作室 42 项、Shopline 22 项、Meta 广告 30 项、
+安装包 14 项、open-image-prompts 13 项，全部通过。
 
 少数测试带有明确的跳过标记：它们断言的是已移除的五 Agent COD 路线，
 现已被 GitHub 版规划器取代（见 `docs/plans/2026-09-18-cod-github-restore.md`）。
