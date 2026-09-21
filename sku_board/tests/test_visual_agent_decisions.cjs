@@ -1,5 +1,20 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
-for(const file of [path.join(__dirname,'../static/app.js'),path.join(__dirname,'../../../cod-chat-studio/app.js')]){
+// The panel always ships a renderer. The studio only carries one in the full
+// developer layout, so exercise every copy that actually exists instead of
+// assuming a sibling checkout directory.
+const candidates=[
+  path.join(__dirname,'../static/app.js'),
+  path.join(__dirname,'../../cod-chat-studio/app.js'),
+  path.join(__dirname,'../../../cod-chat-studio/app.js'),
+];
+const files=[];
+for(const candidate of candidates){
+  if(!fs.existsSync(candidate))continue;
+  if(!fs.readFileSync(candidate,'utf8').includes('function renderAgentDecisionCards('))continue;
+  if(!files.includes(candidate))files.push(candidate);
+}
+assert.ok(files.length,'no renderAgentDecisionCards implementation found');
+for(const file of files){
   const source=fs.readFileSync(file,'utf8');
   const start=source.indexOf('function renderAgentDecisionCards(');
   const end=source.indexOf('\nfunction ',start+1);
@@ -15,4 +30,4 @@ for(const file of [path.join(__dirname,'../static/app.js'),path.join(__dirname,'
   assert.ok(marketHtml.includes('shared-id'));assert.ok(marketHtml.includes('未触发额外调用'));
   assert.ok(!marketHtml.includes('<unsafe>'));
 }
-console.log('Both decision-card renderers: empty state, structured decisions, storyboard, escaping passed');
+console.log('Decision-card renderers ('+files.length+' file(s)): empty state, structured decisions, storyboard, escaping passed');
