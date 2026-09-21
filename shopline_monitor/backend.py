@@ -36,15 +36,33 @@ TRAFFIC_SOURCE_BUCKETS = {
 }
 
 
+def _home_directory() -> Path | None:
+    """Return the home directory, or None when the platform cannot resolve one.
+
+    ``Path.home()`` raises RuntimeError when HOME/USERPROFILE are absent, which
+    happens in stripped-down containers and in tests that clear the environment.
+    """
+    try:
+        return Path.home()
+    except (RuntimeError, OSError):
+        return None
+
+
 def load_local_env_files() -> None:
     """Load machine-local .env files without overriding already-set variables."""
     candidates = [
         Path.cwd() / ".env",
         Path.cwd() / ".env.local",
         Path.cwd() / "config" / "shopline.env",
-        Path.home() / ".openclaw" / "shopline" / ".env",
-        Path.home() / ".openclaw" / "credentials" / "shopline.env",
     ]
+    home = _home_directory()
+    if home is not None:
+        candidates.extend(
+            [
+                home / ".openclaw" / "shopline" / ".env",
+                home / ".openclaw" / "credentials" / "shopline.env",
+            ]
+        )
     for path in candidates:
         if not path.exists() or not path.is_file():
             continue

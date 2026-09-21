@@ -41,7 +41,9 @@ class NasBootstrapTests(unittest.TestCase):
         self.data.mkdir()
         self.system_calls = self.base / "system-calls.log"
         self.os_release = self.base / "os-release"
-        self.os_release.write_text('ID=debian\nVERSION_ID="12"\n', encoding="utf-8")
+        # newline="\n" keeps the fixture LF-only: the bootstrap reads it with
+        # `read`, so a CRLF file would make VERSION_ID "12\r" and look wrong.
+        self.os_release.write_text('ID=debian\nVERSION_ID="12"\n', encoding="utf-8", newline="\n")
         self.env = os.environ.copy()
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env.get("PATH", "")
         self.env["NAS_TEST_CALL_LOG"] = shell_path(self.system_calls)
@@ -123,7 +125,7 @@ printf 'Filesystem Blocks Used Available Capacity Mounted\nmock 9000000000 1 %s 
         self.assert_no_stage()
 
     def test_wrong_os_stops_before_unpacking(self):
-        self.os_release.write_text('ID=debian\nVERSION_ID="11"\n', encoding="utf-8")
+        self.os_release.write_text('ID=debian\nVERSION_ID="11"\n', encoding="utf-8", newline="\n")
         result = self.run_package("--check")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Debian 12 is required", result.stderr)

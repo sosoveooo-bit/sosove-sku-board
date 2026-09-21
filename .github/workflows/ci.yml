@@ -42,6 +42,13 @@ jobs:
       - name: Shopline monitor tests
         run: python -m unittest discover -s shopline_monitor/tests -p "test_*.py"
 
+      - name: Bootstrap installer tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Bundled open-image-prompts tests
+        working-directory: open-image-prompts
+        run: python -m unittest discover -s tests -p "test_*.py"
+
       - name: Frontend contract harnesses
         run: |
           node --check sku_board/static/app.js
