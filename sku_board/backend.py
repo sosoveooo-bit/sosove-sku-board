@@ -21992,7 +21992,12 @@ def ai_image_japanese_font_path() -> str:
         r"C:\Windows\Fonts\NotoSerifSC-VF.ttf",
         "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
+        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
     ]
     return next((candidate for candidate in candidates if candidate and Path(candidate).is_file()), "")
 

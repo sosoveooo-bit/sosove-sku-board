@@ -28,6 +28,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r sku_board/requirements.txt
 
+      - name: Install CJK fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+
       - name: Main panel tests
         run: python -m unittest discover -s sku_board/tests -p "test_*.py"
 
