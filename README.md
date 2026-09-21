@@ -1,5 +1,8 @@
 # SOSOVE SKU Board
 
+[![CI](https://github.com/sosoveooo-bit/sosove-sku-board/actions/workflows/ci.yml/badge.svg)](https://github.com/sosoveooo-bit/sosove-sku-board/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 商品、设计、任务、广告分析、素材投放与 AI 生图的一体化运营面板。
 
 [English](#english) | 简体中文
@@ -122,12 +125,20 @@ docker compose logs -f --tail=100
 python -m unittest discover -s sku_board/tests -p "test_*.py"
 python -m unittest discover -s cod-chat-studio -p "test_*.py"
 python -m unittest discover -s shopline_monitor/tests -p "test_*.py"
+python -m unittest discover -s tests -p "test_*.py"
+(cd open-image-prompts && python -m unittest discover -s tests -p "test_*.py")
 node --check sku_board/static/app.js
 ```
 
 `sku_board/tests/*.cjs` 是独立的 Node 契约脚本，需要逐个执行，例如
 `node sku_board/tests/test_visual_agent_frontend.cjs`。仓库根的
-`tests/test_nas_bootstrap.py` 需要 Bash，并只在 Linux 上完整通过。
+`tests/test_nas_bootstrap.py` 需要 Bash；Windows 上会使用 Git for Windows
+自带的 `bash.exe`，找不到 Bash 时整组测试自动跳过。
+`open-image-prompts/` 需要在它自己的目录里执行，因为它从该目录解析模块。
+
+上述命令即 [CI](.github/workflows/ci.yml) 在 Linux 上运行的完整集合，
+当前结果：面板 856 项、对话创作室 42 项、Shopline 22 项、安装包 14 项、
+open-image-prompts 13 项，全部通过。
 
 少数测试带有明确的跳过标记：它们断言的是已移除的五 Agent COD 路线，
 现已被 GitHub 版规划器取代（见 `docs/plans/2026-09-18-cod-github-restore.md`）。
