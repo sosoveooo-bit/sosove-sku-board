@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from sku_board import backend
+from sku_board.jp25_art_direction import DEFAULT_BIBLE
 
 
 class Jp25CreativeIntegrationTests(unittest.TestCase):
@@ -301,7 +302,7 @@ class Jp25CreativeIntegrationTests(unittest.TestCase):
             self.assertTrue(events, "The planning pipeline made no model calls")
             self.assertEqual(events[0][0], "global", "Shared photography must precede every page pass")
             self.assertEqual(sum(kind == "global" for kind, _numbers in events), 1)
-            self.assertEqual(partial["_jp25PhotographyPlan"]["visualBible"], self.photography_plan()["visualBible"])
+            self.assertEqual(partial["_jp25PhotographyPlan"]["visualBible"], {**self.photography_plan()["visualBible"], **DEFAULT_BIBLE})
             self.assertEqual(len(partial["_jp25PhotographyPlan"]["pages"]), 25)
             self.assertEqual(partial["_creativePassStats"]["companyPromptPages"], 24)
             self.assertEqual(partial["_creativePassStats"]["photographyPlanPages"], 25)

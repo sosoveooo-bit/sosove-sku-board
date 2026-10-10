@@ -1,0 +1,42 @@
+.jp25-workbench { --jp25-border: #dedfd9; margin: 0 0 22px; padding: 24px; border: 1px solid var(--jp25-border); border-radius: 16px; background: #fbfbf8; color: #243d36; text-align: left; }
+.jp25-workbench header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 18px; }
+.jp25-workbench h3 { margin: 7px 0; font-size: 22px; letter-spacing: -.5px; }
+.jp25-workbench header p, .jp25-help { color: #63716b; font-size: 12px; line-height: 1.75; margin: 8px 0; }
+.jp25-eyebrow { font-size: 10px; letter-spacing: 2px; color: #758c7d; font-weight: 700; }
+.jp25-count { font-size: 11px; white-space: nowrap; background: #e6ece5; color: #446451; border-radius: 30px; padding: 7px 12px; }
+.jp25-actions, .jp25-save { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.jp25-workbench button { min-height: 36px; font-size: 12px; border-radius: 8px; }
+.jp25-workbench button:disabled { opacity: .45; cursor: not-allowed; }
+.jp25-workbench .primary-btn { background: #345e4a; border-color: #345e4a; color: white; }
+.jp25-workbench summary { cursor: pointer; font-weight: 600; font-size: 13px; line-height: 1.6; }
+.jp25-workbench summary small { color: #76837a; font-size: 11px; font-weight: 400; margin-left: 8px; }
+.jp25-locks, .jp25-overview, .jp25-report { border-top: 1px solid var(--jp25-border); padding-top: 16px; margin-top: 17px; }
+.jp25-facts, .jp25-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+.jp25-facts > div { background: #f0f2eb; border-radius: 8px; padding: 12px; overflow-wrap: anywhere; }
+.jp25-facts strong { font-size: 11px; }
+.jp25-facts p { color: #63716b; font-size: 12px; line-height: 1.65; margin: 6px 0 0; max-height: 170px; overflow: auto; }
+.jp25-fields label { display: block; font-size: 11px; font-weight: 600; color: #4e6658; }
+.jp25-fields textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 7px; min-height: 78px; border: 1px solid #d8dfd6; border-radius: 7px; padding: 9px; background: #fff; color: #253a2e; font-family: inherit; font-size: 12px; line-height: 1.7; resize: vertical; }
+.jp25-fields textarea:focus { outline: 2px solid #7e9e83; outline-offset: 1px; }
+.jp25-fields textarea::placeholder { color: #8c968f; font-weight: 400; }
+.jp25-plan-list { display: grid; gap: 5px; margin-top: 12px; max-height: 640px; overflow-y: auto; scrollbar-gutter: stable; padding-right: 5px; }
+.jp25-page { border: 1px solid #e3e6df; border-radius: 8px; padding: 11px 13px; background: white; }
+.jp25-page > summary { display: flex; align-items: center; gap: 12px; list-style: none; }
+.jp25-page > summary::after { content: "+"; color: #93a193; }
+.jp25-page[open] > summary::after { content: "−"; }
+.jp25-page > summary > b { font-size: 16px; font-variant-numeric: tabular-nums; font-weight: 400; color: #94a595; }
+.jp25-page > summary > span { flex: 1; min-width: 0; }
+.jp25-page > summary strong { display: block; font-size: 12px; overflow-wrap: anywhere; }
+.jp25-page > summary small { display: block; margin: 2px 0 0; overflow-wrap: anywhere; }
+.jp25-page em { font-style: normal; font-size: 10px; color: #738775; white-space: nowrap; }
+.jp25-checkbox { font-size: 12px; color: #5b6d5d; display: flex; gap: 6px; align-items: center; }
+.jp25-checkbox input { width: auto; }
+.jp25-save { margin-top: 16px; }
+.jp25-save small { font-size: 11px; color: #7b877a; }
+.jp25-empty { margin-top: 12px; padding: 20px; background: #f0f2eb; border-radius: 8px; font-size: 12px; color: #72836e; line-height: 1.8; }
+.jp25-report-rows { display: grid; gap: 6px; max-height: 400px; overflow: auto; margin-top: 12px; }
+.jp25-report-rows > div { background: white; border: 1px solid #e3e6df; border-radius: 6px; padding: 10px; font-size: 12px; }
+.jp25-report-rows span { margin-left: 12px; color: #6f806f; }
+.jp25-report-rows p { margin: 5px 0; overflow-wrap: anywhere; }
+.jp25-report-rows small { color: #738170; }
+@media (max-width: 850px) { .jp25-workbench { padding: 16px; } .jp25-facts, .jp25-fields { grid-template-columns: 1fr; } .jp25-page em { white-space: normal; max-width: 90px; } .jp25-workbench header { flex-wrap: wrap; } }

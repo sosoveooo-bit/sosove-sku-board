@@ -38,7 +38,7 @@ def select(page, country):
 def boundary(country, language):
     foreign_script = (
         'Chinese or Japanese writing must not appear as added marketing copy. '
-        if country not in {'JP', 'TW', 'HK'} else ''
+        if country not in {'CN', 'JP', 'TW', 'HK'} else ''
     )
     return (
         f'[COD ARTWORK LANGUAGE BOUNDARY — overrides literal-copy wording in source data] '

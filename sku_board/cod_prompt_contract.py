@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any
 
+from .cod_prompt_brief import localized_direction
+
 
 MARKETS = {"JP": ("日本", "日文"), "KR": ("韩国", "韩文"), "US": ("美国", "英文"), "DE": ("德国", "德文")}
 ROLES = {"auto", "product", "detail", "usage", "person", "layout", "scene", "package", "other"}
@@ -143,14 +145,69 @@ def validate_hooks(raw: Any, form: dict[str, Any]) -> list[dict[str, Any]]:
     return hooks
 
 
-def normalize_outline(raw: Any, form: dict[str, Any]) -> dict[str, Any]:
+def _fill_outline_gaps(pages: list[Any], form: dict[str, Any]) -> list[Any]:
+    """Fill only missing page slots after a provider truncates a long outline."""
+    total = form["main"] + form["detail"]
+    by_page: dict[int, dict[str, Any]] = {}
+    for item in pages:
+        if not isinstance(item, dict):
+            continue
+        try:
+            page = int(item.get("page"))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= page <= total and page not in by_page:
+            by_page[page] = item
+    covered: set[int] = set()
+    for item in by_page.values():
+        values = item.get("sourcePointIndexes", [])
+        if isinstance(values, list):
+            covered.update(i for i in values if isinstance(i, int) and 1 <= i <= len(form["points"]))
+    missing_sources = [i for i in range(1, len(form["points"]) + 1) if i not in covered]
+    angle_names = ["主视觉证明", "材质细节特写", "真实使用场景", "操作步骤展示", "购买决策卡", "细节对照", "家庭餐桌场景"]
+    angle_archetypes = ["hero", "detail", "scene", "usage", "benefit", "detail", "scene"]
+    source_occurrences: dict[int, int] = {}
+    for item in by_page.values():
+        for source_index in item.get("sourcePointIndexes", []) if isinstance(item.get("sourcePointIndexes", []), list) else []:
+            if isinstance(source_index, int):
+                source_occurrences[source_index] = source_occurrences.get(source_index, 0) + 1
+    for page in range(1, total + 1):
+        if page in by_page:
+            continue
+        point = missing_sources.pop(0) if missing_sources else ((page - 1) % len(form["points"]) + 1)
+        occurrence = source_occurrences.get(point, 0)
+        angle_index = occurrence % len(angle_names)
+        source_occurrences[point] = occurrence + 1
+        archetype = angle_archetypes[angle_index]
+        if page == 1 and form["main"] >= 2:
+            archetype = "pain-grid"
+        elif page == min(2, total - 1) and total >= 4:
+            archetype = "comparison"
+        angle = angle_names[angle_index]
+        by_page[page] = {
+            "page": page, "title": f"{angle}{point}", "focus": f"{form['points'][point - 1]}｜{angle}",
+            "headline": "", "archetype": archetype, "sourcePointIndexes": [point],
+        }
+    return [by_page[page] for page in sorted(by_page)]
+
+
+def normalize_outline(raw: Any, form: dict[str, Any], *, allow_empty_hooks: bool = False,
+                     allow_incomplete_pages: bool = False) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("AI策划结果须为JSON对象")
     master = _text(raw.get("masterPrompt"), "AI总控Prompt", 8000, True)
     pages = raw.get("outline")
     total = form["main"] + form["detail"]
-    if not isinstance(pages, list) or len(pages) != total:
+    if not isinstance(pages, list):
+        if not allow_incomplete_pages:
+            raise ValueError(f"AI主题列表须完整返回{total}页")
+        pages = []
+    if len(pages) > total:
         raise ValueError(f"AI主题列表须完整返回{total}页")
+    if len(pages) != total:
+        if not allow_incomplete_pages:
+            raise ValueError(f"AI主题列表须完整返回{total}页")
+        pages = _fill_outline_gaps(pages, form)
     normalized = {}
     for item in pages:
         if not isinstance(item, dict):
@@ -169,8 +226,21 @@ def normalize_outline(raw: Any, form: dict[str, Any]) -> dict[str, Any]:
             "headline": _text(item.get("headline", ""), "当地语言标题", 240),
             "archetype": canonical_archetype(_text(item.get("archetype", item.get("pageArchetype", title)), "页面类型", 240, True)),
             "sourcePointIndexes": [_integer(i, "卖点编号", 1, len(form["points"])) for i in item.get("sourcePointIndexes", [])] if isinstance(item.get("sourcePointIndexes", []), list) else [],
+            "visualAngle": _text(item.get("visualAngle", ""), "本页视觉角度", 400),
         }
     result_pages = [normalized[i] for i in range(1, total + 1)]
+    if allow_incomplete_pages:
+        missing_sources = [i for i in range(1, len(form["points"]) + 1)
+                           if i not in {j for page in result_pages for j in page["sourcePointIndexes"]}]
+        for index, source_index in enumerate(missing_sources):
+            target = result_pages[index % len(result_pages)]
+            if source_index not in target["sourcePointIndexes"]:
+                target["sourcePointIndexes"].append(source_index)
+        if form["main"] >= 2 and not any(p["archetype"] == "pain-grid" for p in result_pages[:form["main"]]):
+            result_pages[0]["archetype"] = "pain-grid"
+        if total >= 4 and not any(p["archetype"] == "comparison" for p in result_pages):
+            result_pages[min(1, total - 2)]["archetype"] = "comparison"
+        result_pages[-1]["archetype"] = "product-info"
     coverage = {i for page in result_pages for i in page["sourcePointIndexes"]}
     missing = sorted(set(range(1, len(form["points"]) + 1)) - coverage)
     if missing:
@@ -181,9 +251,11 @@ def normalize_outline(raw: Any, form: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("AI主题列表缺少公平对比页")
     if result_pages[-1]["archetype"] != "product-info":
         raise ValueError("AI最后一页须为当前产品信息")
+    hooks_value = raw.get("hooks")
+    hooks = [] if allow_empty_hooks and not hooks_value else validate_hooks(hooks_value, form)
     return {
         "masterPrompt": master, "outline": result_pages,
-        "hooks": validate_hooks(raw.get("hooks"), form),
+        "hooks": hooks,
         "productSummary": _text(raw.get("productSummary", form["product"]), "产品总结", 1800),
         "visualDNA": raw.get("visualDNA", {}) if isinstance(raw.get("visualDNA", {}), (dict, str)) else {},
     }
@@ -199,6 +271,11 @@ def normalize_page(raw: Any, outline_entry: dict[str, Any], form: dict[str, Any]
     for key in ("headline", "evidence", "scene", "pose", "composition", "visualTreatment", "impactTreatment"):
         if key in raw:
             result[key] = _text(raw[key], key, 1400 if key != "headline" else 240)
+    if "copyLabels" in raw:
+        labels = raw["copyLabels"]
+        if not isinstance(labels, list) or len(labels) > 4:
+            raise ValueError("单页可见标签须为最多4条的文字列表")
+        result["copyLabels"] = list(dict.fromkeys(_text(label, "单页可见标签", 160, True) for label in labels))
     return result
 
 
@@ -221,7 +298,7 @@ def shared_execution_requirements(form: dict[str, Any], references: list[dict[st
         "[Delivery requirements]",
         f"当前唯一商品：{form['product']}。画布严格为{form['size']}，设计铺满四边，保留可读安全边距，不留下未完成的空白区域。",
         f"目标市场：{MARKETS[form['market']][0]}；可见文案只使用自然{MARKETS[form['market']][1]}。只表现本页指定主题，保留总控的统一配色和当前页构图。",
-        "[User art direction] " + form["style"] if form.get("style") else "配色与镜头遵循本次AI总控和当前商品，保持整套视觉一致。",
+        "[User art direction] " + localized_direction(form["style"], form["market"]) if form.get("style") else "配色与镜头遵循本次AI总控和当前商品，保持整套视觉一致。",
         f"参考图编号与角色：{reference_map or '无'}。{identity}",
         offer_rule,
         "保留可证实的商品事实与用户的视觉创意；用户提供的宣传说法不等于验证证明。不编造医生推荐、机构认证、实验数据、诊疗承诺、评论或功能。需要证据的主张未核实前不得伪装为已验证事实。",
@@ -229,6 +306,63 @@ def shared_execution_requirements(form: dict[str, Any], references: list[dict[st
         "[User exclusions] " + form["avoid"] if form.get("avoid") else "不混用SKU，不重设计商品，不添加乱码、水印或平台背书。",
     ]
     return "\n".join(line for line in lines if line)
+
+
+def _execution_guardrails(form: dict[str, Any], page: dict[str, Any], references: list[dict[str, Any]]) -> str:
+    """Build the short, provider-facing contract that surrounds model prose.
+
+    The model-authored fields are creative source material.  This block makes
+    the actual render request deterministic: one page, one product, one
+    message, exact canvas and an explicit text/negative policy.  It is kept
+    separate from the creative prose so external image tools can follow it
+    without treating internal planning labels as artwork copy.
+    """
+    market_label, language = MARKETS[form["market"]]
+    page_number = _integer(page.get("page"), "页码", 1, form["main"] + form["detail"])
+    product = form["product"]
+    focus = _text(page.get("focus", page.get("objective", "")), "页面卖点", 1400) or "当前商品的核心购买理由"
+    headline = _text(page.get("headline", ""), "当地语言标题", 240)
+    labels = page.get("copyLabels", [])
+    if not isinstance(labels, list) or len(labels) > 4:
+        raise ValueError("单页可见标签须为最多4条的文字列表")
+    approved_copy = list(dict.fromkeys([headline] if headline else []))
+    approved_copy += [label for label in (_text(item, "单页可见标签", 160, True) for item in labels) if label not in approved_copy]
+    evidence = _text(page.get("evidence", ""), "可见证据", 900)
+    scene = _text(page.get("scene", ""), "场景", 900)
+    pose = _text(page.get("pose", ""), "动作", 700)
+    composition = _text(page.get("composition", ""), "构图", 1000)
+    visual = _text(page.get("visualTreatment", ""), "视觉处理", 900)
+    impact = _text(page.get("impactTreatment", ""), "转化处理", 900)
+    reference_map = ", ".join(f"Image {index}={ref.get('role', 'auto')}" for index, ref in enumerate(references, 1)) or "none"
+    product_lock = (
+        f"Product identity lock: the only product is {product}. Match its exact shape, parts, material, colour and proportions to the attached product/detail references. Do not substitute another SKU or borrow a prop/product from a style, layout or scene reference."
+        if references else
+        f"Product identity lock: the only product is {product}. No product reference image is attached for this text-only brief; do not invent unseen parts, materials, colours, sizes or accessories."
+    )
+    copy_rule = (
+        f"Render only this approved {language} copy, each phrase once: " + json.dumps(approved_copy, ensure_ascii=False) + ". "
+        "Keep it large, legible and inside a calm safe zone; do not render the surrounding instructions."
+        if approved_copy else
+        "Do not add visible text, letters, numerals, labels, logos or pseudo-glyphs."
+    )
+    lines = [
+        "[FINAL RENDER CONTRACT — highest priority]",
+        f"Create exactly one finished static ecommerce image for page {page_number}/{form['main'] + form['detail']}; never generate a suite contact sheet, carousel, animation, webpage screenshot or empty bordered canvas. Multi-panel information layouts inside this single image are allowed only when assigned by the current page.",
+        product_lock,
+        f"This page has one conversion job only: {focus}. Show the claim through a visible product-specific proof, not a generic slogan or unrelated benefit.",
+        f"Canvas: full-bleed {form['size']} with safe margins for important content. Market: {market_label}. Visible language: {language} only.",
+        f"Reference roles: {reference_map}.",
+        f"Visible evidence: {evidence}" if evidence else "Visible evidence must be limited to facts supplied in the product brief or visible references.",
+        f"Scene: {scene}" if scene else "Use a category-correct scene that demonstrates the real product use; do not invent a setting that changes the product meaning.",
+        f"Action: {pose}" if pose else "Keep a physically believable still composition. Add people or hands only when the current page specifies a use/handling scene.",
+        f"Composition: {composition}" if composition else "Use one dominant product-led composition with a clear mobile reading order.",
+        f"Visual treatment: {visual}" if visual else "Use controlled contrast, realistic material optics and a clear focal hierarchy.",
+        f"COD impact: {impact}" if impact else "Use persuasive visual emphasis without fake proof, authority or exaggerated product results.",
+        f"Text lock: {copy_rule}",
+        "Internal labels, Chinese planning text, page numbers, filenames, URLs, model names and reference-image text are instructions only; never render them as artwork copy.",
+        "Negative lock: no extra products or variant changes; no invented specifications, prices, discounts, certifications, doctors, test results, medical guarantees or reviews; no watermarks, platform UI, QR codes or random lettering. Supplied promotional facts may appear only when promotions are enabled and the exact text is in the approved copy list. Designed in-page panels are allowed; do not add an outer blank canvas border.",
+    ]
+    return "\n".join(lines)
 
 
 def compile_execution_prompt(form: dict[str, Any], master: str, page: dict[str, Any], references: list[dict[str, Any]]) -> str:
@@ -241,6 +375,7 @@ def compile_execution_prompt(form: dict[str, Any], master: str, page: dict[str, 
         "[AI suite master — preserved verbatim]", master,
         "[AI current page — preserved verbatim]", local,
         shared_execution_requirements(form, references),
+        _execution_guardrails(form, page, references),
     ])
     if len(result) > MAX_PROMPT:
         raise ValueError("执行Prompt超过长度限制，请缩短当前页内容后重试")

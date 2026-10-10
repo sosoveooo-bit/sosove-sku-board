@@ -3,6 +3,7 @@
 from copy import deepcopy
 import json
 import unittest
+from sku_board.jp25_art_direction import DEFAULT_BIBLE
 
 from sku_board.jp25_creative import (
     apply_photography_plan,
@@ -127,7 +128,7 @@ class Jp25CreativeTests(unittest.TestCase):
         before = deepcopy(payload)
         plan = normalize_photography_plan(payload, pages)
         self.assertEqual(set(plan), {"visualBible", "pages"})
-        self.assertEqual(set(plan["visualBible"]), {"mood", "lighting", "palette"})
+        self.assertEqual(set(plan["visualBible"]), {"mood", "lighting", "palette", "typography", "layoutSystem", "materialTreatment"})
         self.assertEqual([page["page"] for page in plan["pages"]], list(range(1, 26)))
         for page in plan["pages"]:
             self.assertEqual(set(page), {"page", "scene", "action", "camera", "lighting", "layout", "evidenceTreatment"})
@@ -246,7 +247,7 @@ class Jp25CreativeTests(unittest.TestCase):
         manifest = suite_manifest(payload)
         decoded = json.loads(manifest)
         self.assertEqual(len(decoded["pages"]), 25)
-        self.assertEqual(decoded["visualBible"], payload["visualBible"])
+        self.assertEqual(decoded["visualBible"], {**payload["visualBible"], **DEFAULT_BIBLE})
         self.assertIn("ORIGINAL_SCENE_01", manifest)
         self.assertIn("ORIGINAL_PROOF_25", manifest)
         self.assertNotIn("UNTRUSTED_OVERRIDE", manifest)

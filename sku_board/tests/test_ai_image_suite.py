@@ -4830,7 +4830,7 @@ LED电量显示
         self.assertEqual(template["suiteKey"], "jp-landing-page-25")
         self.assertEqual(template["count"], 25)
         self.assertEqual(template["planVersion"], backend.AI_IMAGE_SUITE_PLAN_VERSION)
-        self.assertEqual(template["planVersion"], "director-v34-no-page1-bitmap-unique-routes")
+        self.assertEqual(template["planVersion"], "director-v35-editorial-craft-source-complete")
         self.assertIn('"jp-landing-page-25"', app_text)
         self.assertIn('label: "日本产品落地页 25图"', app_text)
         self.assertIn("三层参考分析", app_text)
@@ -4942,6 +4942,24 @@ LED电量显示
         self.assertEqual(filtered_items, ["product", "usage", "detail"])
         self.assertEqual([item["role"] for item in filtered_bindings], ["product", "usage", "detail"])
         self.assertEqual([item["index"] for item in filtered_bindings], [1, 2, 3])
+
+    def test_japanese_landing_accepts_model_first_and_product_second_bindings(self) -> None:
+        bindings = [
+            {"index": 1, "filename": "model-selfie.jpg", "role": "person"},
+            {"index": 2, "filename": "black-dress.png", "role": "product"},
+        ]
+
+        resolved = backend.resolve_ai_image_reference_bindings(bindings, 2, "日本成熟女装")
+        filtered_items, filtered_bindings = backend.filter_ai_image_suite_generation_reference_items(
+            ["model", "dress"],
+            resolved,
+            backend.AI_IMAGE_LANDING_SUITE_KEY,
+        )
+
+        self.assertEqual([item["role"] for item in resolved], ["person", "product"])
+        self.assertEqual(filtered_items, ["model", "dress"])
+        self.assertEqual([item["role"] for item in filtered_bindings], ["person", "product"])
+        self.assertEqual([item["sourceIndex"] for item in filtered_bindings], [1, 2])
 
     def test_japanese_landing_unbound_generation_references_keep_only_first_product(self) -> None:
         filtered_items, filtered_bindings = backend.filter_ai_image_suite_generation_reference_items(
@@ -5116,7 +5134,10 @@ LED电量显示
         app_source = (backend.ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('{ key: "auto", label: "AI自动识别"', app_source)
+        self.assertIn('if (conversation.suiteKey === "jp-landing-page-25") return "auto";', app_source)
         self.assertIn('if (aiImageSuiteActive(conversation)) return index === 0 ? "product" : "auto";', app_source)
+        self.assertIn('return AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === key) ? key : aiImageDefaultReferenceRole(index);', app_source)
+        self.assertIn('${suiteActive || codHookActive ? `', app_source)
         self.assertIn('function applyAiImageResolvedReferenceBindings(conversation, bindings = [])', app_source)
         self.assertIn('applyAiImageResolvedReferenceBindings(conversation, payload.resolvedReferenceBindings || []);', app_source)
         self.assertIn('prompt = conversation.prompt || prompt;', app_source)
@@ -8607,7 +8628,7 @@ USB供电
 
         self.assertIn("ai_image_company_prompt_status(suite_plan, suite_count, suite_key)", backend_source)
         self.assertIn("本次生图提交已暂停", backend_source)
-        self.assertIn('planVersion: "director-v34-no-page1-bitmap-unique-routes"', app_source)
+        self.assertIn('planVersion: "director-v35-editorial-craft-source-complete"', app_source)
         self.assertIn("aiImageJp25CompanyPromptStatus", app_source)
         self.assertIn("25/25页七层Prompt齐全后才会提交生图", app_source)
         self.assertIn('material.promptSource === "remote-seven-layer" ? "线上AI七层Prompt"', app_source)

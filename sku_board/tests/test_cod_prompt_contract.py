@@ -61,6 +61,47 @@ class CodPromptContractTests(unittest.TestCase):
         self.assertEqual(page["focus"], "USB充电")
         self.assertIn("750x1000", compiled)
 
+    def test_execution_prompt_is_a_single_page_provider_brief(self):
+        form = form_fixture(product="折叠收纳箱", market="JP", points=["可折叠", "多层叠放"], style="米白与深红")
+        page = {
+            "page": 1,
+            "modelPrompt": "内部策划文字：不要把这一页扩展成整套页面。",
+            "focus": "可折叠后节省收纳空间",
+            "headline": "すっきり片づく",
+            "evidence": "同一收纳箱折叠前后体积变化，结构保持一致",
+            "scene": "日本家庭玄关的真实收纳场景",
+            "pose": "双手自然折叠箱体，动作符合结构",
+            "composition": "一个主产品占画面约70%，右侧保留标题安全区",
+            "visualTreatment": "柔和侧光，米白背景与深红重点色",
+            "impactTreatment": "前后状态形成清晰视觉对比，但不添加数值",
+        }
+        compiled = contract.compile_execution_prompt(form, "只为折叠收纳箱服务的总控", page, references_fixture())
+        self.assertIn("[FINAL RENDER CONTRACT — highest priority]", compiled)
+        self.assertIn("exactly one finished static ecommerce image", compiled)
+        self.assertIn("折叠收纳箱", compiled)
+        self.assertIn("すっきり片づく", compiled)
+        self.assertIn("Chinese planning text", compiled)
+        self.assertIn("no extra products", compiled)
+        self.assertNotIn("整套页面", compiled.split("[FINAL RENDER CONTRACT", 1)[-1].split("[TEXT LOCK]", 1)[0])
+
+    def test_execution_prompt_explicitly_forbids_added_text_when_headline_is_empty(self):
+        form = form_fixture(market="US")
+        page = {"page": 1, "modelPrompt": "A complete product image with a clean background."}
+        compiled = contract.compile_execution_prompt(form, "Current master", page, [])
+        self.assertIn("Do not add visible text, letters, numerals, labels, logos or pseudo-glyphs.", compiled)
+        self.assertIn("No product reference image is attached", compiled)
+        self.assertNotIn("attached product/detail references", compiled)
+
+    def test_execution_prompt_carries_short_approved_labels_and_allows_assigned_grid(self):
+        form = form_fixture(market="JP")
+        page = {"page": 2, "headline": "家族で楽しむ", "copyLabels": ["開けてすぐ", "食卓の一皿"],
+                "archetype": "pain-grid", "modelPrompt": "四宫格单张电商图：同一商品展示四个真实备餐痛点，保持一张完整画布。"}
+        compiled = contract.compile_execution_prompt(form, "只为当前商品服务的总控", page, [])
+        self.assertIn("家族で楽しむ", compiled)
+        self.assertIn("開けてすぐ", compiled)
+        self.assertIn("Multi-panel information layouts inside this single image are allowed", compiled)
+        self.assertIn("no extra products", compiled)
+
     def test_outline_enforces_modules_and_source_coverage_without_reordering(self):
         form = form_fixture()
         raw = outline_fixture(form)
@@ -76,6 +117,19 @@ class CodPromptContractTests(unittest.TestCase):
         bad["outline"][0]["sourcePointIndexes"] = [1]
         with self.assertRaisesRegex(ValueError, "遗漏"):
             contract.normalize_outline(bad, form)
+
+    def test_incomplete_outline_recovery_creates_distinct_page_jobs(self):
+        form = form_fixture(main=5, detail=5, points=["随行鲜榨", "USB充电", "可拆洗"])
+        recovered = contract.normalize_outline(
+            {"masterPrompt": "PRODUCT MASTER", "outline": []}, form,
+            allow_empty_hooks=True, allow_incomplete_pages=True,
+        )
+        self.assertEqual(len(recovered["outline"]), 10)
+        self.assertEqual(len({page["title"] for page in recovered["outline"]}), 10)
+        self.assertTrue(any(page["archetype"] == "pain-grid" for page in recovered["outline"][:5]))
+        self.assertTrue(any(page["archetype"] == "comparison" for page in recovered["outline"]))
+        self.assertEqual(recovered["outline"][-1]["archetype"], "product-info")
+        self.assertEqual({1, 2, 3}, {index for page in recovered["outline"] for index in page["sourcePointIndexes"]})
 
     def test_reference_transport_cannot_remap_canonical_atelier_prompt(self):
         prompt = contract.compile_execution_prompt(form_fixture(), "Special current master", {"page": 1, "modelPrompt": "The primary product must come from reference image 2. Preserve the same saved reference numbering and lighting."}, references_fixture())

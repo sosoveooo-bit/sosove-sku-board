@@ -4,6 +4,7 @@
   const STORAGE_KEY = "cod-prompt-atelier-v2";
   const PAGE_DRAFTS_KEY = "cod-prompt-atelier-page-drafts-v1";
   const LEGACY_STORAGE_KEY = "cod-prompt-atelier-v1";
+  const EXPORT_MODE_VERSION = "single-page-v1";
   const DEFAULT_FORM = Object.freeze({ product: "", market: "JP", intensity: "cod", main: 15, detail: 22, size: "750x1000", model: "gpt-image-2", quality: "high", generationProfile: "standard", reference: "", points: [], discount: "", salePrice: "", codText: "", deadline: "", allowPromo: true, allowMedical: true, style: "", avoid: "" });
   const MARKET = { JP: { label: "日本", language: "日文" }, KR: { label: "韩国", language: "韩文" }, US: { label: "美国", language: "英文" }, DE: { label: "德国", language: "德文" } };
   const STATUS = { draft: "等待生成", planning: "AI 正在分析与规划", generating: "AI 正在分批生成", reviewing: "AI 正在检查提示词", complete: "整套已完成", partial: "部分完成，可继续补齐", error: "AI 生成失败", cancelled: "已停止，已完成页保留" };
@@ -70,7 +71,7 @@
   // Every callback is scoped to both a local request token and a saved revision.
   // Late responses can remain archived, but cannot repaint a different product.
   function createController({ request, notify = () => {}, changed = () => {}, schedule = setTimeout, unschedule = clearTimeout, draftStorage = null, initialForm = DEFAULT_FORM } = {}) {
-    const state = { form: normalizeForm(initialForm), project: null, projects: [], dirty: false, token: 0, busy: "", error: "", notice: "", referencesMode: "replace", localReferences: [], referenceRoles: [], referenceSequence: 0, selectedPage: 1, filter: "all", pageEditorDirty: false, pageEditorValue: "", pageEditorKey: "", pageEditorSource: "saved", pageDrafts: Object.create(null), draftError: "", exportMode: "compact", historical: false, rendering: null, queues: [], queueId: "", queueError: "", queueTimer: null, queueBusy: false, redoConfirmation: null, hiddenGallery: false, config: null, configError: "", libraryError: "", pollTimer: null };
+    const state = { form: normalizeForm(initialForm), project: null, projects: [], dirty: false, token: 0, busy: "", error: "", notice: "", referencesMode: "replace", localReferences: [], referenceRoles: [], referenceSequence: 0, selectedPage: 1, filter: "all", pageEditorDirty: false, pageEditorValue: "", pageEditorKey: "", pageEditorSource: "saved", pageDrafts: Object.create(null), draftError: "", exportMode: "compact", historical: false, rendering: null, queues: [], queueId: "", queueError: "", queueTimer: null, queueBusy: false, redoConfirmation: null, hiddenGallery: false, config: null, configError: "", directorConfig: null, directorConfigError: "", libraryError: "", pollTimer: null };
     let queueReadSequence = 0;
     try {
       const stored = JSON.parse(draftStorage?.getItem(PAGE_DRAFTS_KEY) || "{}");
@@ -466,7 +467,12 @@
   function readDraft() {
     try {
       const currentDraft = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-      if (currentDraft?.form) return currentDraft;
+      if (currentDraft?.form) {
+        // Older drafts defaulted to a multi-page blob that most image tools
+        // cannot execute.  Migrate once; a deliberate later user choice is
+        // persisted with the new version marker.
+        return { ...currentDraft, exportMode: currentDraft.exportModeVersion === EXPORT_MODE_VERSION ? currentDraft.exportMode : "standalone", exportModeVersion: EXPORT_MODE_VERSION };
+      }
       const legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || "null");
       if (legacy && typeof legacy === "object") return { form: normalizeForm(legacy), dirty: true, legacy: true };
     } catch (_) { /* Invalid local storage never blocks server archives. */ }
@@ -475,7 +481,7 @@
   function saveDraft(state) {
     if (state.busy === "loading" || restoringDraft) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ form: state.form, projectId: state.project?.id || "", revision: state.project?.revision || null, historical: state.historical, dirty: state.dirty, selectedPage: state.selectedPage, exportMode: state.exportMode, referencesMode: state.referencesMode, referenceRoles: state.referenceRoles }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ form: state.form, projectId: state.project?.id || "", revision: state.project?.revision || null, historical: state.historical, dirty: state.dirty, selectedPage: state.selectedPage, exportMode: state.exportMode, exportModeVersion: EXPORT_MODE_VERSION, referencesMode: state.referencesMode, referenceRoles: state.referenceRoles }));
       setText("saved-state", state.draftError || (currentDrafts(state).length ? `本地暂存 ${currentDrafts(state).length} 页草稿 · 尚未提交` : state.project && !state.dirty ? `商品已存档 · v${state.project.revision}` : "文字草稿已保存 · 图片需保存商品"));
     } catch (_) { setText("saved-state", "本地存储不可用；请保存商品到服务器"); }
   }
@@ -532,11 +538,11 @@
   function renderPromptStatus(state) {
     const project = state.project, total = totalCount(state.form), ready = sortedPages(project).filter((page) => page.executionPrompt).length;
     setText("prompt-progress-label", `${displayStatus(state)} · ${ready} / ${Number.isFinite(total) ? total : "—"} 页${project?.progress?.stage ? ` · ${project.progress.stage}` : ""}`);
-    const director = project?.director || {}, actualModel = actualDirectorModel(director), configuredModel = state.config?.director?.model || "", requestedModel = director.requestedModel || director.model || configuredModel;
+    const director = project?.director || {}, configuredDirector = state.directorConfig || {}, actualModel = actualDirectorModel(director), configuredModel = configuredDirector.model || state.config?.director?.model || "", requestedModel = director.requestedModel || director.model || configuredModel;
     setText("director-model-value", actualModel || requestedModel || (state.configError ? "无法读取配置" : "未配置"));
-    setText("director-model-source", actualModel ? `此版本最近完成阶段实际模型${director.fallbackUsed ? " · 使用了备援模型" : ""}` : requestedModel ? "请求/配置模型；当前阶段尚未成功返回" : state.configError || "请在主 SKU Board 的 AI DIRECTOR 中配置模型");
-    setText("director-config-status", director.warning || state.configError || (configuredModel ? `配置：${configuredModel}${state.config.director.fallbackModels?.length ? ` · 备援：${state.config.director.fallbackModels.join(" / ")}` : ""}。失败会保留错误与已完成页，不会自动套模板。` : "未配置 AI 分析模型；不能生成新 Prompt。"));
-    $("director-model-display")?.classList.toggle("is-warning", Boolean(state.configError || !actualModel && !configuredModel));
+    setText("director-model-source", actualModel ? `此版本最近完成阶段实际模型${director.fallbackUsed ? " · 使用了备援模型" : ""}` : requestedModel ? "请求/配置模型；当前阶段尚未成功返回" : state.directorConfigError || state.configError || "请在此处配置 AI DIRECTOR 模型");
+    setText("director-config-status", director.warning || state.directorConfigError || state.configError || (configuredModel ? `配置：${configuredModel}${configuredDirector.fallbackModels?.length ? ` · 备援：${configuredDirector.fallbackModels.join(" / ")}` : ""}。失败会保留错误与已完成页，不会自动套模板。` : "未配置 AI 分析模型；不能生成新 Prompt。"));
+    $("director-model-display")?.classList.toggle("is-warning", Boolean(state.configError || state.directorConfigError || !actualModel && !configuredModel));
     setText("master-output-mode", state.dirty && project?.masterPrompt ? "输入已变更：以下为过期版本，仅供查看，复制与生图已禁用。" : project?.masterPrompt ? `AI 原创总控 · ${actualModel || "模型待确认"} · v${project.revision} · 指纹 ${String(project.fingerprint || "—").slice(0, 16)}` : "尚无 AI 总控。填写商品资料后生成；此处不会用固定模板替代。");
     if ($("master-output-mode")) $("master-output-mode").title = project?.fingerprint || "";
     setText("master-output", project?.masterPrompt || "当前商品还没有生成总控 Prompt。点击“AI 重新生成整套 Prompt”开始。");
@@ -548,7 +554,7 @@
     disabled("cancel-generation-btn", state.busy === "stopping" || state.busy === "loading"); hidden("local-draft-btn", true);
     disabled("copy-master-btn", !canUsePrompt(state)); disabled("copy-suite-btn", !suiteComplete(state)); disabled("download-btn", !suiteComplete(state));
     if ($("export-mode") && $("export-mode").value !== state.exportMode) $("export-mode").value = state.exportMode;
-    setText("export-mode-help", state.exportMode === "standalone" ? "逐张独立版：每页携带完整执行 Prompt，可分别导入生图。" : state.project?.masterPrompt && !state.project.sharedExecutionRequirements ? "这是较早的存档，缺少共享要求快照；请选择逐张独立版，或生成新版本后使用整套导入。" : "整套导入版：总控与共享要求各一次，后接逐页创意，适合整套导入。不会省略当前页的独立执行版。");
+    setText("export-mode-help", state.exportMode === "standalone" ? "逐张独立版：每次复制一页，包含完整执行合同，直接粘贴到单张生图工具。" : state.project?.masterPrompt && !state.project.sharedExecutionRequirements ? "这是较早的存档，缺少共享要求快照；请选择逐张独立版，或生成新版本后使用整套规划。" : "整套规划版：总控与共享要求各一次，后接逐页创意，适合支持批处理的工作流；单张生图请复制当前页执行版。");
     disabled("copy-pages-btn", !canUsePrompt(state) || !visiblePages(project, state.filter).some((page) => page.executionPrompt));
     document.querySelectorAll(".small-copy-btn[data-copy-target]").forEach((button) => { button.disabled = !canUsePrompt(state); });
   }
@@ -687,6 +693,118 @@
     document.querySelectorAll(".output-tab").forEach((tab) => { tab.classList.toggle("active", tab.dataset.tab === name); tab.setAttribute("aria-selected", String(tab.dataset.tab === name)); });
     document.querySelectorAll(".tab-content").forEach((content) => content.classList.toggle("active", content.id === `tab-${name}`));
   }
+  const AI_DIRECTOR_MODEL_PRESETS = ["deepseek-v4.1-flash", "gpt-5.6-terra", "gpt-5.6-sol", "gemini-3-flash-agent", "claude-sonnet-4-6"];
+  function directorModelOptions(director = {}) {
+    return Array.from(new Set([
+      ...AI_DIRECTOR_MODEL_PRESETS,
+      ...(Array.isArray(director.availableModels) ? director.availableModels : []),
+      ...(Array.isArray(director.customModels) ? director.customModels : []),
+      director.model,
+    ].filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim())));
+  }
+  function renderDirectorSettings() {
+    if (!app) return;
+    const director = app.state.directorConfig || {}, select = $("cod-director-model"), dirty = Boolean(director.formDirty);
+    if (select) {
+      const selected = dirty ? (select.value || director.model || AI_DIRECTOR_MODEL_PRESETS[0]) : (director.model || AI_DIRECTOR_MODEL_PRESETS[0]);
+      select.innerHTML = directorModelOptions(director).map((model) => `<option value="${esc(model)}">${esc(model)}</option>`).join("");
+      select.value = directorModelOptions(director).includes(selected) ? selected : (director.model || AI_DIRECTOR_MODEL_PRESETS[0]);
+    }
+    if (!dirty) {
+      if ($("cod-director-base-url")) $("cod-director-base-url").value = director.baseUrl || "";
+      if ($("cod-director-timeout")) $("cod-director-timeout").value = String(director.timeout || 60);
+      if ($("cod-director-api-key")) {
+        $("cod-director-api-key").value = "";
+        $("cod-director-api-key").placeholder = director.apiKeyConfigured ? "已保存密钥，留空则保持不变" : "输入 API 密钥";
+      }
+      if ($("cod-director-enabled")) $("cod-director-enabled").checked = Boolean(director.enabled);
+      if ($("cod-director-vision")) $("cod-director-vision").checked = director.visionEnabled !== false;
+    }
+    const configured = Boolean(director.configured), active = configured && Boolean(director.enabled), stateEl = $("cod-director-config-state");
+    if (stateEl) stateEl.textContent = director.loading ? "读取中" : director.testing ? "检测中" : director.saving ? "保存中" : active ? `${director.model || "已配置"} · 已启用` : configured ? "已配置 · 未启用" : "未配置";
+    const currentModel = $("cod-director-current-model");
+    if (currentModel) currentModel.textContent = director.model || (select?.value || "—");
+    const message = $("cod-director-settings-message");
+    if (message) {
+      message.className = director.status === "error" ? "error" : director.status === "ok" ? "ok" : "";
+      message.textContent = director.message || (director.baseUrl && !director.secureTransport ? "当前 API 使用 HTTP，密钥传输未加密；密钥仅保存在服务端。" : "使用视频提示词面板同款的模型选项和 OpenAI 兼容配置格式；这里的模型负责分析商品和生成生图 Prompt，实际图片仍使用下方生图模型。");
+    }
+    const busy = Boolean(director.loading || director.testing || director.saving);
+    disabled("cod-director-save-btn", busy);
+    disabled("cod-director-test-btn", busy || !configured && !dirty);
+    disabled("cod-director-add-model-btn", busy);
+    disabled("cod-director-custom-model-input", busy);
+  }
+  function markDirectorDirty() {
+    if (!app) return;
+    const current = app.state.directorConfig || {};
+    app.state.directorConfig = { ...current, formDirty: true, status: "unknown", message: "有未保存的模型配置修改" };
+    renderDirectorSettings(); app.emit();
+  }
+  function addCodDirectorCustomModel() {
+    const director = app?.state.directorConfig || {}, input = $("cod-director-custom-model-input"), model = input?.value.trim() || "";
+    if (!model || model.length > 120 || /[\s\x00-\x1f\x7f]/u.test(model)) { toast("请输入 1–120 个字符的完整模型 ID，去除空格、换行和控制字符"); input?.focus(); return; }
+    const customModels = Array.from(new Set([...(Array.isArray(director.customModels) ? director.customModels : []), director.model, model].filter((candidate) => candidate && !AI_DIRECTOR_MODEL_PRESETS.includes(candidate))));
+    if (customModels.length > 50) { toast("自定义模型最多保存 50 个"); return; }
+    app.state.directorConfig = { ...director, model, customModels, formDirty: true, status: "unknown", message: `已选用 ${model}，点击“保存配置”后生效。` };
+    if (input) input.value = "";
+    renderDirectorSettings(); app.emit(); toast("已添加并选用，请点击保存配置");
+  }
+  function directorSettingsFormPayload() {
+    const director = app?.state.directorConfig || {}, model = $("cod-director-model")?.value.trim() || director.model || "";
+    const fallbacks = Array.from(new Set(Array.isArray(director.fallbackModels) ? director.fallbackModels : ["gpt-5.6-terra", "gpt-5.6-sol"])).filter((candidate) => candidate && candidate !== model);
+    return {
+      enabled: Boolean($("cod-director-enabled")?.checked), baseUrl: $("cod-director-base-url")?.value.trim() || "", model,
+      customModels: Array.isArray(director.customModels) ? [...director.customModels] : [], fallbackModels: fallbacks,
+      apiKey: $("cod-director-api-key")?.value.trim() || "", timeout: Number($("cod-director-timeout")?.value || 60),
+      visionEnabled: Boolean($("cod-director-vision")?.checked), openImagePromptsEnabled: director.openImagePromptsEnabled !== false,
+      reviewEnabled: false,
+    };
+  }
+  async function loadDirectorConfig(silent = true) {
+    if (!app) return null;
+    const existing = app.state.directorConfig || {};
+    app.state.directorConfig = { ...existing, loading: true };
+    renderDirectorSettings();
+    try {
+      const payload = await apiRequest("/api/sku-board/ai-director-settings");
+      const keepDirty = Boolean(app.state.directorConfig?.formDirty);
+      app.state.directorConfig = keepDirty ? { ...app.state.directorConfig, loading: false } : { ...(payload.director || {}), loading: false, status: "unknown", message: "", formDirty: false };
+      app.state.directorConfigError = "";
+      renderDirectorSettings(); app.emit();
+      if (!silent && !keepDirty) toast(app.state.directorConfig.configured ? "AI DIRECTOR 配置已加载" : "AI DIRECTOR 尚未配置");
+      return app.state.directorConfig;
+    } catch (error) {
+      app.state.directorConfig = { ...app.state.directorConfig, loading: false, status: "error", message: error.message };
+      app.state.directorConfigError = error.message; renderDirectorSettings(); app.emit();
+      if (!silent) toast(error.message);
+      return null;
+    }
+  }
+  async function saveDirectorConfig() {
+    const director = app?.state.directorConfig || {};
+    if (!director.formDirty && director.configured) { toast("当前模型配置已保存"); return director; }
+    app.state.directorConfig = { ...director, saving: true, message: "正在保存 AI DIRECTOR 配置…" }; renderDirectorSettings();
+    try {
+      const payload = await apiRequest("/api/sku-board/ai-director-settings", { method: "POST", json: directorSettingsFormPayload() });
+      app.state.directorConfig = { ...(payload.director || {}), saving: false, status: "ok", message: `配置已生效：${payload.director?.model || "当前模型"}`, formDirty: false };
+      app.state.directorConfigError = ""; renderDirectorSettings(); app.emit(); toast(app.state.directorConfig.message); return app.state.directorConfig;
+    } catch (error) {
+      app.state.directorConfig = { ...app.state.directorConfig, saving: false, status: "error", message: error.message, formDirty: true }; renderDirectorSettings(); app.emit(); toast(error.message); return null;
+    }
+  }
+  async function testDirectorConfig() {
+    if (!app) return;
+    if (app.state.directorConfig?.formDirty && !await saveDirectorConfig()) return;
+    app.state.directorConfig = { ...(app.state.directorConfig || {}), testing: true, message: "正在连接 AI DIRECTOR 模型…" }; renderDirectorSettings();
+    try {
+      const payload = await apiRequest("/api/sku-board/ai-director-test", { method: "POST", json: {} });
+      app.state.directorConfig = { ...(payload.director || {}), testing: false, status: "ok", message: `${payload.director?.message || "AI DIRECTOR 连接正常"}${payload.director?.latencyMs ? ` · ${payload.director.latencyMs}ms` : ""}`, formDirty: false };
+      renderDirectorSettings(); app.emit(); toast(app.state.directorConfig.message);
+    } catch (error) {
+      app.state.directorConfig = { ...(app.state.directorConfig || {}), testing: false, status: "error", message: error.message }; renderDirectorSettings(); app.emit(); toast(error.message);
+    }
+  }
   async function loadConfig() {
     try {
       const payload = await apiRequest("/api/sku-board/ai-image-config"), config = payload.aiImage || {};
@@ -705,6 +823,11 @@
   function bindUI() {
     Object.values(FIELDS).forEach((id) => { const input = $(id); if (input) input.addEventListener(input.type === "checkbox" || input.tagName === "SELECT" ? "change" : "input", () => app.updateForm(readForm())); });
     const click = (id, handler) => $(id)?.addEventListener("click", handler);
+    ["cod-director-model", "cod-director-base-url", "cod-director-timeout", "cod-director-api-key", "cod-director-enabled", "cod-director-vision"].forEach((id) => {
+      const input = $(id); if (input) input.addEventListener(input.type === "checkbox" || input.tagName === "SELECT" ? "change" : "input", markDirectorDirty);
+    });
+    click("cod-director-add-model-btn", addCodDirectorCustomModel); click("cod-director-read-btn", () => void loadDirectorConfig(false)); click("cod-director-save-btn", () => void saveDirectorConfig()); click("cod-director-test-btn", () => void testDirectorConfig());
+    $("cod-director-custom-model-input")?.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); if (!event.isComposing) addCodDirectorCustomModel(); } });
     click("new-product-btn", () => app.newProduct()); click("reset-btn", () => app.newProduct()); click("save-project-btn", () => app.saveProject());
     click("load-project-btn", () => app.openProject($("project-select")?.value)); click("load-version-btn", () => app.openProject(app.state.project?.id, Number($("project-version")?.value)));
     click("generate-btn", () => { selectTab("master"); void app.generate("fresh"); }); click("analyze-ai-btn", () => { selectTab("master"); void app.generate("fresh"); }); click("resume-prompts-btn", () => app.generate("resume")); click("cancel-generation-btn", () => app.stop());
@@ -736,11 +859,11 @@
     const stored = readDraft(); let pageStorage;
     try { pageStorage = localStorage; } catch (_) { pageStorage = { getItem: () => "{}", setItem: () => { throw new Error("unavailable"); } }; }
     app = createController({ request: apiRequest, notify: toast, changed: render, initialForm: stored.form, draftStorage: pageStorage }); app.state.dirty = Boolean(stored.dirty);
-    app.state.selectedPage = Math.max(1, Number(stored.selectedPage) || 1); app.state.exportMode = stored.exportMode === "standalone" ? "standalone" : "compact";
+    app.state.selectedPage = Math.max(1, Number(stored.selectedPage) || 1); app.state.exportMode = stored.exportMode === "compact" ? "compact" : "standalone";
     if (stored.legacy) app.state.notice = "已迁移之前保存的文字输入。旧模板结果未继承，请重新生成当前商品 AI Prompt。";
     uiReady = true; bindUI(); app.emit();
     const initialToken = app.state.token;
-    const configPromise = loadConfig(); await app.listProjects();
+    const configPromise = Promise.all([loadConfig(), loadDirectorConfig()]); await app.listProjects();
     if (stored.projectId && app.state.token === initialToken) await app.openProject(stored.projectId, stored.historical ? stored.revision : null, { draft: stored });
     await configPromise; restoringDraft = false; app.emit();
   });

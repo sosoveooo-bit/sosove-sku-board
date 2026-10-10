@@ -33,7 +33,8 @@ class CodFrontendContractsTests(unittest.TestCase):
         return self.source[match.start():end]
 
     def run_js(self, functions, body, *, setup="", constants=()):
-        source = "\n".join([*(self.constant(name) for name in constants), *(self.function(name) for name in functions)])
+        source = "\n".join([(APP_JS.parent / "jp25-workbench.js").read_text(encoding="utf-8"),
+                            *(self.constant(name) for name in constants), *(self.function(name) for name in functions)])
         runner = """
 const fs = require('fs');
 const vm = require('vm');
@@ -240,7 +241,7 @@ for (const coverage of [{},{complete:true},{complete:undefined}]) {
 
     def test_only_cod_versions_and_opt_in_social_proof_copy_change(self):
         self.run_js(["aiImageSuiteConfig"], """
-assert.equal(AI_IMAGE_SUITE_CONFIGS['jp-landing-page-25'].planVersion,'director-v34-no-page1-bitmap-unique-routes');
+assert.equal(AI_IMAGE_SUITE_CONFIGS['jp-landing-page-25'].planVersion,'director-v35-editorial-craft-source-complete');
 assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-landing-30'].planVersion,'cod-country-v30-all-main');
 assert.equal(AI_IMAGE_SUITE_CONFIGS['cod-country-detail-12'].planVersion,'cod-detail-v21-selected-market-lock');
 const detail=aiImageSuiteConfig({suiteKey:'cod-country-detail-12',suiteCount:22});
@@ -281,7 +282,7 @@ assert.equal(monitorHint('jp-landing-page-25',true,true),sourceHint);
 assert.equal(monitorHint('ordinary-image',false,false),sourceHint);
 """, setup="function monitorHint(key,companyEffectSuite,jpCreativeDirector){const suiteConfig={key};return (" + hint_match.group(1) + ");}")
         index_html = (APP_JS.parent / "index.html").read_text(encoding="utf-8-sig")
-        self.assertIn('<script src="/static/app.js?v=20260918-cod-all-main"></script>', index_html)
+        self.assertIn('<script src="/static/app.js?v=20261010-jp25-reference-role-auto"></script>', index_html)
         self.assertIn('为每页分配一个卖点、场景、构图和参考图', index_html)
 
     def test_hook_dispatch_sends_policy_on_both_api_paths(self):

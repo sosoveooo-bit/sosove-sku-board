@@ -29,6 +29,7 @@ from .cod_prompt_contract import (
     shared_execution_requirements,
 )
 from .cod_prompt_quality import assess, finalize_report, input_fingerprint, normalize_ai_issues
+from .cod_prompt_brief import planning_form, QUALITY_DIRECTION
 
 _LOCK = threading.RLock()
 _RUNS: dict[str, tuple[str, str, int]] = {}
@@ -421,6 +422,34 @@ def _director_settings() -> dict[str, Any]:
     return settings
 
 
+def _parse_director_json(content: str, *, repair: bool = False) -> dict[str, Any]:
+    """Parse a director response while keeping lightweight test adapters compatible."""
+    parser = _backend().parse_ai_director_json
+    try:
+        return parser(content, repair=repair)
+    except TypeError as exc:
+        # A few callers inject the historical one-argument parser in tests and
+        # integrations.  The production parser supports repair; those adapters
+        # should still exercise the same generation flow.
+        if "unexpected keyword argument 'repair'" not in str(exc):
+            raise
+        return parser(content)
+
+
+def _fallback_master_prompt(form: dict[str, Any]) -> str:
+    """Keep a valid product-specific shared direction if a model omits that field."""
+    brief = planning_form(form)
+    market = {"JP": "日本", "KR": "韩国", "US": "美国", "DE": "德国"}.get(brief["market"], brief["market"])
+    points = "；".join(brief["points"][:8])
+    return (
+        f"当前唯一商品为{brief['product']}，面向{market}市场的COD静态电商图套组。"
+        f"统一视觉方向：{brief.get('style') or '明亮、清晰、信息密度适中，突出商品本体和真实使用场景'}。"
+        f"商品卖点仅限：{points}。保留当前SKU外观与参考图角色；每张图只表达一个明确购买理由，"
+        "用真实可见的构图、材质、动作和目标市场自然文案增强转化，不虚构规格、功效、认证、评价、价格或促销。"
+        f"禁止内容：{brief.get('avoid') or '混用SKU、产品变形、乱码、水印和未提供的承诺'}。"
+    )
+
+
 def _director_metadata(settings: dict[str, Any], stage: str, latency: int = 0, status: str = "ok") -> dict[str, Any]:
     public = _backend().public_ai_director_settings(settings)
     call = settings.get("_lastDirectorCall") or {}
@@ -467,15 +496,16 @@ def _messages(version: dict[str, Any], pages: list[dict[str, Any]] | None = None
         "Preserve the supplied promotional terms and bold, information-rich COD art direction. Exaggerate visual presentation, not factual efficacy. "
         "Do not fabricate endorsements, certifications, medical outcomes, measurements or promotions. Do not treat an unverified claim as proof. "
         "Visible image copy and hooks must sound natural in the target market language. Technical image instructions can be Chinese. "
-        "Every result is a static image. Keep current SKU structure consistent with the specified reference roles."
+        "Every result is a static image. Keep current SKU structure consistent with the specified reference roles. "
+        + QUALITY_DIRECTION
     )
     context: dict[str, Any] = {
-        "form": form, "references": version["references"],
+        "form": planning_form(form), "references": version["references"],
         "expectedPageCount": _total(form), "mainCount": form["main"], "detailCount": form["detail"],
     }
     if pages is None:
         prompt = (
-            "Plan a completely new prompt suite. Return {masterPrompt,productSummary,visualDNA,outline,hooks}. "
+            "Plan a completely new prompt suite. Return {masterPrompt,productSummary,visualDNA,outline}. "
             "masterPrompt is the complete product-specific shared image prompt including visual identity, product presentation, local "
             "people/scenes, typography, colours, supplied promotions, density and narrative rhythm, NOT a reusable template. "
             "Keep masterPrompt under 2500 Chinese characters, productSummary under400 and visualDNA under500. "
@@ -488,10 +518,14 @@ def _messages(version: dict[str, Any], pages: list[dict[str, Any]] | None = None
             "The final page must be product information (archetype product-info); include a four-panel pain-point page "
             "(archetype pain-grid) among main pages when mainCount>=2, a comparison page (archetype comparison) when total>=4, "
             "and realistic local-person usage scenes. Other archetypes can be hero,benefit,scene,detail,usage,offer. "
-            "hooks is an array of {sourcePointIndex,source,variants:[{type,text}]} for ONLY the first12 unique original selling points "
-            "(or all when fewer than12). sourcePointIndex is1-based in form.points; source is a short nonempty source label. "
-            "Generate three genuinely product-specific variants per source: pain, effect, scene. Each variant text under70 characters. "
-            "Do not invent numeric results or unverified authority. Remaining hooks will be requested separately. "
+            "Repeated source benefits must use a different visible proof, crop, action or decision question; "
+            "do not pad the requested count with renamed versions of the same scene. Main images sell one reason at a glance; "
+            "detail pages answer a different concrete buyer question, using supplied facts only. "
+            "Comparison must show supplied observable differences, not invent a worse competitor or a ranking. "
+            "Do not plan an offer page without actual promotional data; use product value/selection instead. "
+            "Do not put per-page headlines/labels or page numbers into masterPrompt; master sets shared styling only. "
+            "Do not include hooks in this planning response; localized hooks are generated separately in small batches. "
+            "Do not invent numeric results or unverified authority. "
             "Each visible hook/headline must be written in the target language. Keep outline concise enough to avoid JSON truncation."
         )
     else:
@@ -500,19 +534,33 @@ def _messages(version: dict[str, Any], pages: list[dict[str, Any]] | None = None
                         "rewriteTargetPage": version.get("_rewritePageNumber") if instruction else None})
         context["repairFindings"] = [item for item in version.get("_repairIssues", [])
                                      if item.get("page") in {page["page"] for page in pages}]
+        context["suiteOutline"] = [
+            {key: entry.get(key, "") for key in ("page", "title", "focus", "archetype", "visualAngle")}
+            for entry in version.get("outline", [])
+        ]
         prompt = (
-            "Write complete, distinct image-generation instructions for ONLY the requested outline pages. Return {pages:[...]}. "
-            "Each page must include page,section,localIndex,title,focus,headline,archetype,modelPrompt. "
-            "modelPrompt is the full original per-page prompt, not a plan summary: specify exact composition, focal product, "
+            "Write complete, distinct, provider-ready image-generation instructions for ONLY the requested outline pages. Return {pages:[...]}. "
+            "Each page must include page,section,localIndex,title,focus,headline,archetype,modelPrompt,copyLabels,"
+            "evidence,scene,pose,composition,visualTreatment. copyLabels is an array of exact approved short target-language labels "
+            "(normally0-2; a pain-grid/comparison/product-info page may use up to4). No extra visible text in modelPrompt. "
+            "modelPrompt is a concise final rendering brief, not a plan summary or marketing essay: start from the exact current product and one page objective, then specify exact composition, focal product, "
             "reference identity, props/model actions, local setting, colours, typography, visible local-language copy, "
             "information hierarchy and graphics appropriate to its sales goal. Keep the master art direction and assigned focus "
             "without forcing all pages into one layout. Do not repeat the entire master prompt in every page. "
             "Keep page numbers, sections and canonical page archetypes assigned in the outline. "
+            "Use suiteOutline to avoid duplicating another page's sales job or visualAngle across batches. "
+            "If the assigned headline is empty, write one natural short target-language headline for this page; otherwise keep the assigned headline exactly. "
+            "evidence must name a visible supplied fact, never a made-up proof. Keep scene/pose empty for a studio still life "
+            "that does not need people; do not force hands onto packaging/details/food macro shots. "
             "Use the rewrite request only for rewriteTargetPage, never another page in the same batch, "
             "without changing product facts or the response schema. "
             "When repairFindings are present, address the specific reviewed defect for that page; retain the supplied "
             "facts, source binding and strong COD visual style. Do not replace the master direction or copy a sibling page. "
-            "Aim for300-700 Chinese characters of instruction per modelPrompt, plus the short visible local-language copy. "
+            "Aim for180-480 Chinese characters of instruction per modelPrompt, plus one short headline and the exact copyLabels. "
+            "Keep a non-empty headline identical to the assigned outline headline unless this is an explicit rewrite/repair. "
+            "The prompt must be usable when pasted into a single-image tool: do not ask for a full suite, contact sheet, webpage, animation or blank template. "
+            "Only the quoted target-language copy may appear as artwork text; Chinese planning prose, page numbers, filenames and reference-image words must stay invisible. "
+            "Do not add generic slogans, unrelated benefits, long paragraphs, invented specifications, prices, certifications, reviews or medical outcomes. "
             "Return every requested page, and no pages outside this batch."
         )
     user_text = prompt + "\nCURRENT_PRODUCT_DATA_JSON:\n" + json.dumps(context, ensure_ascii=False)
@@ -523,7 +571,10 @@ def _messages(version: dict[str, Any], pages: list[dict[str, Any]] | None = None
 
 
 def _hook_messages(version: dict[str, Any], sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    context = {"form": version["form"], "masterPrompt": version["masterPrompt"], "requestedHookSources": sources}
+    effective_form = planning_form(version["form"])
+    context = {"form": effective_form, "masterPrompt": version["masterPrompt"], "requestedHookSources": [
+        {**source, "source": effective_form["points"][source["sourcePointIndex"] - 1]} for source in sources
+    ]}
     context["repairFindings"] = [item for item in version.get("_repairIssues", []) if item.get("field") == "hooks"
                                 and (not item.get("sourcePointIndex") or
                                      item["sourcePointIndex"] in {source["sourcePointIndex"] for source in sources})]
@@ -640,7 +691,7 @@ def _review_worker(owner: str, project_id: str, revision: int, run_id: str, sett
                 _write(owner, document)
             settings.pop("_lastDirectorCall", None)
             content, latency = _backend().invoke_ai_director_chat(settings, _review_messages(version, pages, hooks, global_review=global_review, image_url=image_url))
-            raw = _backend().parse_ai_director_json(content)
+            raw = _parse_director_json(content, repair=True)
             issues = normalize_ai_issues(raw, allowed_pages={item["page"] for item in pages},
                                          allowed_hook_sources={version["form"]["points"].index(item["source"]) + 1 for item in hooks},
                                          global_allowed=global_review)
@@ -760,8 +811,13 @@ def _generation_worker(owner: str, project_id: str, revision: int, run_id: str, 
             image_url = _backend().ai_director_reference_data_url(sheet)
         if not version["masterPrompt"] or not version["outline"]:
             content, latency = _backend().invoke_ai_director_chat(settings, _messages(version, image_url=image_url))
-            raw = _backend().parse_ai_director_json(content)
-            planned = normalize_outline(raw, version["form"])
+            # A large outline can be fenced or end one delimiter early.  Repair
+            # only the JSON envelope; normalize_outline still rejects missing
+            # pages and fields so malformed plans cannot be saved.
+            raw = _parse_director_json(content, repair=True)
+            if isinstance(raw, dict) and not str(raw.get("masterPrompt") or "").strip():
+                raw["masterPrompt"] = _fallback_master_prompt(version["form"])
+            planned = normalize_outline(raw, version["form"], allow_empty_hooks=True, allow_incomplete_pages=True)
             with _LOCK:
                 active = _active_document(owner, project_id, revision, run_id)
                 if not active:
@@ -798,7 +854,7 @@ def _generation_worker(owner: str, project_id: str, revision: int, run_id: str, 
                 current["updatedAt"] = _now()
                 _write(owner, document)
             content, latency = _backend().invoke_ai_director_chat(settings, _hook_messages(version, sources))
-            response = _backend().parse_ai_director_json(content)
+            response = _parse_director_json(content, repair=True)
             raw_hooks = response.get("hooks", [])
             if not isinstance(raw_hooks, list):
                 raise ValueError("AI 返回的钩子不是数组；已完成内容已保存。")
@@ -840,7 +896,7 @@ def _generation_worker(owner: str, project_id: str, revision: int, run_id: str, 
                 item["page"] == version.get("_rewritePageNumber") for item in batch
             ) else ""
             content, latency = _backend().invoke_ai_director_chat(settings, _messages(version, batch, instruction, image_url))
-            response = _backend().parse_ai_director_json(content)
+            response = _parse_director_json(content, repair=True)
             raw_pages = response.get("pages", response.get("suitePages", []))
             if not isinstance(raw_pages, list):
                 raise ValueError("AI 返回的分批页面不是数组；已完成内容已保存。")

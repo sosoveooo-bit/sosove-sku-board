@@ -3,6 +3,7 @@ VERSION = 'selected-market-v1-20260912'
 
 # Production suggestions, not mandatory landmarks, ethnic attributes or product facts.
 SCENES = {
+    'CN': ('a contemporary apartment kitchen in mainland China', 'a neighborhood cafe in mainland China', 'an everyday workplace in mainland China'),
     'KR': ('a contemporary Korean apartment kitchen', 'a Korean neighborhood cafe', 'a Korean everyday workplace'),
     'JP': ('a Japanese apartment with practical compact storage', 'a Japanese neighborhood cafe', 'a Japanese everyday office'),
     'US': ('a US home kitchen with everyday household storage', 'a US neighborhood cafe', 'a US everyday workplace'),
@@ -24,6 +25,7 @@ SCENES = {
     'ID': ('a contemporary Indonesian home with practical everyday furnishings', 'an Indonesian neighborhood cafe', 'an Indonesian everyday workplace'),
 }
 COPY = {
+    'CN': 'Natural Simplified Chinese with vocabulary for mainland China; do not use Traditional Chinese, Japanese or Korean marketing copy.',
     'KR': 'Natural Korean copy with correct Hangul.', 'JP': 'Natural Japanese copy with correct kana and kanji.',
     'US': 'US English spelling and phrasing.', 'GB': 'UK English spelling and phrasing.',
     'DE': 'Natural German with correct umlauts and capitalization.', 'HU': 'Natural Hungarian with correct accents.',

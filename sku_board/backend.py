@@ -32,6 +32,9 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from shopline_monitor.backend import ShoplineClient, load_local_env_files
 from sku_board import jp25_creative
+from sku_board import jp25_workbench
+from sku_board import jp25_art_direction
+from sku_board import jp25_source
 from sku_board import cod_content
 from sku_board import cod_main_density
 from sku_board import cod_copy_locale
@@ -6353,6 +6356,11 @@ def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[s
                 "stream": False,
                 "max_tokens": max_output_tokens,
                 **({"response_format": {"type": "json_object"}} if settings.get("_jsonObject") else {}),
+                # The local gateway defaults DeepSeek to high thinking. For
+                # JP25 this can consume the whole 6,500-token plan allowance
+                # without emitting a single character of the required JSON.
+                **({"thinking": {"type": "disabled"}}
+                   if settings.get("_jp25CreativePlanning") and model.lower().startswith("deepseek") else {}),
             },
             timeout=(connect_timeout, read_timeout),
         )
@@ -6385,7 +6393,13 @@ def invoke_ai_director_chat_once(settings: dict[str, Any], messages: list[dict[s
         raise ValueError(f"AI 导演返回了非 JSON 内容：{limited_text(response.text, limit=300)}") from exc
     choices = body.get("choices") if isinstance(body, dict) else None
     settings['_responseFinishReason'] = choices[0].get('finish_reason') if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
-    return ai_director_message_text(body), latency_ms
+    content = ai_director_message_text(body)
+    if not content.strip():
+        detail = "（输出额度已耗尽）" if settings['_responseFinishReason'] == 'length' else ""
+        raise ValueError("AI 导演没有返回方案正文" + detail)
+    if settings.get("_jp25CreativePlanning") and settings['_responseFinishReason'] == 'length':
+        raise ValueError("AI 导演方案正文被输出额度截断，未返回完整 JSON")
+    return content, latency_ms
 
 
 class DirectorBudgetExhausted(ValueError):
@@ -7850,10 +7864,10 @@ AI_IMAGE_SUITE_COUNT = 25
 AI_IMAGE_SUITE_SIZE = "1500x2000"
 AI_IMAGE_SUITE_BRIEF_LIMIT = 64000
 AI_IMAGE_DIRECTOR_BRIEF_LIMIT = 48000
-AI_IMAGE_SUITE_PLAN_VERSION = "director-v34-no-page1-bitmap-unique-routes"
+AI_IMAGE_SUITE_PLAN_VERSION = jp25_art_direction.PLAN_VERSION
 # Bump only the JP25 cache scope when page-routed originals/briefs change.  Other
 # suites continue to reuse their existing analysis cache and rendering contract.
-AI_IMAGE_JP25_REFERENCE_BRIEF_VERSION = "jp25-page-reference-brief-v6-online-photography"
+AI_IMAGE_JP25_REFERENCE_BRIEF_VERSION = jp25_art_direction.BRIEF_VERSION
 AI_IMAGE_PROVIDER_PROMPT_LIMIT = 64000
 AI_IMAGE_JP_COMPANY_PROMPT_LIMIT = AI_IMAGE_PROVIDER_PROMPT_LIMIT
 AI_IMAGE_COD_COMPANY_PROMPT_LIMIT = 22000
@@ -8020,6 +8034,17 @@ AI_IMAGE_SUITE_CONFIGS = {
     },
 }
 AI_IMAGE_COD_COUNTRY_PROFILES = {
+    "CN": {
+        "code": "CN",
+        "label": "中国",
+        "language": "Simplified Chinese used in mainland China",
+        "visibleLanguage": "简体中文",
+        "marketStyle": "clear Chinese ecommerce design with strong product benefits, readable comparison evidence and practical everyday lifestyle photography",
+        "palette": "warm white, soft gray and charcoal with restrained red and golden-yellow accents",
+        "scene": "contemporary homes, apartments, offices and category-appropriate everyday environments in mainland China",
+        "model": "natural Chinese consumers with realistic skin, contemporary local clothing and relaxed everyday gestures",
+        "platforms": "Taobao, Tmall, JD.com, Pinduoduo, Douyin",
+    },
     "KR": {
         "code": "KR",
         "label": "韩国",
@@ -9160,6 +9185,8 @@ AI_IMAGE_SUITE_PLAN_FIELDS = (
     "codCopyPolicy",
     "codCopyPolicyVersion",
     "photographyPlanSource",
+    "jp25DesignVersion",
+    "jp25ArtDirection",
     "companyPointRoute",
     "promptGlobalConstraints",
     # A product-specific page prompt authored by the configured AI Director.
@@ -12869,7 +12896,7 @@ def normalize_ai_image_suite_plan(value: Any, suite_count: int = AI_IMAGE_SUITE_
                     AI_IMAGE_SOURCE_DESCRIPTION_LIMIT
                     if field in {"focus", "focusDescription", "sellingPoint", "promptGlobalConstraints"}
                     else 2400
-                    if field in {"objective", "evidence", "scene", "pose", "poseFingerprint", "composition", "visualTreatment", "impactTreatment", "displayEffect"}
+                    if field in {"objective", "evidence", "scene", "pose", "poseFingerprint", "composition", "visualTreatment", "impactTreatment", "displayEffect", "jp25ArtDirection"}
                     else 1600
                     if field in {"variantDirective", "sceneAngleDirective", "marketLocalization"}
                     else AI_IMAGE_SOURCE_TITLE_LIMIT
@@ -13057,6 +13084,11 @@ AI_IMAGE_JP_SOURCE_COMPLETE_SUPPORT_POINTS: tuple[dict[str, str], ...] = (
 def extract_ai_image_jp_source_points(base_prompt: str, brief: str) -> list[dict[str, Any]]:
     """Return only literal user-provided JP25 points, without planner fallbacks."""
     extracted = extract_ai_image_suite_points(brief) or extract_ai_image_suite_points(base_prompt)
+    japanese_sections = jp25_source.structured_points(brief or base_prompt)
+    if japanese_sections:
+        # JP headings, numbered paragraphs and middle-dot bullets form records.
+        # Preserve any separately parsed authority section as well.
+        extracted = [*japanese_sections, *(p for p in extracted if p.get("sourceType") == "authority")]
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in extracted[:AI_IMAGE_SUITE_SOURCE_POINT_LIMIT]:
@@ -13066,7 +13098,7 @@ def extract_ai_image_jp_source_points(base_prompt: str, brief: str) -> list[dict
             clean_ai_image_suite_text(part, AI_IMAGE_SOURCE_TITLE_LIMIT).strip(" 、，,。；;|/")
             for part in re.split(r"\s*(?:、|；|;|\||/)\s*", raw_title)
         ]
-        multiple_titles = len([part for part in title_values if part]) > 1
+        multiple_titles = not re.search(r"[ぁ-んァ-ヶー]", raw_title) and len([part for part in title_values if part]) > 1
         if not multiple_titles:
             title_values = [raw_title]
         for title_value in (part for part in title_values if part):
@@ -14760,7 +14792,7 @@ def build_ai_image_suite_prompts(
                     f"[Shared local art direction] {profile['marketStyle']}. Use a unified palette of {profile['palette']}. Keep the page bright, rich and conversion-focused, not dark, generic or empty. Use category-appropriate props and results rather than assuming a kitchen, fashion or beauty product.",
                     f"[Cross-image consistency] First inspect reference image 1 to identify the actual product category, shape, parts, color, materials, proportions, controls, connections, packaging and visible branding. Then inspect every supplied reference image to identify every documented color/spec variation. Keep that exact product identity across all {suite_count} images. Keep the same local market quality, product family and photographic grade while deliberately changing scene, camera and action. Reference image 1 remains the primary identity anchor and product accuracy overrides decorative ideas.",
                     style_anchor_rule,
-                    f"[Localized copy discipline] Visible copy must use {profile['language']} only. Use one short localized headline and no more than {microcopy_limit} short localized labels. Prefer icons, arrows, static step numbers, comparison dividers and category-appropriate labels over paragraphs. Do not render Chinese planning text inside the image unless the selected market itself uses Traditional Chinese.",
+                    f"[Localized copy discipline] Visible copy must use {profile['language']} only. Use one short localized headline and no more than {microcopy_limit} short localized labels. Prefer icons, arrows, static step numbers, comparison dividers and category-appropriate labels over paragraphs. Do not render internal planning instructions inside the image. Chinese selling copy is permitted only for a selected Chinese-language market, using its required Simplified or Traditional script.",
                     no_added_marks_rule,
                     "[Full-bleed requirement] Fill the entire 750x1000 canvas with designed background, photography and information zones. No white outer margin, no blank band, no empty border, no floating image.png on a white page and no unused bottom area.",
                     "[COD selling-point execution] Treat every source-provided selling point as required visual direction. Retain its original semantic goal in the headline, callout, icon cue, comparison, result proof, structure macro, expert-style context or local-use scene. Use bold, dramatic but product-specific storytelling; do not delete a provided selling point or replace it with generic material language.",
@@ -17498,6 +17530,7 @@ def ai_image_jp_company_remote_authored_execution_prompt(
     blocks = [
         f"[COMPANY JAPAN ECOMMERCE EXECUTION] Create one finished Page {page_number} of {suite_count} Japanese {'fashion' if is_fashion_product else 'product'} ecommerce image, vertical {page_value.get('size') or AI_IMAGE_SUITE_SIZE}. Think as the photographer viewing the completed frame.",
         ai_image_jp_company_authored_prompt_instruction(page_value),
+        jp25_art_direction.execution_instruction(page_value),
         "[SECOND-PASS REMOTE EXECUTION — highest photography priority] The online product/reference analysis and page-specific seven-layer brief are the primary positive execution. " + remote_verification,
         "[JP25 source-complete mode] Preserve the complete current-page source point and all prompt-wide requirements; visual polish may not compress, merge or replace them.",
         AI_IMAGE_USER_PROMPT_FIDELITY_LOCK,
@@ -18795,6 +18828,7 @@ def build_ai_director_page_refinement_messages(
         shared_plan = analysis.get("_jp25PhotographyPlan") or {}
         user_text = "\n".join([
             "[JP25 online photography execution] The product/reference analysis is complete. Author each requested page as a finished photograph, coordinated with the full 25-page plan.",
+            jp25_art_direction.planning_instruction(),
             "[Immutable content] The locked page plan constrains content only. Preserve the exact product, documented variants, sourcePointVerbatim, selling point, approved Japanese copy, page identity and user-explicit requirements. The source ID binds wording and visual evidence to the same benefit. Never invent product facts, certificates, test results or source claims.",
             "[Photography ownership] Scene, camera, action, lighting, evidence presentation and layout are AI creative decisions, not frozen local presets. Follow the shared online photography plan and the user's explicit scene/action constraints; expand its choices into a precise photographer brief. Keep supplied person identity and category-correct operation. Use only reference-supported product views.",
             "[Product analysis]\n" + json.dumps({
@@ -19558,6 +19592,8 @@ def build_ai_director_jp25_compact_analysis_messages(
             "page": int(number(page.get("page"), 0)),
             "type": clean_ai_image_suite_text(page.get("sourcePointType"), 40),
             "title": clean_ai_image_suite_text(page.get("focusTitle"), 220),
+            "kind": clean_ai_image_suite_text(page.get("sourcePointKind"), 20),
+            "completeSource": normalize_ai_image_source_contract_text(page.get("sourcePointVerbatim")),
         }
         for page in base_pages
         if int(number(page.get("sourcePointIndex"), 0)) > 0
@@ -19569,6 +19605,8 @@ def build_ai_director_jp25_compact_analysis_messages(
                 "page": 0,
                 "type": clean_ai_image_suite_text(point.get("sourceType"), 40),
                 "title": clean_ai_image_suite_text(point.get("title"), 220),
+                "kind": clean_ai_image_suite_text(point.get("kind"), 20),
+                "completeSource": normalize_ai_image_source_contract_text(point.get("sourceVerbatim")),
             }
             for index, point in enumerate(source_points, start=1)
         ]
@@ -19649,7 +19687,7 @@ def build_ai_director_jp25_compact_analysis_messages(
             ),
             f"Return exactly {reference_total} referenceBreakdown records in numeric order. Keep each product/useAs/exclude field under 16 words.",
             "Return productSummary under 55 words. Extract observable colors, exact shape/construction, material and label anchors. Keep referenceAnalysis fields under 45 words.",
-            "Return every supplied source point across mainSellingPoints then secondarySellingPoints in source order. Use a concise natural Japanese title, description under 16 words, at most two labels and one concrete visual evidenceDirection per point. Preserve already supplied Japanese wording.",
+            "Return every supplied source point across mainSellingPoints then secondarySellingPoints in source order and according to its kind. Japanese punctuation inside a sentence is never an extra source point. Use a concise natural Japanese title, description under 16 words, at most two useful labels and one concrete visual evidenceDirection per point. Preserve already supplied Japanese wording when explicitly designated as exact visible copy. If the source is an explanatory paragraph, write a compact headline as its reading entry point while preserving the complete source meaning, numbers and conditions in the visual evidence; never use a generic slogan instead of the specific benefit.",
             "For each supplied source point, return sourcePointIndex equal to its exact index in the source claim themes above. Keep its Japanese title, labels and evidenceDirection together under that ID. Never renumber IDs, reuse an ID, or move another point into an omitted point's position. Use 0 only for image-derived points when there are no supplied source themes.",
             "For source-supplied authority themes, retain the statement as provided content; extra official logos, certificate files, registration numbers and named identities require an uploaded bitmap.",
             (
@@ -21188,6 +21226,60 @@ def review_ai_image_suite(fields: dict[str, Any], files: dict[str, Any], actor: 
             "message": "成图质检已移除，直接保留生成结果"}
 
 
+def inspect_jp25_images(fields: dict[str, Any], files: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    """Explicit report action, independent of generation and the retired auto-review."""
+    if not can_use_ai_image(actor):
+        raise ValueError("当前账号没有图片检查权限")
+    if fields.get("suiteKey") != AI_IMAGE_LANDING_SUITE_KEY:
+        raise ValueError("此检查仅支持日本产品落地页25图")
+    try:
+        numbers = json.loads(fields.get("pageNumbers", "[]"))
+        pages = json.loads(fields.get("suitePlan", "[]"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("检查页码或方案格式错误") from exc
+    if (not isinstance(numbers, list) or not 1 <= len(numbers) <= 5
+            or any(type(n) is not int or not 1 <= n <= 25 for n in numbers)
+            or len(set(numbers)) != len(numbers)):
+        raise ValueError("每批检查需要1–5个不同的页码")
+    if not isinstance(pages, list) or any(not isinstance(p, dict) for p in pages):
+        raise ValueError("请提供当前逐页方案")
+    visual_check = truthy(fields.get("visualCheck"), False)
+    selected = [p for p in pages if type(p.get("page")) is int and p["page"] in numbers]
+    if visual_check and (len(selected) != len(numbers) or {p.get("page") for p in selected} != set(numbers)):
+        raise ValueError("检查页码与当前方案不匹配")
+    expected = {f"generated{i}" for i in range(len(numbers))}
+    if {k for k in files if k.startswith("generated")} != expected:
+        raise ValueError("检查图片数量与页码不匹配")
+    config = jp25_workbench.normalize(fields.get("jp25Workbench"))
+    images = [read_ai_image_upload(files[f"generated{i}"], "待检查成图") for i in range(len(numbers))]
+    references = [read_ai_image_upload(files[f"reference{i}"], "原始参考图")
+                  for i in range(16) if f"reference{i}" in files]
+    rows = jp25_workbench.inspect_images(images, numbers)
+    result = {"ok": True, "version": jp25_workbench.VERSION, "results": rows,
+              "checkedAt": now_iso(), "visualChecked": False, "warning": ""}
+    if not visual_check:
+        return result
+    settings = load_ai_director_settings()
+    public = public_ai_director_settings(settings)
+    if not references or not all(public.get(k) for k in ("enabled", "configured", "visionEnabled")):
+        result["warning"] = "仅完成尺寸与重复检查；请附上原图并启用支持识图的导演模型后再做视觉检查"
+        return result
+    try:
+        bindings = normalize_ai_image_reference_bindings(fields.get("referenceBindings"), len(references))
+        roles = {int(b["index"]): b.get("role", "auto") for b in bindings}
+        messages = jp25_workbench.review_messages(
+            selected, [(f"Image {i} [{roles.get(i, 'auto')}] {ref[0]}", ai_director_reference_data_url(ref))
+                       for i, ref in enumerate(references, 1)],
+            [(page, ai_director_reference_data_url(img)) for page, img in zip(numbers, images)], config)
+        content, latency = invoke_ai_director_chat_once(settings, messages)
+        jp25_workbench.merge_visual_report(rows, parse_ai_director_json(content))
+        result.update({"visualChecked": True, "model": public["model"], "latencyMs": latency})
+    except Exception:
+        # Never treat an unavailable model or incomplete response as a pass.
+        result["warning"] = "视觉检查未完成（模型调用失败或返回不完整），保留尺寸检查结果，可稍后重试"
+    return result
+
+
 def get_visual_agent_progress(payload: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
     if not can_use_ai_image(actor):
         raise ValueError('当前账号没有图片创作权限')
@@ -21236,6 +21328,8 @@ def plan_ai_image_suite(
         raise ValueError("不支持的落地页套图类型")
     prompt = limited_text(payload.get("prompt"), "", AI_IMAGE_PROVIDER_PROMPT_LIMIT)
     brief = limited_text(payload.get("suiteBrief"), "", AI_IMAGE_SUITE_BRIEF_LIMIT)
+    if suite_key == AI_IMAGE_LANDING_SUITE_KEY:
+        prompt = jp25_workbench.planning_brief(prompt, payload.get("jp25Workbench"))
     if not prompt and not brief:
         raise ValueError("请先填写商品卖点或创作需求")
     suite_config = ai_image_suite_config(suite_key)
@@ -21672,6 +21766,7 @@ def ai_image_jp25_plan_singleflight_key(
 ) -> str:
     source = {
         "version": AI_IMAGE_SUITE_PLAN_VERSION,
+        "workbench": {k: v for k, v in jp25_workbench.normalize(payload.get("jp25Workbench")).items() if k != "pages"},
         "prompt": text(payload.get("prompt")),
         "brief": text(payload.get("suiteBrief")),
         "model": text(load_ai_director_settings().get("model")),
@@ -24012,6 +24107,8 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         validate_ai_image_cod_hook_prompt_length(text(fields.get("prompt")))
         prompt += "\n" + ai_image_cod_hook_policy_instruction({**fields, "size": size}, prompt)
     suite_key = normalize_ai_image_suite_key(fields.get("suiteKey"))
+    if suite_key == AI_IMAGE_LANDING_SUITE_KEY:
+        prompt = jp25_workbench.planning_brief(prompt, fields.get("jp25Workbench"))
     if suite_key == AI_IMAGE_RAKUTEN_SUITE_KEY:
         size = AI_IMAGE_RAKUTEN_SIZE
     provider_render_size = ai_image_provider_render_size(suite_key, size)
@@ -24085,6 +24182,11 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
             # Validate the actual post-source-lock pages, not only the uploaded
             # plan. A changed source must be re-directed online before rendering.
             raise ValueError("本页来源卖点已更新，线上Prompt需要重新校验，请重新执行导演策划。")
+        if suite_key == AI_IMAGE_LANDING_SUITE_KEY:
+            suite_all_page_prompts = [jp25_workbench.apply_prompt(p, page, fields.get("jp25Workbench"))
+                                      for p, page in zip(suite_all_page_prompts, suite_pages)]
+            if any(len(p) > AI_IMAGE_PROVIDER_PROMPT_LIMIT for p in suite_all_page_prompts):
+                raise ValueError("逐页方案调整后过长，请精简商品、风格或逐页说明")
         page_prompts = [suite_all_page_prompts[index] for index in suite_target_indexes]
         raw_review_instruction = text(fields.get("suiteReviewInstruction"))
         review_instruction = safe_ai_director_review_instruction(raw_review_instruction)
@@ -24473,7 +24575,8 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         selected_candidate, hero_selection = select_ai_image_hero_candidate(
             images[:2],
             size,
-            suite_pages[0] if suite_pages else {},
+            jp25_workbench.effective_page(suite_pages[0], fields.get("jp25Workbench"))
+            if suite_key == AI_IMAGE_LANDING_SUITE_KEY and suite_pages else suite_pages[0] if suite_pages else {},
             reference_images,
         )
         images = [images[selected_candidate]]
@@ -24507,7 +24610,8 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         if precise_typography and images:
             images, typography_meta = apply_ai_image_suite_typography(
                 images[:count],
-                suite_pages,
+                [jp25_workbench.effective_page(page, fields.get("jp25Workbench")) for page in suite_pages]
+                if suite_key == AI_IMAGE_LANDING_SUITE_KEY else suite_pages,
                 suite_page_indexes,
                 suite_key,
                 suite_country,
@@ -24557,6 +24661,12 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
         decorate_ai_image_suite_materials(materials, suite_render_prompts or suite_all_page_prompts or page_prompts, suite_pages, suite_key, suite_page_indexes)
         if suite_key == AI_IMAGE_LANDING_SUITE_KEY:
             for material in materials:
+                effective = jp25_workbench.effective_page(suite_pages[int(material["suitePage"]) - 1], fields.get("jp25Workbench"))
+                material.update({"suiteHeadline": "" if effective.get("textPolicy") == "none" else effective.get("headline", ""),
+                                 "suiteScene": effective.get("scene", ""), "suiteObjective": effective.get("objective", "")})
+                revision = text(fields.get("jp25Revision"))
+                if re.fullmatch(r"[0-9a-f]{16}", revision):
+                    material["jp25Revision"] = revision
                 material_prompt = text(material.get("prompt"))
                 material["promptSource"] = (
                     "remote-seven-layer"
@@ -24564,6 +24674,8 @@ def generate_ad_launch_ai_image_edit(fields: dict[str, Any], files: dict[str, An
                     else "local-previsualization"
                 )
                 material["companyPromptPage"] = material["promptSource"] == "remote-seven-layer"
+                if f"[JP25 EDITORIAL FINISH {jp25_art_direction.VERSION}]" in material_prompt:
+                    material["jp25DesignVersion"] = jp25_art_direction.VERSION
         for material, generation_meta in zip(materials, suite_generation_meta):
             material.update(generation_meta)
         if use_linkfox_prompt_skill:

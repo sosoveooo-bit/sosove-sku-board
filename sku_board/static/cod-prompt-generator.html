@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>COD Prompt Atelier · 电商生图提示词</title>
     <link rel="icon" href="/static/assets/sosove-logo.jpeg" />
-    <link rel="stylesheet" href="/static/cod-prompt-generator.css?v=20260909-atelier-v11" />
+    <link rel="stylesheet" href="/static/cod-prompt-generator.css?v=20260930-uiux-v13" />
   </head>
   <body>
     <a class="skip-link" href="#prompt-workspace">跳到产品工作区</a>
@@ -187,13 +187,13 @@
               <h2 id="output-title">当前商品 · 专属提示词</h2>
             </div>
             <div class="output-actions">
-              <label class="export-choice" for="export-mode"><span>导出方式</span><select id="export-mode"><option value="compact">整套导入版</option><option value="standalone">逐张独立版</option></select></label>
+              <label class="export-choice" for="export-mode"><span>导出方式</span><select id="export-mode"><option value="standalone">逐张独立版（推荐）</option><option value="compact">整套规划版</option></select></label>
               <button class="outline-btn suite-copy-btn" id="copy-suite-btn" type="button">复制整套 Prompt</button>
               <button class="outline-btn" id="copy-master-btn" type="button">复制总控</button>
               <button class="outline-btn" id="download-btn" type="button">下载 TXT</button>
             </div>
           </div>
-          <p class="export-help" id="export-mode-help">总控与共享要求各一次，后接逐页创意，方便一次导入。</p>
+          <p class="export-help" id="export-mode-help">逐张独立版：每次复制一页，包含完整执行合同，直接粘贴到单张生图工具。</p>
 
           <div class="prompt-planning-console" aria-labelledby="prompt-progress-label">
             <div class="director-model-display" id="director-model-display" aria-live="polite">
@@ -201,6 +201,53 @@
               <strong id="director-model-value">读取已配置模型…</strong>
               <small id="director-model-source">显示实际用于本次提示词策划的模型</small>
             </div>
+            <section class="cod-director-settings" id="cod-director-settings" aria-labelledby="cod-director-settings-title">
+              <div class="cod-director-settings-head">
+                <div>
+                  <span>提示词优化 · AI DIRECTOR</span>
+                  <strong id="cod-director-settings-title">手动配置 OpenAI 兼容节点</strong>
+                </div>
+                <strong id="cod-director-config-state">读取中</strong>
+              </div>
+              <div class="cod-director-settings-grid">
+                <label>文字 API 地址
+                  <input id="cod-director-base-url" type="url" placeholder="https://example.com/v1" spellcheck="false" autocomplete="off" />
+                </label>
+                <label>超时（秒）
+                  <input id="cod-director-timeout" type="number" min="5" max="180" step="5" value="60" />
+                </label>
+                <label class="wide">优化模型
+                  <select id="cod-director-model" aria-label="选择 AI DIRECTOR 模型">
+                    <option value="deepseek-v4.1-flash" selected>deepseek-v4.1-flash</option>
+                    <option value="gpt-5.6-terra">gpt-5.6-terra</option>
+                    <option value="gpt-5.6-sol">gpt-5.6-sol</option>
+                    <option value="gemini-3-flash-agent">gemini-3-flash-agent</option>
+                    <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+                  </select>
+                </label>
+                <div class="cod-director-custom-model wide">
+                  <label for="cod-director-custom-model-input">自定义模型名称</label>
+                  <div>
+                    <input id="cod-director-custom-model-input" type="text" maxlength="120" placeholder="输入 API 提供的完整模型 ID" spellcheck="false" autocomplete="off" />
+                    <button class="outline-btn" id="cod-director-add-model-btn" type="button">添加并选用</button>
+                  </div>
+                </div>
+                <label class="wide">文字 API 密钥
+                  <input id="cod-director-api-key" type="password" placeholder="已保存密钥，留空则保持不变" autocomplete="new-password" spellcheck="false" />
+                </label>
+              </div>
+              <div class="cod-director-settings-switches">
+                <label><input id="cod-director-enabled" type="checkbox" />启用 AI 导演</label>
+                <label><input id="cod-director-vision" type="checkbox" checked />发送商品参考图分析</label>
+              </div>
+              <div class="cod-director-settings-actions">
+                <button class="outline-btn" id="cod-director-read-btn" type="button">读取模型</button>
+                <button class="outline-btn" id="cod-director-test-btn" type="button">测试连接</button>
+                <button class="render-btn render-btn-analysis" id="cod-director-save-btn" type="button">保存文字配置</button>
+              </div>
+              <small id="cod-director-settings-message">使用视频提示词面板同款的模型选项和 OpenAI 兼容配置格式；这里的模型负责分析商品和生成生图 Prompt，实际图片仍使用下方生图模型。</small>
+              <small class="cod-director-current-model">当前优化模型：<b id="cod-director-current-model">—</b></small>
+            </section>
             <small id="director-config-status">AI 提示词模型：读取中…</small>
             <div class="prompt-progress-copy">
               <strong id="prompt-progress-label" role="status" aria-live="polite">等待生成 · 总控与大纲 → 分批编写逐页 Prompt</strong>
@@ -366,6 +413,6 @@
         <span>Prompt 与成图分步操作 · 每个商品独立存档</span>
       </footer>
     </main>
-    <script src="/static/cod-prompt-generator.js?v=20260909-atelier-v11"></script>
+    <script src="/static/cod-prompt-generator.js?v=20260930-direct-v12"></script>
   </body>
 </html>

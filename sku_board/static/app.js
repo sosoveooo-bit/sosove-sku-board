@@ -246,9 +246,9 @@ const AI_IMAGE_SUITE_CONFIGS = {
     unit: "页",
     label: "日本产品落地页 25图",
     planTitle: "日本产品落地页 25图品牌导演脚本",
-    planHint: "线上读图分析 → 25页整体摄影方案 → 逐页七层Prompt → 首图母版与其余页面；产品和卖点固定，摄影与版式由AI规划",
+    planHint: "读图分析 → 可编辑25页方案 → 可选3张试样 → 继续生成；统一商品、人物与视觉风格，每页独立构图",
     templateKey: "landing",
-    planVersion: "director-v34-no-page1-bitmap-unique-routes",
+    planVersion: "director-v35-editorial-craft-source-complete",
     marketResearchVersion: "jp-market-research-2026-07-30-v1",
     promptPlaceholder: "填写产品名称、全部颜色/规格、全部卖点、权威背书和特殊要求；系统会逐项保留原意、分析全部参考图并生成固定25张日本落地页",
     resultClass: "landing",
@@ -377,6 +377,7 @@ const AI_IMAGE_SUITE_KEY_ALIASES = {
 const AI_IMAGE_COD_COUNTRIES = [
   { value: "KR", label: "韩国", language: "韩文" },
   { value: "JP", label: "日本", language: "日文" },
+  { value: "CN", label: "中国", language: "简体中文" },
   {
     value: "US",
     label: "美国",
@@ -3943,6 +3944,7 @@ function aiImageStatusText(options, conversation = {}) {
   const unit = suiteConfig?.unit || "张";
   if (conversation.status === "planning") return `${taskLabel}正在分析商品与编排分镜`;
   if (conversation.status === "planned") return `${taskLabel}方案已就绪，等待确认`;
+  if (conversation.status === "sampled") return conversation.remoteSummary?.message || "3 张试样已就绪";
   if (conversation.status === "generating") return conversation.remoteSummary?.message || `${taskLabel}生成中 ${conversation.count || 1} ${unit}`;
   if (conversation.status === "done") return `${taskLabel}已生成 ${conversation.materials?.length || 0} ${unit}`;
   if (conversation.status === "partial") return `${taskLabel}已显示 ${conversation.materials?.length || 0}/${suiteConfig?.count || conversation.count || 1} ${unit}`;
@@ -4416,6 +4418,8 @@ function aiImageSuitePlanSignature(conversation, prompt = "", intent = "") {
     size: conversation.size || "",
     directorModel: state.aiImages.director?.model || "",
     directorMode: aiImageDirectorMode(conversation),
+    ...(conversation.suiteKey === "jp-landing-page-25" && typeof JP25Workbench !== "undefined"
+      && Object.keys(JP25Workbench.globals(conversation)).length ? { jp25Locks: JP25Workbench.globals(conversation) } : {}),
     prompt: String(prompt || "").trim(),
     intent: String(intent || "").trim(),
     references,
@@ -4659,17 +4663,20 @@ function setAiImageSuiteCount(count = 22) {
 function aiImageDefaultReferenceRole(index = 0) {
   const conversation = ensureAiImageConversation();
   if (conversation.templateKey === "codHook") return "auto";
+  // The JP25 director must be able to classify a model photo and a product
+  // cutout independently.  A hard-coded first-image product role caused a
+  // model uploaded first to be sent as the garment source.  Keep the other
+  // suites' product-first default for backwards compatibility.
+  if (conversation.suiteKey === "jp-landing-page-25") return "auto";
   if (aiImageSuiteActive(conversation)) return index === 0 ? "product" : "auto";
   return ["product", "detail", "scene", "person"][index] || "layout";
 }
 
 function aiImagePrimaryUploadReferenceRole() {
-  const conversation = ensureAiImageConversation();
-  return conversation.suiteKey === "jp-landing-page-25" ? "product" : "";
+  return "";
 }
 
 function aiImageReferenceRoleKey(reference = {}, index = 0) {
-  if (index === 0 && reference?.roleScope !== "codHook") return "product";
   const key = String(reference?.role || "").trim();
   return AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === key) ? key : aiImageDefaultReferenceRole(index);
 }
@@ -4825,7 +4832,7 @@ function applyAiImageResolvedReferenceBindings(conversation, bindings = []) {
 function setAiImageReferenceRole(id, roleKey) {
   const conversation = ensureAiImageConversation();
   const referenceIndex = (conversation.referenceImages || []).findIndex((reference) => reference.id === id);
-  if (referenceIndex < 0 || (referenceIndex === 0 && conversation.templateKey !== "codHook") || !AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === roleKey)) return;
+  if (referenceIndex < 0 || (referenceIndex === 0 && conversation.templateKey === "codHook") || !AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === roleKey)) return;
   conversation.referenceImages[referenceIndex].role = roleKey;
   conversation.referenceImages[referenceIndex].roleSource = roleKey === "auto" ? "auto" : "manual";
   invalidateAiImageCodHookProductAnalysis(conversation);
@@ -4887,7 +4894,7 @@ function renderAiImageReferences() {
           <b>${esc(mode === "inpaint" ? "原图" : aiImageReferenceRoleLabel(roleKey))}</b>
           <span>${esc(item.name || "参考图")}</span>
           ${mode !== "inpaint" ? `
-            ${(suiteActive && index > 0) || codHookActive ? `
+            ${suiteActive || codHookActive ? `
               <details class="ai-image-reference-correction">
                 <summary>${esc(roleKey === "auto" ? "AI自动识别 · 可选纠正" : codHookActive && item.roleSource === "manual" ? `人工指定：${aiImageReferenceRoleLabel(roleKey)} · 可纠正` : `已识别：${aiImageReferenceRoleLabel(roleKey)} · 可纠正`)}</summary>
                 <select data-ai-reference-role="${esc(item.id)}" aria-label="${esc(item.name || `参考图 ${index + 1}`)}的用途">
@@ -4942,10 +4949,7 @@ function addAiImageReferences(files = [], options = {}) {
   selected.slice(0, room).forEach((file) => {
     const index = current.length;
     const requestedRoleIsValid = requestedRole && AI_IMAGE_REFERENCE_ROLES.some((role) => role.key === requestedRole);
-    const suitePrimaryUpload = aiImageSuiteActive(conversation) && requestedRole === "product";
-    const assignedRole = requestedRoleIsValid && !(suitePrimaryUpload && index > 0)
-      ? requestedRole
-      : aiImageDefaultReferenceRole(index);
+    const assignedRole = requestedRoleIsValid ? requestedRole : aiImageDefaultReferenceRole(index);
     current.push({
       id: `ref-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       file,
@@ -5200,7 +5204,7 @@ function aiImageErrorDiagnosis(message = "") {
       actions: ['retry'],
     };
   }
-  if (lower.includes('ai 策划') || lower.includes('directorbudgetexhausted') || lower.includes('导演响应超时') || lower.includes('策划进度已保存')) {
+  if (lower.includes('ai 策划') || lower.includes('ai 导演') || lower.includes('七层prompt') || lower.includes('directorbudgetexhausted') || lower.includes('导演响应超时') || lower.includes('策划进度已保存')) {
     return {
       title: lower.includes('时限') || lower.includes('进度已保存') ? 'AI 策划待续接' : 'AI 策划尚未完成',
       reason: '这是分析或提示词策划阶段，不是图片生成节点故障；已完成阶段和页面会保留。',
@@ -5562,6 +5566,13 @@ function renderVisualAgentMonitor(conversation){
   return `${renderAgentDecisionCards(d,conversation.suitePages||[])}<section class="ai-image-alert" style="display:block"><h3>AI 电商视觉团队</h3><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:16px">${stages.map(([id,name])=>`<div><b>${name}</b><br><small>${esc(labels[d.stages?.[id]?.status]||'待开始')}</small></div>`).join('')}<div><b>图片生成</b><br><small>${(conversation.materials||[]).length} 张已返回</small></div></div><p>${esc(d.productSummary||'产品分析结果会独立保存，后续策划复用。')}</p><p>${d.productCacheHit?'产品分析：缓存命中，无需重复分析图片。':'产品分析：首次完成即持久保存。'} 独立 Prompt：${ready}/${count}</p>${d.strategy?`<details><summary>商品策略</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(d.strategy,null,2))}</pre></details>`:''}${d.creativeDirection?`<details><summary>视觉导演方案</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(d.creativeDirection,null,2))}</pre></details>`:''}${d.creativePassWarning||d.error?`<p>${esc(d.creativePassWarning||d.error)}</p>`:''}<small>逐页独立设计 · 保留产品一致性 · 沿用原生图节点 · 生成后不追加 AI 分析</small></section>`;
 }
 
+function aiImageCurrentSuiteMaterials(conversation = {}) {
+  const materials = conversation.materials || [];
+  if (!JP25Workbench.active(conversation)) return materials;
+  if (!conversation.suitePlanSignature || conversation.suitePlanVersion !== aiImageSuiteConfig(conversation)?.planVersion) return [];
+  return materials.filter(material => JP25Workbench.current(conversation, material));
+}
+
 function renderAiImageDirectorMonitor(conversation = {}) {
   if(conversation.director?.visualPipelineVersion==='cod-visual-agents-v1')return renderVisualAgentMonitor(conversation);
   const suiteConfig = aiImageSuiteConfig(conversation);
@@ -5581,7 +5592,7 @@ function renderAiImageDirectorMonitor(conversation = {}) {
   const summary = conversation.remoteSummary || {};
   const review = conversation.review || {};
   const pageStates = summary.pageStates || {};
-  const completedPages = new Set((conversation.materials || [])
+  const completedPages = new Set(aiImageCurrentSuiteMaterials(conversation)
     .map((material) => Number(material.suitePage || 0))
     .filter((page) => page >= 1 && page <= suiteConfig.count));
   const stateEntries = Object.entries(pageStates);
@@ -5606,7 +5617,7 @@ function renderAiImageDirectorMonitor(conversation = {}) {
     : health.status === "error"
     ? "服务连接异常"
     : "等待服务检测";
-  const statusTone = conversation.status === "done"
+  const statusTone = conversation.status === "done" && completeCount === suiteConfig.count
     ? "ready"
     : conversation.status === "error"
     ? "danger"
@@ -5617,10 +5628,10 @@ function renderAiImageDirectorMonitor(conversation = {}) {
     : "waiting";
   const statusLabel = {
     ready: `${suiteConfig.count} 图监控完成`,
-    danger: "发现生成异常",
+    danger: jpCreativeDirector && conversation.director?.stage === "prompt" ? "策划尚未完成" : "发现生成异常",
     active: "导演监控运行中",
     warning: "套图尚未完整",
-    waiting: planReady ? "导演脚本已就绪" : "等待开始策划",
+    waiting: conversation.status === "sampled" ? "试样已就绪，可继续生成" : planReady ? "导演脚本已就绪" : "等待开始策划",
   }[statusTone];
   const firstRole = conversation.suitePages?.[0]?.role || (detailSuite ? "商品介绍" : "第 1 图");
   const lastRole = conversation.suitePages?.[suiteConfig.count - 1]?.role || (detailSuite ? "产品信息收尾" : "品牌收尾");
@@ -5914,7 +5925,7 @@ function renderAiImageDirectorMonitor(conversation = {}) {
         hint: "每个模块明确 Visual / Content / Position / Weight / Container",
       },
       {
-        tone: companyEffectSuite || suiteConfig.planVersion === "director-v34-no-page1-bitmap-unique-routes" ? "ready" : "waiting",
+        tone: companyEffectSuite || suiteConfig.planVersion === "director-v35-editorial-craft-source-complete" ? "ready" : "waiting",
         label: companyEffectSuite && !jpCreativeDirector ? "平台内容 Prompt 执行" : "逐字卖点 Prompt 执行",
         value: companyEffectSuite && !jpCreativeDirector ? "模块内容合同 · 独立摄影 Brief" : "原文卖点合同 · 单页最高 64000 字符",
         hint: suiteConfig.key === "cod-country-landing-30"
@@ -6035,7 +6046,7 @@ function renderAiImageDirectorMonitor(conversation = {}) {
         <div class="ai-image-director-progress">
           <div>
             <strong>${completeCount}/${suiteConfig.count}</strong>
-            <span>模块已完成</span>
+            <span>${jpCreativeDirector ? "当前方案图片已完成" : "模块已完成"}</span>
           </div>
           <div class="ai-image-generation-progress" aria-label="${esc(monitorAriaLabel)}进度">
             <i style="width:${progress}%"></i>
@@ -6071,11 +6082,17 @@ function renderAiImageDirectorMonitor(conversation = {}) {
 
 function renderAiImageRecoveryBlock(conversation = {}) {
   const summary = conversation.remoteSummary || {};
-  if (conversation.status === "generating") return "";
+  if (["generating", "sampled"].includes(conversation.status)) return "";
   if (!aiImageSuiteActive(conversation) || (!summary.succeeded && !summary.running && !summary.failed)) return "";
   const suiteConfig = aiImageSuiteConfig(conversation);
   const suiteCount = suiteConfig.count;
   const suiteUnit = suiteConfig.unit;
+  const currentCount = aiImageCurrentSuiteMaterials(conversation).length;
+  if (JP25Workbench.active(conversation) && currentCount < (conversation.materials || []).length && !Number(summary.running || 0)) {
+    return `<div class="ai-image-alert partial"><div><strong>历史图片已保留</strong>
+      <p>已保留 ${conversation.materials.length} 张图片；当前方案已完成 ${currentCount}/${suiteCount} 张。</p>
+      <small>旧图片不计入当前方案进度；完成策划后可试样或继续生成。</small></div></div>`;
+  }
   const succeeded = Number(summary.succeeded || conversation.materials?.length || 0);
   const running = Number(summary.running || 0);
   const failed = Number(summary.failed || 0);
@@ -6327,15 +6344,19 @@ function renderAiImageResults() {
       </article>
     `
     : "";
-  const errorBlock = conversation.status === "error" ? renderAiImageErrorBlock(conversation.error || "请稍后重试", conversation) : "";
+  const errorMessage = conversation.error || (JP25Workbench.active(conversation) && conversation.director?.status === "warning"
+    ? `AI 策划尚未完成：${conversation.director.warning || conversation.director.message || "请继续策划"}` : "请稍后重试");
+  const errorBlock = conversation.status === "error" ? renderAiImageErrorBlock(errorMessage, conversation) : "";
   const recoveryBlock = renderAiImageRecoveryBlock(conversation);
   const directorMonitorBlock = renderVisualAgentDesignUpgrade(conversation)+renderAiImageDirectorMonitor(conversation);
   const hookProductAnalysisBlock = renderAiImageCodHookProductAnalysis(conversation);
   const factAuditBlock = renderAiImageFactAudit(conversation);
+  const jp25Block = JP25Workbench.render(conversation);
   const suitePlanBlock = renderAiImageSuitePlan(conversation);
   const restoreNoticeBlock = conversation.restoreNotice ? `<div class="ai-image-alert"><div><strong>任务进度已恢复</strong><p>${esc(conversation.restoreNotice)}</p></div></div>` : "";
   if (!materials.length && conversation.status !== "generating") {
     container.innerHTML = `
+      ${jp25Block}
       ${promptBlock}
       ${errorBlock}
       ${recoveryBlock}
@@ -6368,6 +6389,7 @@ function renderAiImageResults() {
     `
     : "";
   container.innerHTML = `
+    ${jp25Block}
     ${promptBlock}
     ${errorBlock}
     ${recoveryBlock}
@@ -6959,6 +6981,7 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
   formData.append("suiteBrief", effectiveIntent);
   formData.append("size", conversation.size);
   formData.append("suiteKey", conversation.suiteKey);
+  if (JP25Workbench.active(conversation)) formData.append("jp25Workbench", JSON.stringify(conversation.jp25Workbench || {}));
   formData.append("suiteCount", String(suiteConfig.count));
   formData.append("suiteCountry", conversation.suiteCountry || "KR");
   formData.append("useDirector", "true");
@@ -6983,6 +7006,7 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
     role: aiImageReferenceRoleKey(reference, index),
   }))));
   conversation.status = "planning";
+  conversation.error = "";
   conversation.director = {
     source: "pending", status: "running", cacheHit: false, stage: "cache", stageIndex: 0,
     message: "正在读取产品分析缓存",
@@ -7097,12 +7121,13 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
     ].includes(conversation.suiteKey);
     if (requiresRemoteCompanyPrompt) {
       conversation.status = "error";
+      conversation.error = `AI 策划失败：${error.message || "导演服务未返回可用方案"}`;
       conversation.director = {
         ...(conversation.director || {}),
         source: "pending",
         status: "warning",
-        stage: "complete",
-        stageIndex: AI_IMAGE_DIRECTOR_STAGES.length - 1,
+        stage: "prompt",
+        stageIndex: Math.max(0, AI_IMAGE_DIRECTOR_STAGES.length - 2),
         message: "线上七层Prompt策划中断",
         warning: error.message,
       };
@@ -7185,6 +7210,12 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
       conversation.suitePages = payload.suitePages;
       conversation.suitePlanVersion = payload.suitePlanVersion || suiteConfig.planVersion;
       conversation.suitePlanSignature = "";
+      const planningCause = payload.director?.warning || payload.director?.creativePassWarning || "";
+      conversation.error = `AI 策划尚未完成：线上七层Prompt ${companyPromptStatus.readyCount}/${suiteConfig.count} 页`
+        + (planningCause ? `；${planningCause}` : `；待完成页：${missingText || "全部"}`);
+      conversation.director.stage = "prompt";
+      conversation.director.stageIndex = Math.max(0, AI_IMAGE_DIRECTOR_STAGES.length - 2);
+      conversation.director.warning = planningCause || conversation.director.warning;
       syncAiImageStateFromConversation(conversation);
       renderAiImageSidebar();
       renderAiImageResults();
@@ -7213,7 +7244,7 @@ async function prepareAiImageSuitePlan(conversation, prompt, effectiveIntent) {
     running: 0,
     failed: 0,
     partial: true,
-    message: `${suiteConfig.planTitle}已完成${conversation.director?.source === "model" ? ` · ${conversation.director.model}` : conversation.director?.source === "cache" ? " · 产品缓存" : " · 本地规则"}，准备生成第1${suiteConfig.unit}视觉母版`,
+    message: `${suiteConfig.planTitle}已完成${conversation.director?.source === "model" ? ` · ${conversation.director.model}` : conversation.director?.source === "cache" ? " · 产品缓存" : " · 本地规则"}${conversation.suiteKey === "jp-landing-page-25" ? "，可选择试样或生成整套" : `，准备生成第1${suiteConfig.unit}视觉母版`}`,
   };
   conversation.updatedAt = new Date().toISOString();
   syncAiImageStateFromConversation(conversation);
@@ -7564,7 +7595,7 @@ function aiImageUsesVisualAgents(conversation) {
     || conversation.suitePages?.some((page) => page.visualPipelineVersion === "cod-visual-agents-v1");
 }
 
-function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, runId, styleAnchor = null, reviewInstruction = "", editSource = null) {
+function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, runId, styleAnchor = null, reviewInstruction = "", editSource = null, sampleOnly = false) {
   const formData = new FormData();
   const agentPipeline = aiImageUsesVisualAgents(conversation);
   const allReferences = (conversation.referenceImages || []).filter((reference) => reference.file);
@@ -7616,8 +7647,12 @@ function buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, 
   formData.append("suiteBrief", effectiveIntent);
   formData.append("suitePlan", JSON.stringify(conversation.suitePages || []));
   formData.append("suitePageIndexes", JSON.stringify([page]));
+  if (JP25Workbench.active(conversation)) {
+    formData.append("jp25Workbench", JSON.stringify(conversation.jp25Workbench || {}));
+    formData.append("jp25Revision", JP25Workbench.revision(conversation, page));
+  }
   if (!agentPipeline && !["cod-country-landing-30", "cod-country-detail-12"].includes(conversation.suiteKey)
-      && page === 1 && aiImageGenerationProfile(conversation).key !== "fast" && !reviewInstruction && !editSource?.file) {
+      && page === 1 && !sampleOnly && aiImageGenerationProfile(conversation).key !== "fast" && !reviewInstruction && !editSource?.file) {
     formData.append("heroAB", "true");
   }
   if (reviewInstruction) formData.append("suiteReviewInstruction", reviewInstruction);
@@ -7805,7 +7840,7 @@ async function syncAiImageSavedPlan(conversation, effectiveIntent) {
   syncAiImageStateFromConversation(conversation);
 }
 
-async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent, targetPages, forcePages = [], button, startedAt, pageInstructions = new Map(), pageEditSources = new Map() }) {
+async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent, targetPages, forcePages = [], button, startedAt, pageInstructions = new Map(), pageEditSources = new Map(), sampleOnly = false }) {
   // One local preflight for the whole suite, including retry/single-page edit paths.
   // Never re-run product analysis and never relax the provider submission checks.
   await syncAiImageSavedPlan(conversation, effectiveIntent);
@@ -7821,6 +7856,9 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
     .sort((a, b) => a - b);
   const targetSet = new Set(safeTargetPages);
   const forcedPageSet = new Set(forcePages.map(Number));
+  const jp25Revisions = JP25Workbench.active(conversation)
+    ? new Map(safeTargetPages.map(n => [n, JP25Workbench.revision(conversation, n)])) : new Map();
+  if (jp25Revisions.size) conversation.jp25Report = null;
   const progress = {
     pageStates: Object.fromEntries(Array.from({ length: suiteCount }, (_, index) => {
       const page = index + 1;
@@ -7875,7 +7913,7 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
       try {
         const submittedPayload = await api("/api/sku-board/ad-launch-ai-image-edit", {
           method: "POST",
-          body: buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, runId, page === 1 ? null : styleAnchor, reviewInstruction, editSource),
+          body: buildAiImageSuiteFormData(conversation, prompt, effectiveIntent, page, runId, page === 1 ? null : styleAnchor, reviewInstruction, editSource, sampleOnly),
           signal: aiImageGenerationAbortController?.signal,
         });
         const payload = await waitForAiImageJob(submittedPayload, {
@@ -7888,6 +7926,7 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
         const returnedMaterials = mergeAiImageSuitePayload(conversation, payload);
         const returnedMaterial = returnedMaterials.find((material) => Number(material.suitePage) === page);
         if (returnedMaterial) {
+          if (jp25Revisions.has(page)) returnedMaterial.jp25Revision = jp25Revisions.get(page);
           pageMeta.nodeId = returnedMaterial.nodeId || pageMeta.nodeId;
           pageMeta.nodeName = returnedMaterial.nodeName || pageMeta.nodeName;
           pageMeta.finishedAt = Date.now();
@@ -7987,7 +8026,7 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
     throwIfAiImageGenerationAborted();
     const orderedPages = Array.from(new Set(pages)).sort((a, b) => a - b);
     const hasHero = () => (conversation.materials || []).some((material) => Number(material.suitePage) === 1);
-    if (orderedPages.includes(1) && (!hasHero() || forcedPageSet.has(1))) {
+    if (orderedPages.includes(1) && (!hasHero() || forcedPageSet.has(1) || jp25Revisions.has(1))) {
       await runPage(1, { editSource: pageEditSources.get(1) || null });
     }
     styleAnchor = aiImageSuiteUsesGeneratedStyleAnchor(conversation)
@@ -8001,7 +8040,8 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
   for (let cycle = 1; cycle <= generationProfile.autoRetryCycles; cycle += 1) {
     throwIfAiImageGenerationAborted();
     const retryPages = Array.from(progress.retryablePages)
-      .filter((page) => !(conversation.materials || []).some((material) => Number(material.suitePage) === page))
+      .filter((page) => !(conversation.materials || []).some((material) => Number(material.suitePage) === page
+        && (!jp25Revisions.has(page) || JP25Workbench.current(conversation, material))))
       .sort((a, b) => a - b);
     if (!retryPages.length) break;
     progress.retryablePages.clear();
@@ -8015,7 +8055,7 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
   progress.autoRetryCycle = 0;
   let qualityFailedPages = [];
   conversation.review = { status: "disabled", reviewed: 0, passed: 0, failed: 0, retried: 0 };
-  const missingPages = aiImageMissingSuitePages(conversation);
+  const missingPages = JP25Workbench.active(conversation) ? JP25Workbench.remaining(conversation) : aiImageMissingSuitePages(conversation);
   const pendingPages = Object.entries(progress.pageStates).filter(([, status]) => status === "pending").map(([page]) => Number(page));
   const failedPages = Object.entries(progress.pageStates).filter(([, status]) => status === "failed").map(([page]) => Number(page));
   conversation.remoteSummary = {
@@ -8042,6 +8082,11 @@ async function generateAiImageSuitePages({ conversation, prompt, effectiveIntent
     : qualityFailedPages.length
     ? "partial"
     : "done";
+  if (sampleOnly && !safeTargetPages.some(page => progress.pageStates[page] !== "success")) {
+    conversation.status = "sampled";
+    conversation.remoteSummary.partial = false;
+    conversation.remoteSummary.message = `3 张试样已就绪（第 ${JP25Workbench.samples(conversation).join("、")} 页）；可调整方案或继续剩余 ${missingPages.length} 张`;
+  }
   conversation.error = conversation.status === "error" ? (progress.errors[0]?.message || `${suiteConfig.label}生成失败`) : "";
   conversation.seconds = Math.max(0.1, (performance.now() - startedAt) / 1000);
   conversation.title = aiImageConversationTitle(conversation);
@@ -8075,7 +8120,74 @@ function validateAiImageModeInputs(conversation) {
   }
 }
 
-async function generateAiImage(event) {
+async function handleJp25Action(action) {
+  const conversation = ensureAiImageConversation();
+  if (!JP25Workbench.active(conversation)) return;
+  if (action === "cancel-report") { JP25Workbench.reports.get(conversation.id)?.abort(); return; }
+  if (action === "export-report") {
+    if (!conversation.jp25Report) return;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(conversation.jp25Report, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = "日本25图-成图检查报告.json"; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return;
+  }
+  if (["planning", "generating"].includes(conversation.status) || JP25Workbench.reports.has(conversation.id)) return;
+  JP25Workbench.save(conversation, $("[data-jp25-workbench]"));
+  syncAiImageStateFromConversation(conversation);
+  if (action === "save") { renderAiImageForm(); renderAiImageResults(); showToast("调整已保存，生成时生效"); return; }
+  if (["plan", "sample", "remaining", "all"].includes(action)) {
+    conversation.retryPageIndexes = [];
+    await generateAiImage(null, { jp25Action: action });
+    return;
+  }
+  if (!["size-report", "visual-report"].includes(action)) return;
+  const materials = [...(conversation.materials || [])].sort((a, b) => Number(a.suitePage) - Number(b.suitePage));
+  if (!materials.length) throw new Error("请先生成图片");
+  const controller = new AbortController();
+  JP25Workbench.reports.set(conversation.id, controller);
+  const report = { key: JP25Workbench.reportKey(conversation), checkedAt: new Date().toLocaleString("zh-CN"),
+    results: [], warning: "", source: "当前成图与已保存方案", expectedPages: materials.map(m => Number(m.suitePage)) };
+  conversation.jp25Report = report;
+  const refresh = () => { persistAiImageState(); if (aiImageActiveConversation()?.id === conversation.id) renderAiImageResults(); };
+  refresh();
+  try {
+    for (let start = 0; start < materials.length; start += 5) {
+      controller.signal.throwIfAborted();
+      const batch = materials.slice(start, start + 5);
+      const form = new FormData();
+      form.append("suiteKey", conversation.suiteKey);
+      form.append("pageNumbers", JSON.stringify(batch.map(m => Number(m.suitePage))));
+      form.append("suitePlan", JSON.stringify(conversation.suitePages || []));
+      form.append("jp25Workbench", JSON.stringify(conversation.jp25Workbench || {}));
+      form.append("visualCheck", action === "visual-report" ? "true" : "false");
+      const references = (conversation.referenceImages || []).filter(r => r.file).slice(0, 16);
+      form.append("referenceBindings", JSON.stringify(aiImageReferenceBindings(references)));
+      if (action === "visual-report") references.forEach((r, i) => form.append(`reference${i}`, r.file, r.name));
+      for (let i = 0; i < batch.length; i++) {
+        const file = await aiImageSuiteMaterialFile(conversation, batch[i], start + i);
+        controller.signal.throwIfAborted();
+        form.append(`generated${i}`, file, file.name);
+      }
+      const payload = await api("/api/sku-board/jp25-report", { method: "POST", body: form, signal: controller.signal });
+      report.results.push(...(payload.results || []).map(r => ({ ...r,
+        materialId: batch.find(m => Number(m.suitePage) === r.page)?.id,
+        issues: [...(r.issues || []), ...(!JP25Workbench.current(conversation, batch.find(m => Number(m.suitePage) === r.page)) ? ["该图对应旧方案，请复核调整是否已应用"] : [])] })));
+      JP25Workbench.deduplicate(report.results);
+      report.results.forEach(r => { if (r.issues.length && r.visualStatus === "pass") r.visualStatus = "needs_review"; });
+      if (payload.warning) report.warning = payload.warning;
+      if (payload.model) report.model = payload.model;
+      refresh();
+    }
+  } catch (error) {
+    report.warning = controller.signal.aborted ? "检查已停止，尚未列出的页面未完成检查" : "检查未完成，保留已返回的结果；" + error.message;
+  } finally {
+    JP25Workbench.reports.delete(conversation.id);
+    refresh();
+  }
+}
+
+async function generateAiImage(event, request = {}) {
   event?.preventDefault();
   if (!state.auth.user) {
     openLoginDialog();
@@ -8090,6 +8202,9 @@ async function generateAiImage(event) {
     return;
   }
   const conversation = ensureAiImageConversation();
+  if (JP25Workbench.reports.has(conversation.id)) { showToast("请先结束当前成图检查"); return; }
+  const jp25Action = JP25Workbench.active(conversation) ? request.jp25Action || "all" : "";
+  if (jp25Action) JP25Workbench.save(conversation, $("[data-jp25-workbench]"));
   const skill = aiImageSkillConfig();
   const intent = $("#ai-image-intent").value.trim();
   let prompt = $("#ai-image-prompt").value.trim();
@@ -8182,7 +8297,8 @@ async function generateAiImage(event) {
     ? [...conversation.retryPageIndexes]
     : [];
   const retryMissingPages = retryPageIndexes.length > 0;
-  const existingMaterials = retryMissingPages ? [...(conversation.materials || [])] : [];
+  const preserveJp25 = ["sample", "remaining"].includes(jp25Action);
+  const existingMaterials = retryMissingPages || preserveJp25 ? [...(conversation.materials || [])] : [];
   const button = $("#ai-image-generate-btn");
   const original = button.textContent;
   const planSignature = suiteConfig ? aiImageSuitePlanSignature(conversation, prompt, effectiveIntent) : "";
@@ -8207,7 +8323,7 @@ async function generateAiImage(event) {
     !companyPromptReady || conversation.suitePlanVersion !== suiteConfig?.planVersion
   );
   const requiresCodSuitePlanRefresh = aiImageCodSuiteNeedsPlanRefresh(conversation, suiteConfig);
-  if (suiteConfig && (!retryMissingPages || requiresCompanyPromptRefresh || requiresCodSuitePlanRefresh) && !planCurrent) {
+  if (suiteConfig && (!retryMissingPages || jp25Action || requiresCompanyPromptRefresh || requiresCodSuitePlanRefresh) && !planCurrent) {
     aiImageGenerationAbortController = new AbortController();
     aiImageGenerationStartedAt = performance.now();
     button.disabled = false;
@@ -8240,11 +8356,35 @@ async function generateAiImage(event) {
       button.disabled = false;
       button.textContent = original;
       $("#ai-image-status").textContent = String(error.message||'').includes('策划进度已保存') ? '策划进度已保存，等待继续' : '套图策划失败';
+      conversation.status = "error";
+      conversation.error = conversation.error || `AI 策划失败：${error.message || "未返回可用方案"}`;
+      syncAiImageStateFromConversation(conversation);
+      renderAiImageSidebar();
+      renderAiImageResults();
       showToast(error.message);
       return;
     }
     plannedThisRun = true;
     planCurrent = true;
+  }
+  const jp25Targets = preserveJp25
+    ? (jp25Action === "sample" ? JP25Workbench.samples(conversation) : Array.from({ length: 25 }, (_, i) => i + 1))
+      .filter(n => JP25Workbench.remaining(conversation).includes(n)) : null;
+  if (jp25Action === "plan" || (jp25Targets && !jp25Targets.length)) {
+    conversation.status = jp25Action === "plan" ? "planned" : jp25Action === "sample" ? "sampled" : "done";
+    conversation.error = "";
+    conversation.remoteSummary = { ...(conversation.remoteSummary || {}),
+      message: jp25Action === "plan" ? "25 页方案已就绪，可在方案总览中调整后试样或生成"
+        : jp25Action === "sample" ? "3 张试样已是当前版本，可继续剩余图片" : "25 张图片已是当前方案版本" };
+    aiImageGenerationAbortController = null;
+    aiImageGenerationStartedAt = 0;
+    button.disabled = false;
+    button.textContent = original;
+    syncAiImageStateFromConversation(conversation);
+    renderAiImageSidebar(); renderAiImageForm(); renderAiImageResults();
+    $("#ai-image-status").textContent = conversation.remoteSummary.message;
+    showToast(conversation.remoteSummary.message);
+    return;
   }
   if (suiteConfig && !retryMissingPages && aiImageDirectorMode(conversation) === "review") {
     const approvalReady = planCurrent && conversation.status === "planned" && !plannedThisRun;
@@ -8266,7 +8406,7 @@ async function generateAiImage(event) {
       return;
     }
   }
-  if (aiImageSuiteActive(conversation) && !retryMissingPages) {
+  if (aiImageSuiteActive(conversation) && !retryMissingPages && !preserveJp25) {
     conversation.suiteRunId = createAiImageSuiteRunId();
     conversation.suiteStyleAnchorFile = null;
   }
@@ -8274,7 +8414,7 @@ async function generateAiImage(event) {
   aiImageGenerationStartedAt = aiImageGenerationStartedAt || performance.now();
   conversation.status = "generating";
   conversation.error = "";
-  if (!retryMissingPages) {
+  if (!retryMissingPages && !preserveJp25) {
     conversation.materials = [];
     conversation.previewDataUrls = [];
     conversation.review = {};
@@ -8305,7 +8445,8 @@ async function generateAiImage(event) {
         conversation,
         prompt,
         effectiveIntent,
-        targetPages: retryMissingPages ? retryPageIndexes : Array.from({ length: suiteConfig.count }, (_, index) => index + 1),
+        targetPages: jp25Targets || (retryMissingPages ? retryPageIndexes : Array.from({ length: suiteConfig.count }, (_, index) => index + 1)),
+        sampleOnly: jp25Action === "sample",
         button,
         startedAt,
       });
@@ -11027,6 +11168,11 @@ function bindEvents() {
     if (taskButton) setAiImageConversation(taskButton.dataset.aiConversation);
   });
   $("#ai-image-results").addEventListener("click", (event) => {
+    const jp25Button = event.target.closest("[data-jp25-action]");
+    if (jp25Button) {
+      handleJp25Action(jp25Button.dataset.jp25Action).catch(error => showToast(error.message));
+      return;
+    }
     if (event.target.closest('[data-agent-upgrade-design]')) {
       try {
         if (aiImageGenerationAbortController) throw new Error('请先结束当前任务再另存方案');
@@ -11112,6 +11258,13 @@ function bindEvents() {
     }
   });
   $("#ai-image-results").addEventListener("input", (event) => {
+    const jp25Field = event.target.closest("[data-jp25-field]");
+    if (jp25Field) {
+      const root = jp25Field.closest("[data-jp25-workbench]");
+      JP25Workbench.readDraft(ensureAiImageConversation(), root);
+      root.querySelector("[data-jp25-dirty]").textContent = "有未保存调整，生成前会自动保存";
+      return;
+    }
     const editField = event.target.closest("[data-ai-edit-prompt-index]");
     if (!editField) return;
     const conversation = aiImageActiveConversation();

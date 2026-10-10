@@ -98,6 +98,8 @@ class CodCopyLocaleTests(unittest.TestCase):
 
     def test_script_filter_preserves_cjk_markets_and_numeric_labels(self):
         cases = [('DE', '中文标题', False), ('KR', '中文标题', False),
+                 ('CN', '方便收纳', True), ('CN', '毎日の収納', False),
+                 ('CN', 'Easy storage', False), ('CN', '수납', False),
                  ('TH', '中文标题', False), ('JP', '庭園の彩り', True),
                  ('TW', '庭園裝飾', True), ('HK', '庭園裝飾', True),
                  ('KR', '정원 장식', True), ('TH', 'สวนสวย', True)]
@@ -106,6 +108,30 @@ class CodCopyLocaleTests(unittest.TestCase):
                 self.assertEqual(cod_copy_locale.literal_copy(value, country), expected)
         for country in ('DE', 'KR', 'JP', 'TH'):
             self.assertTrue(cod_copy_locale.literal_copy('25 cm', country, numeric=True))
+
+    def test_china_reaches_all_three_cod_generators_without_foreign_copy_fallback(self):
+        brief = '主卖点：方便收纳、操作简单。'
+        language = 'Simplified Chinese used in mainland China'
+        self.assertEqual(backend.normalize_ai_image_cod_country('cn'), 'CN')
+        for suite in (backend.AI_IMAGE_COD_SUITE_KEY, backend.AI_IMAGE_COD_DETAIL_SUITE_KEY):
+            with self.subTest(suite=suite):
+                prompts, pages = backend.build_ai_image_suite_prompts(
+                    '家用收纳盒', brief, '750x1000', suite_key=suite, country='CN', suite_count=12)
+                self.assertTrue(prompts)
+                self.assertTrue(all(page['country'] == 'CN' for page in pages))
+                self.assertTrue(all(page['countryLabel'] == '中国' for page in pages))
+                self.assertTrue(all(language in prompt for prompt in prompts))
+        hook = backend.compile_ai_image_cod_hook_text_prompt(
+            {'suiteBrief': brief, 'suiteCountry': 'CN', 'codHookType': 'hook'}, '', '750x1000')
+        self.assertIn('所有可见文案只能使用简体中文', hook)
+        self.assertIn('Selected market=CN', hook)
+        page = self.page()
+        page['country'] = 'CN'
+        prompt = self.compile(page)
+        self.assertIn('Use this approved localized headline exactly: 「拯救花园里的阴暗死角」', prompt)
+        self.assertIn(language, prompt)
+        self.assertNotIn('Chinese or Japanese writing must not appear', prompt)
+        self.director.assert_not_called()
 
     def test_no_text_policy_does_not_request_translation(self):
         prompt = self.compile(brief='不要任何文字')

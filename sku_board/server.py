@@ -71,6 +71,7 @@ from sku_board.backend import (
     record_ai_image_quality_telemetry,
     regenerate_selling,
     review_ai_image_suite,
+    inspect_jp25_images,
     recover_recent_ai_image_suite,
     recover_saved_cod_hook_result,
     refresh_ai_image_account_pool,
@@ -336,6 +337,9 @@ class SkuBoardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/sku-board/ai-image-suite-review":
             self.handle_auth_upload(lambda fields, files, user: review_ai_image_suite(fields, files, user))
+            return
+        if parsed.path == "/api/sku-board/jp25-report":
+            self.handle_auth_upload(inspect_jp25_images)
             return
         if parsed.path == "/api/sku-board/ai-director-settings":
             self.handle_auth_mutation(lambda payload, user: save_ai_director_settings(payload, user))

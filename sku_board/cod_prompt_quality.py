@@ -20,6 +20,7 @@ _KANA = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
 _HANGUL = re.compile(r"[\u1100-\u11ff\uac00-\ud7af]")
 _LATIN = re.compile(r"[A-Za-zÀ-ž]")
 _CHINESE_HINT = re.compile(r"让你|无需|轻松|购买|你的|为您|告别|这款|专为|卖点|选购|货到")
+_JP_MIXED_CHINESE = re.compile(r"整只|锁鲜|即食|空气炸锅|肉质|饱满|烧烤|独立包装|香辣")
 _NUMBERING = re.compile(r"(?:第\s*\d+\s*[页張张]|(?<![A-Za-z])page\s*#?\s*\d+(?:\s*/\s*\d+)?(?!\d)|(?:主图|详情图|页面)\s*\d+)", re.I)
 _QUANTITIES = {
     "屏幕英寸": re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:英寸|インチ|inches?(?![A-Za-z]))", re.I),
@@ -54,6 +55,8 @@ def _script_warning(text: Any, market: str, product: str) -> str:
     cjk, kana, hangul, latin = (len(pattern.findall(value)) for pattern in (_CJK, _KANA, _HANGUL, _LATIN))
     letters = cjk + kana + hangul + latin
     if market == "JP":
+        if _JP_MIXED_CHINESE.search(value):
+            return "日文可见文案夹杂中文商品/营销词，请按原意改写为自然日语。"
         if hangul >= 3:
             return "日文可见文案中出现较多韩文字母，请确认目标语言。"
         if not kana and (_CHINESE_HINT.search(value) or (latin >= 16 and latin > letters * .75)):
@@ -130,6 +133,10 @@ def assess(form: dict[str, Any], master: str, outline: list[dict[str, Any]],
         warning = _script_warning(page.get("headline"), market, product)
         if warning:
             add(number, "visible_language", warning, "headline")
+        for label in page.get("copyLabels", []):
+            warning = _script_warning(label, market, product)
+            if warning:
+                add(number, "visible_language", warning + f" 标签：{label}", "modelPrompt")
         normalized = _normalized(prompt, page_numbers=True)
         if len(normalized) >= 30:
             if normalized in seen_prompts:

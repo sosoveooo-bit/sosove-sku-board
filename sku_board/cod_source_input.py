@@ -26,11 +26,12 @@ def unnumbered_points(value):
 def localized_copy(value, country):
     value=str(value or '').strip()
     if not value or re.search(r'本土化\s*[·:：]|SOURCE_HEADLINE|PRIMARY_PROOF|VISUAL_EVIDENCE|待翻译|待生成',value,re.I):return False
-    if country not in {'JP','TW','HK'} and re.search(r'[\u3400-\u9fff\u3040-\u30ff]',value):return False
+    if country not in {'CN','JP','TW','HK'} and re.search(r'[\u3400-\u9fff\u3040-\u30ff]',value):return False
+    if country=='CN' and re.search(r'[\u3040-\u30ff]',value):return False
     if country!='KR' and re.search(r'[\uac00-\ud7af]',value):return False
     if country!='TH' and re.search(r'[\u0e00-\u0e7f]',value):return False
     required={'TH':r'[\u0e00-\u0e7f]','KR':r'[\uac00-\ud7af]','JP':r'[\u3040-\u30ff\u3400-\u9fff]',
-              'TW':r'[\u3400-\u9fff]','HK':r'[\u3400-\u9fff]'}
+              'CN':r'[\u3400-\u9fff]','TW':r'[\u3400-\u9fff]','HK':r'[\u3400-\u9fff]'}
     return bool(re.search(required.get(country,r'[^\W\d_]'),value))
 
 
